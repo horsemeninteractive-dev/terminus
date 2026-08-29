@@ -19,6 +19,53 @@ import { LOCATION_PRESETS } from '../data/sampleMapData';
 
 const modules = import.meta.glob('../data/maps/*.json');
 
+type ChunkManifest = {
+  format: 'terminus-map-chunks-v1';
+  base: string;
+  chunks: Array<{ file: string; kind: 'buildings' | 'roads' | 'landuse' | 'resourceNodes'; count: number }>;
+};
+
+async function loadJson(key: string): Promise<unknown> {
+  const loader = modules[key];
+  return loader ? loader() : null;
+}
+
+async function loadMapModule(key: string): Promise<MapData | null> {
+  const value = await loadJson(key) as { default?: unknown } | null;
+  const data = value?.default;
+  if (!data || typeof data !== 'object') return null;
+  const manifest = data as Partial<ChunkManifest>;
+  if (manifest.format !== 'terminus-map-chunks-v1' || !manifest.base || !manifest.chunks) {
+    return data as MapData;
+  }
+
+  const baseKey = Object.keys(modules).find((candidate) => candidate.endsWith(`/${manifest.base}`));
+  if (!baseKey) throw new Error(`Missing map base ${manifest.base}`);
+  const baseModule = await loadJson(baseKey) as { default?: MapData };
+  const map = baseModule.default;
+  if (!map) throw new Error(`Invalid map base ${manifest.base}`);
+  const result: MapData = { ...map, buildings: [], roads: [], landuse: [], resourceNodes: [] };
+  for (const chunk of manifest.chunks) {
+    const chunkKey = Object.keys(modules).find((candidate) => candidate.endsWith(`/${chunk.file}`));
+    if (!chunkKey) throw new Error(`Missing map chunk ${chunk.file}`);
+    const chunkModule = await loadJson(chunkKey) as { default?: unknown[] };
+    const items = chunkModule.default ?? [];
+    (result[chunk.kind] as unknown[]).push(...items);
+  }
+  result.stats = {
+    ...result.stats,
+    buildingCount: result.buildings.length,
+    roadCount: result.roads.length,
+    resourceCount: {
+      wood: result.resourceNodes.filter((node) => node.type === 'wood').length,
+      metal: result.resourceNodes.filter((node) => node.type === 'metal').length,
+      bricks: result.resourceNodes.filter((node) => node.type === 'bricks').length,
+      total: result.resourceNodes.length,
+    },
+  };
+  return result;
+}
+
 // Tolerance (~5.5km) when matching a clicked coordinate to a bundled preset.
 const MATCH_TOLERANCE_DEG = 0.05;
 
@@ -48,8 +95,7 @@ export async function getBundledMapById(id: string): Promise<MapData | null> {
   if (!key) return null;
 
   try {
-    const mod = await modules[key]();
-    return (mod as { default?: MapData }).default ?? null;
+    return await loadMapModule(key);
   } catch (err) {
     console.warn(`Bundled map load failed for ${cleanId}:`, err);
     return null;
