@@ -1,0 +1,6 @@
+{
+  "name": "Terminus",
+  "description": "Real-world zombie survival strategy game featuring 3D globe deployment, Safe Zones Operations radio directive system, OpenStreetMap tactical engine, HQ selection, itemized stockpiles, building adaptation, discrete survivor stats, labor allocation, real-time day/night clock, sound/proximity zombie AI, 3D RTS squad combat with melee and ranged weapons, infection & quarantine, motor pool vehicles, tech tree research, multi-settlement caravan trade network, settlement morale & passive population growth, dynamic seasons & weather, ambient soundscape & combat SFX.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

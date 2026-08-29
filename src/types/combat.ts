@@ -1,0 +1,314 @@
+import { StatTier } from './population';
+import { LootItem } from './loot';
+
+// ==========================================
+// 1. In-Game Real-Time Clock & Day/Night Lore (§6.1)
+// ==========================================
+
+export type TimeOfDayPhase = 'dawn' | 'day' | 'dusk' | 'night';
+
+export interface GameClockState {
+  day: number; // 1, 2, 3...
+  hour: number; // 0..23 (float or integer, e.g. 14.5 = 2:30 PM)
+  minute: number; // 0..59
+  speed: 0 | 1 | 2 | 4; // 0 = Paused, 1 = 1x, 2 = 2x, 4 = 4x
+  phase: TimeOfDayPhase;
+  isNight: boolean; // True between 21:00 and 05:00
+  hordeWaveIntensity: number; // Escalates with in-game day (1..10)
+  totalElapsedSeconds: number;
+}
+
+// ==========================================
+// 2. Zombie Variants & Stats (§5.1)
+// ==========================================
+
+export type ZombieVariant = 'shambler' | 'runner' | 'brute';
+
+export type ZombieAiState =
+  | 'dormant'
+  | 'wandering'
+  | 'investigating_sound'
+  | 'chasing'
+  | 'attacking_unit'
+  | 'attacking_building'
+  | 'dead';
+
+export interface ZombieUnit {
+  id: string;
+  variant: ZombieVariant;
+  name: string;
+  x: number;
+  z: number;
+  y: number;
+  rotation: number;
+  currentHp: number;
+  maxHp: number;
+  speed: number;
+  baseDamage: number;
+  siegeDamage: number;
+  attackCooldown: number;
+  lastAttackTime: number;
+  state: ZombieAiState;
+  targetUnitId: string | null;
+  targetBuildingId: string | number | null;
+  targetPos: { x: number; z: number } | null;
+  investigatingSoundId: string | null;
+  spawnedAt: number;
+  isDormant: boolean;
+  alertLevel: number; // 0 = calm, 1 = alerted by sound, 2 = active pursuit
+  pathState?: any; // A* PathState cache
+}
+
+// ==========================================
+// 3. Tactical Squad Combat Unit in 3D World (§5, §4.3)
+// ==========================================
+
+export type SquadUnitCombatState =
+  | 'idle'
+  | 'moving'
+  | 'searching'
+  | 'combat'
+  | 'in_cover'
+  | 'returning'
+  | 'retreating'
+  | 'gathering'
+  | 'downed';
+
+export interface TacticalSquadUnit {
+  id?: string;
+  squadId: string;
+  name: string;
+  leaderId: string;
+  leaderName: string;
+  leaderCombatTier: StatTier;
+  generalCount: number;
+  x: number;
+  z: number;
+  y: number;
+  position?: { x: number; z: number };
+  rotation: number;
+  currentHp: number;
+  maxHp: number;
+  attackRange: number; // e.g. 26 meters
+  fireRate: number; // seconds between weapon discharges
+  lastFireTime: number;
+  damagePerVolley: number;
+  critChance: number;
+  moveSpeed: number;
+  state: SquadUnitCombatState;
+  manualOrder: boolean;
+  targetPos: { x: number; z: number } | null;
+  targetBuildingId?: string | number | null;
+  targetBuildingName?: string | null;
+  searchProgress?: number; // 0 to 100
+  targetZombieId: string | null;
+  isDeployed: boolean;
+  killCount: number;
+  isInSafeZone: boolean; // near HQ or Infirmary for heal regeneration
+  mountedVehicleId?: string | null; // which vehicle unit they are currently inside
+  assignedVehicleId?: string | null; // linked expedition vehicle for auto-scavenge returns
+  vehicleId?: string | null;
+  pendingMountVehicleId?: string | null; // vehicle unit they are moving to board
+  pathState?: any; // A* PathState cache
+  members: SquadMemberUnit[]; // per-unit roster: leader first, then general recruits
+  inventory: LootItem[];
+  currentWeightKg: number;
+  maxWeightKg: number;
+}
+
+// ==========================================
+// 4. Sound & Acoustic Proximity Detection (§5, §6.1)
+// ==========================================
+
+export type NoiseSourceType =
+  | 'gunfire'
+  | 'construction'
+  | 'repair'
+  | 'breach'
+  | 'combat'
+  | 'engine'
+  | 'brute_slam';
+
+export interface NoiseEvent {
+  id: string;
+  type: NoiseSourceType;
+  x: number;
+  z: number;
+  radius: number; // acoustic hearing radius in meters (30m - 120m)
+  label: string;
+  createdAt: number;
+  durationMs: number;
+}
+
+// ==========================================
+// 5. Combat Visual Effects & Damage Numbers
+// ==========================================
+
+export interface CombatVisualFx {
+  id: string;
+  type: 'bullet_tracer' | 'muzzle_flash' | 'blood_splatter' | 'melee_slash' | 'damage_number' | 'noise_ring' | 'zombie_death' | 'building_impact';
+  startX: number;
+  startY: number;
+  startZ: number;
+  endX?: number;
+  endY?: number;
+  endZ?: number;
+  text?: string;
+  color?: string;
+  isCrit?: boolean;
+  isSiege?: boolean;
+  radius?: number;
+  createdAt: number;
+  durationMs: number;
+}
+
+// ==========================================
+// 6. Building Infestation & Searches (Prompt 5 + Phase 6)
+// ==========================================
+
+export interface BuildingInfestation {
+  buildingId: string | number;
+  buildingName: string;
+  isInfested: boolean;
+  isCleared: boolean;
+  threatTier: 'low' | 'medium' | 'high' | 'deadly';
+  zombieCount: number;
+  shamblers: number;
+  runners: number;
+  brutes: number;
+}
+
+export type CombatStance = 'aggressive' | 'defensive' | 'hold_fire';
+export type WeaponLoadoutId = 'standard_rifle' | 'shotgun_breach' | 'scoped_marksman' | 'heavy_support';
+
+// ==========================================
+// 6b. Individual Squad Member Equipment (§4.3, §7.2)
+// Weapons & armor are individual scavenged items. All units default to a
+// combat knife and no armor; better gear is assigned from the shelter armory
+// or auto-equipped when scavenged from buildings. On death a member drops
+// their equipped weapon & armor to the ground as a pickup.
+// ==========================================
+
+export type WeaponItemId =
+  | 'knife'
+  | 'bat'
+  | 'axe'
+  | 'pistol'
+  | 'shotgun'
+  | 'hunting_rifle'
+  | 'assault_rifle';
+
+export interface WeaponItemDef {
+  id: WeaponItemId;
+  name: string;
+  damage: number; // per-volley damage contribution
+  range: number; // engagement range in meters
+  fireRate: number; // seconds between volleys
+  ammoPerVolley: number;
+  tier: number; // 0 = melee default ... higher = better
+}
+
+export const WEAPON_CATALOG: Record<WeaponItemId, WeaponItemDef> = {
+  knife: { id: 'knife', name: 'Combat Knife', damage: 10, range: 8, fireRate: 1.8, ammoPerVolley: 0, tier: 0 },
+  bat: { id: 'bat', name: 'Baseball Bat', damage: 12, range: 9, fireRate: 1.7, ammoPerVolley: 0, tier: 1 },
+  axe: { id: 'axe', name: 'Fire Axe', damage: 14, range: 9, fireRate: 1.9, ammoPerVolley: 0, tier: 2 },
+  pistol: { id: 'pistol', name: 'Pistol', damage: 16, range: 28, fireRate: 1.3, ammoPerVolley: 1, tier: 3 },
+  shotgun: { id: 'shotgun', name: 'Pump Shotgun', damage: 22, range: 22, fireRate: 1.6, ammoPerVolley: 2, tier: 4 },
+  hunting_rifle: { id: 'hunting_rifle', name: 'Hunting Rifle', damage: 26, range: 42, fireRate: 1.9, ammoPerVolley: 2, tier: 5 },
+  assault_rifle: { id: 'assault_rifle', name: 'Assault Rifle', damage: 28, range: 36, fireRate: 1.1, ammoPerVolley: 3, tier: 6 },
+};
+
+export const WEAPON_IDS: WeaponItemId[] = Object.keys(WEAPON_CATALOG) as WeaponItemId[];
+
+export type ArmorItemId = 'padded_jacket' | 'riot_vest' | 'tactical_gear';
+
+export interface ArmorItemDef {
+  id: ArmorItemId;
+  name: string;
+  damageReduction: number; // 0..1 fraction of damage blocked
+  tier: number;
+}
+
+export const ARMOR_CATALOG: Record<ArmorItemId, ArmorItemDef> = {
+  padded_jacket: { id: 'padded_jacket', name: 'Padded Jacket', damageReduction: 0.1, tier: 1 },
+  riot_vest: { id: 'riot_vest', name: 'Riot Vest', damageReduction: 0.2, tier: 2 },
+  tactical_gear: { id: 'tactical_gear', name: 'Tactical Gear', damageReduction: 0.3, tier: 3 },
+};
+
+export const ARMOR_IDS: ArmorItemId[] = Object.keys(ARMOR_CATALOG) as ArmorItemId[];
+
+export interface SquadMemberUnit {
+  id: string;
+  survivorId?: string;
+  name: string;
+  isLeader: boolean;
+  maxHp: number;
+  currentHp: number;
+  weaponId: WeaponItemId;
+  armorId: ArmorItemId | null;
+  isAlive: boolean;
+}
+
+export interface DroppedItem {
+  id: string;
+  x: number;
+  z: number;
+  weaponId: WeaponItemId | null;
+  armorId: ArmorItemId | null;
+  droppedAt: number;
+}
+
+// ==========================================
+// 7. Hostile Human Faction Combat Units (§5.2)
+// ==========================================
+// Rival-faction Hideout occupants plug into the same squad-vs-hostile combat
+// resolution as zombies (§5), but they are a distinct faction: always active
+// (no sunlight dormancy), armed, and hostile on sight.
+
+export type HostileHumanAiState = 'guarding' | 'moving' | 'combat' | 'dead';
+
+export interface HostileHumanUnit {
+  id: string;
+  name: string;
+  hideoutId: string;
+  factionName: string;
+  x: number;
+  z: number;
+  y: number;
+  rotation: number;
+  currentHp: number;
+  maxHp: number;
+  speed: number;
+  damage: number; // damage per volley (ranged)
+  attackRange: number; // engagement range in meters
+  aggroRange: number; // distance at which they open fire
+  attackCooldown: number; // seconds between volleys
+  lastAttackTime: number;
+  state: HostileHumanAiState;
+  targetSquadId: string | null;
+  weaponId: WeaponItemId;
+  homeX: number; // guard anchor (their hideout)
+  homeZ: number;
+}
+
+// ==========================================
+// 8. Zombie Lair — persistent infestation source (§5.2)
+// ==========================================
+
+export type LairThreatTier = 'low' | 'medium' | 'high';
+
+export interface ZombieLair {
+  id: string;
+  buildingId: string | number;
+  buildingName: string;
+  isDiscovered: boolean;
+  isCleared: boolean;
+  occupantCount: number; // garrison inside; deplete to clear
+  initialOccupantCount: number;
+  spawnIntervalSec: number; // shrinks as escalation grows
+  lastSpawnAt: number;
+  escalation: number; // 0..N, grows over time while uncleared
+  escalationAccumSec: number;
+  threatTier: LairThreatTier;
+}
+

@@ -1,0 +1,147 @@
+[2m05:30:29[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31merror while updating dependencies:
+Error: ENOENT: no such file or directory, rename 'C:\Users\aeryt\Documents\TERMINUS\node_modules\.vite\deps' -> 'C:\Users\aeryt\Documents\TERMINUS\node_modules\.vite\deps_temp_e67f0ffc'[39m
+e_modules/esbuild/lib/main.js:1267:21:
+[37m      1267 │         let result = [32m[37mawait callback({
+           ╵                      [32m^[0m
+
+    at async open (node:internal/fs/promises:637:25)
+    at async Object.readFile (node:internal/fs/promises:1269:14)
+    at async file:///C:/Users/aeryt/Documents/TERMINUS/node_modules/vite/dist/node/chunks/dep-Dm0c1Wj2.js:14553:24
+    at async requestCallbacks.on-load (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:1267:22)
+    at async handleRequest (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:628:11)
+
+  This error came from the "onLoad" callback registered here:
+
+    node_modules/esbuild/lib/main.js:1141:20:
+[37m      1141 │       let promise = [32m[37msetup({
+           ╵                     [32m^[0m
+
+    at setup (file:///C:/Users/aeryt/Documents/TERMINUS/node_modules/vite/dist/node/chunks/dep-Dm0c1Wj2.js:14549:13)
+    at handlePlugins (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:1141:21)
+    at buildOrContextImpl (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:854:5)
+    at Object.buildOrContext (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:680:5)
+    at C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:2035:68
+    at new Promise (<anonymous>)
+    at Object.context (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:2035:27)
+    at Object.context (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:1877:58)
+    at prepareEsbuildScanner (file:///C:/Users/aeryt/Documents/TERMINUS/node_modules/vite/dist/node/chunks/dep-Dm0c1Wj2.js:14266:24)
+
+  The plugin "vite:dep-scan" was triggered by this import
+
+    src/App.tsx:140:7:
+[37m      140 │ } from [32m'./types/combat'[37m;
+          ╵        [32m~~~~~~~~~~~~~~~~[0m
+
+
+    at failureErrorWithLog (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:1467:15)
+    at C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:926:25
+    at runOnEndCallbacks (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:1307:45)
+    at buildResponseToResult (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:924:7)
+    at C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:936:9
+    at new Promise (<anonymous>)
+    at requestCallbacks.on-end (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:935:54)
+    at handleRequest (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:628:17)
+    at handleIncomingPacket (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:653:7)
+    at Socket.readFromStdout (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:581:7)
+Error: [31m  Failed to scan for dependencies from entries:
+  C:/Users/aeryt/Documents/TERMINUS/index.html
+
+  [39m[31mX [41;31m[[41;97mERROR[41;31m][0m [1mUnexpected end of file[0m
+
+    src/render/WorldScene.ts:957:36:
+[37m      957 │     // Keep sun shadow camera aligne[32m[37m
+          ╵                                     [32m^[0m
+
+
+    at failureErrorWithLog (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:1467:15)
+    at C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:926:25
+    at runOnEndCallbacks (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:1307:45)
+    at buildResponseToResult (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:924:7)
+    at C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:936:9
+    at new Promise (<anonymous>)
+    at requestCallbacks.on-end (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:935:54)
+    at handleRequest (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:628:17)
+    at handleIncomingPacket (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:653:7)
+    at Socket.readFromStdout (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:581:7)
+ 24) | (r << 16) | (g << 8) | b).toString(16).slice(1)}`;
+  45 |  }
+  [39m
+      at failureErrorWithLog (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:1467:15)
+      at C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:736:50
+      at responseCallbacks.<computed> (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:603:9)
+      at handleIncomingPacket (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:658:12)
+      at Socket.readFromStdout (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:581:7)
+      at Socket.emit (node:events:508:28)
+      at addChunk (node:internal/streams/readable:563:12)
+      at readableAddChunkPushByteMode (node:internal/streams/readable:514:3)
+      at Readable.push (node:internal/streams/readable:394:5)
+      at Pipe.onStreamRead (node:internal/stream_base_commons:189:23)
+[2m03:09:17[22m [31m[1m[vite][22m[39m [31mInternal server error: Transform failed with 1 error:
+C:/Users/aeryt/Documents/TERMINUS/src/render/EntityMarkerRenderer.ts:43:8: ERROR: The symbol "b" has already been declared[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mC:/Users/aeryt/Documents/TERMINUS/src/render/EntityMarkerRenderer.ts[39m:43:8
+[33m  
+  [33mThe symbol "b" has already been declared[33m
+  41 |    const r = Math.round(ar + (br - ar) * t);
+  42 |    const g = Math.round(ag + (bg - ag) * t);
+  43 |    const b = Math.round(ab + (bb - ab) * t);
+     |          ^
+  44 |    return `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1)}`;
+  45 |  }
+  [39m
+      at failureErrorWithLog (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:1467:15)
+      at C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:736:50
+      at responseCallbacks.<computed> (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:603:9)
+      at handleIncomingPacket (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:658:12)
+      at Socket.readFromStdout (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:581:7)
+      at Socket.emit (node:events:508:28)
+      at addChunk (node:internal/streams/readable:563:12)
+      at readableAddChunkPushByteMode (node:internal/streams/readable:514:3)
+      at Readable.push (node:internal/streams/readable:394:5)
+      at Pipe.onStreamRead (node:internal/stream_base_commons:189:23)
+[2m03:09:35[22m [31m[1m[vite][22m[39m [31mInternal server error: Transform failed with 1 error:
+C:/Users/aeryt/Documents/TERMINUS/src/render/EntityMarkerRenderer.ts:43:8: ERROR: The symbol "b" has already been declared[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mC:/Users/aeryt/Documents/TERMINUS/src/render/EntityMarkerRenderer.ts[39m:43:8
+[33m  
+  [33mThe symbol "b" has already been declared[33m
+  41 |    const r = Math.round(ar + (br - ar) * t);
+  42 |    const g = Math.round(ag + (bg - ag) * t);
+  43 |    const b = Math.round(ab + (bb - ab) * t);
+     |          ^
+  44 |    return `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1)}`;
+  45 |  }
+  [39m
+      at failureErrorWithLog (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:1467:15)
+      at C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:736:50
+      at responseCallbacks.<computed> (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:603:9)
+      at handleIncomingPacket (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:658:12)
+      at Socket.readFromStdout (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:581:7)
+      at Socket.emit (node:events:508:28)
+      at addChunk (node:internal/streams/readable:563:12)
+      at readableAddChunkPushByteMode (node:internal/streams/readable:514:3)
+      at Readable.push (node:internal/streams/readable:394:5)
+      at Pipe.onStreamRead (node:internal/stream_base_commons:189:23)
+[2m03:09:41[22m [31m[1m[vite][22m[39m [31mInternal server error: Transform failed with 1 error:
+C:/Users/aeryt/Documents/TERMINUS/src/render/EntityMarkerRenderer.ts:43:8: ERROR: The symbol "b" has already been declared[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mC:/Users/aeryt/Documents/TERMINUS/src/render/EntityMarkerRenderer.ts[39m:43:8
+[33m  
+  [33mThe symbol "b" has already been declared[33m
+  41 |    const r = Math.round(ar + (br - ar) * t);
+  42 |    const g = Math.round(ag + (bg - ag) * t);
+  43 |    const b = Math.round(ab + (bb - ab) * t);
+     |          ^
+  44 |    return `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1)}`;
+  45 |  }
+  [39m
+      at failureErrorWithLog (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:1467:15)
+      at C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:736:50
+      at responseCallbacks.<computed> (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:603:9)
+      at handleIncomingPacket (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:658:12)
+      at Socket.readFromStdout (C:\Users\aeryt\Documents\TERMINUS\node_modules\esbuild\lib\main.js:581:7)
+      at Socket.emit (node:events:508:28)
+      at addChunk (node:internal/streams/readable:563:12)
+      at readableAddChunkPushByteMode (node:internal/streams/readable:514:3)
+      at Readable.push (node:internal/streams/readable:394:5)
+      at Pipe.onStreamRead (node:internal/stream_base_commons:189:23)
