@@ -64,6 +64,9 @@ export class GroundRenderer {
 
   // Water animation throttle
   private lastWaterUpdateTime = 0;
+  private lightingColor = new THREE.Color(0xffffff);
+  private targetLightingColor = new THREE.Color(0xffffff);
+  private lightingBlend = 1;
 
   constructor() {
     this.group.name = 'GroundGroup';
@@ -182,7 +185,18 @@ export class GroundRenderer {
     this.setupBaseGround(5200);
   }
 
-  public update(_delta: number, time: number) {
+  public update(delta: number, time: number) {
+    // Fade terrain/satellite colour grading continuously with the scene lighting.
+    this.lightingBlend = Math.min(1, this.lightingBlend + Math.max(0, delta) * 0.8);
+    this.lightingColor.lerp(this.targetLightingColor, Math.min(1, Math.max(0, delta) * 0.8));
+    this.groundMaterial.color.copy(this.lightingColor);
+    Object.values(this.landuseMaterials).forEach((material) => {
+      if (material !== this.waterMaterial && material instanceof THREE.MeshStandardMaterial) {
+        material.color.lerp(this.targetLightingColor, Math.min(1, Math.max(0, delta) * 0.8));
+      }
+    });
+    this.waterMaterial.color.lerp(this.targetLightingColor, Math.min(1, Math.max(0, delta) * 0.8));
+
     // Animate water ripples with smooth directional drift on GPU via UV offset
     if (this.waterTexture) {
       this.waterTexture.offset.x = (time * 0.02) % 1;
@@ -262,6 +276,11 @@ export class GroundRenderer {
   /**
    * Toggles satellite imagery overlay on the terrain surface
    */
+  public updateLighting(color: THREE.Color) {
+    this.targetLightingColor.copy(color);
+    this.lightingBlend = 0;
+  }
+
   public async setSatelliteOverlay(active: boolean, center?: GeoPoint, radius?: number) {
     this.isSatelliteActive = active;
     if (center) this.currentCenter = center;

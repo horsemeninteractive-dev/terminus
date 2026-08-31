@@ -22,6 +22,7 @@ import { GameClockState, NoiseEvent, WEAPON_CATALOG, WEAPON_IDS, WeaponItemId } 
 import { SettlementState } from '../types/settlement';
 import { WEATHER_CONDITIONS } from '../services/weatherService';
 import { WeatherType } from '../types/weather';
+import { RESEARCH_TREE_NODES } from '../data/researchTreeData';
 import { TacticalBanner } from './TacticalBanner';
 import { soundService } from '../services/soundService';
 
@@ -146,6 +147,13 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
 
   // Active idle workers (unassigned general population — §4.6)
   const idleWorkers = generalPopulation?.unassigned || 0;
+
+  // Active research project (drives the blue bottom-up fill on the Research button).
+  const activeResearchId = settlement.research?.activeResearchId ?? null;
+  const activeResearchNode = activeResearchId ? RESEARCH_TREE_NODES[activeResearchId] : null;
+  const researchProgressPct = activeResearchNode
+    ? Math.min(100, Math.max(0, ((settlement.research?.activeProgressSec || 0) / activeResearchNode.baseTimeSec) * 100))
+    : 0;
 
   // Resource totals & per-item breakdowns — all read from the real stockpile
   const foodItems = [
@@ -580,11 +588,22 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
             {/* 2. Tech / Research Tree */}
             <button
               onClick={onOpenTechTree || (() => onToggleSidebar('research'))}
-              title="Research Tree & Technology Development"
-              className="w-8 sm:w-9 h-full flex flex-col items-center justify-center border-r border-[#1E293B] hover:bg-[#151D28] text-slate-300 hover:text-white transition-colors"
+              title={activeResearchNode
+                ? `Researching: ${activeResearchNode.name} (${Math.round(researchProgressPct)}%)`
+                : 'Research Tree & Technology Development'}
+              className="relative w-8 sm:w-9 h-full flex flex-col items-center justify-center border-r border-[#1E293B] hover:bg-[#151D28] text-slate-300 hover:text-white transition-colors overflow-hidden"
             >
-              <span className="text-[9px] sm:text-[10px] font-mono font-bold leading-none">{idleWorkers}</span>
-              <FlaskConical className="w-3.5 h-3.5 text-[#CBD5E1] mt-0.5" />
+              {/* Blue bottom-to-top fill revealing research progress */}
+              {activeResearchNode && (
+                <span
+                  className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-[#0369a1] to-[#38bdf8]/70"
+                  style={{ height: `${researchProgressPct}%` }}
+                />
+              )}
+              <span className={`relative z-10 text-[9px] sm:text-[10px] font-mono font-bold leading-none ${activeResearchNode ? 'text-[#7dd3fc]' : ''}`}>
+                {activeResearchNode ? `${Math.round(researchProgressPct)}%` : idleWorkers}
+              </span>
+              <FlaskConical className={`relative z-10 w-3.5 h-3.5 mt-0.5 ${activeResearchNode ? 'text-[#38bdf8]' : 'text-[#CBD5E1]'}`} />
             </button>
 
             {/* 3. Laws & Directives (Greyed out / No-op) */}

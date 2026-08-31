@@ -105,6 +105,24 @@ export class BuildingRenderer {
   public buildingMeshes = new Map<string | number, THREE.Mesh>();
   private buildingData = new Map<string | number, BuildingPolygon>();
   public freestandingMeshes = new Map<string | number, THREE.Mesh>();
+  // Edge <LineSegments> owned by each freestanding structure (tower wireframes),
+  // so a rebuilt structure's old edges can be removed instead of ghosting.
+  private freestandingEdges = new Map<string | number, THREE.Object3D[]>();
+
+  // Completed gates render as a frame + two hinged door panels; this map holds
+  // the swinging door groups plus the gate's fixed pose so a per-frame update()
+  // can ease them open when friendly units approach and closed once they pass.
+  private static readonly GATE_OPEN_ANGLE = 1.85; // ~106° — doors swing well clear
+  private gateAnimations = new Map<
+    string | number,
+    {
+      left: THREE.Group;
+      right: THREE.Group;
+      open: number;
+      rotDeg: number;
+      pos: { x: number; z: number };
+    }
+  >();
 
   private lodSources: {
     geom: THREE.BufferGeometry;
@@ -647,7 +665,7 @@ export class BuildingRenderer {
     }
   }
 
-  private renderFreestandingBuilding(
+  private renderFreestandingBody(
     free: AdaptedBuilding,
     elevation?: ElevationGrid | null,
     exaggeration = 1.0
@@ -668,8 +686,15 @@ export class BuildingRenderer {
       let height = free.height || 4.5;
 
       if (isWall) {
-        width = 10;
-        length = 2.4;
+        // Wall segments run along local Z (length) with a thin cross-section, so
+        // once rotated toward the placement drag they tile end-to-end into one
+        // continuous wall. The stored width/length (set at placement) carry the
+        // exact per-segment run length so consecutive segments butt with no gaps;
+        // fall back to canonical defaults for legacy saves.
+        const storedW = (free as any).width;
+        const storedL = (free as any).length;
+        width = (typeof storedW === 'number' ? storedW : 1.2);
+        length = (typeof storedL === 'number' ? storedL : 10);
         height = typeId === 'fortified_wall' ? 4.2 : typeId === 'brick_wall' ? 3.6 : 3.2;
       } else if (isGate) {
         width = 10;
@@ -772,37 +797,20 @@ export class BuildingRenderer {
       const mesh = new THREE.Mesh(boxGeom, [wallMat, roofMat]);
       const baseY = minElev - 3.0;
       mesh.position.set(free.position.x, baseY, free.position.z);
+      mesh.rotation.y = (free.rotationDeg || 0) * Math.PI / 180;
       mesh.castShadow = true;
       mesh.receiveShadow = true;
 
-      mesh.userData = {
-        buildingId: free.buildingId,
-        type: 'building',
-        isFreestanding: true,
-        baseElevation: centerElev,
-      };
+      // Gates always render as two door panels flanked by two towers (animated
+      // per frame for friendly traffic). Under-construction gates use the same
+      // silhouette with translucent amber materials so the player sees the shape
+      // they're building rather than a plain box.
+      if (isGate) {
+        this.buildGateStructure(free, width, length, height, baseY, centerElev, wallMat, roofMat, isUnderConstruction);
+        return;
+      }
 
-      this.group.add(mesh);
-      this.buildingMeshes.set(free.buildingId, mesh);
-
-      // Store dummy polygon so click inspection works
-      const dummyBldg: BuildingPolygon = {
-        id: free.buildingId,
-        type: 'residential',
-        rawType: 'freestanding',
-        name: free.name,
-        height: height,
-        levels: free.levels || 1,
-        center: free.position,
-        polygon: free.polygon || [
-          { x: free.position.x - width / 2, z: free.position.z - length / 2 },
-          { x: free.position.x + width / 2, z: free.position.z - length / 2 },
-          { x: free.position.x + width / 2, z: free.position.z + length / 2 },
-          { x: free.position.x - width / 2, z: free.position.z + length / 2 },
-        ],
-        tags: { freestanding: 'true', functionalType: free.typeId },
-      };
-      this.buildingData.set(free.buildingId, dummyBldg);
+      this.registerFreestandingBuilding(free, width, length, height, centerElev, mesh);
 
       // Add edge wireframe
       const edgeGeom = new THREE.EdgesGeometry(boxGeom);
@@ -812,11 +820,271 @@ export class BuildingRenderer {
       });
       const edgeLine = new THREE.LineSegments(edgeGeom, edgeMat);
       edgeLine.position.set(free.position.x, baseY, free.position.z);
+      edgeLine.rotation.y = (free.rotationDeg || 0) * Math.PI / 180;
       this.edgeGroup.add(edgeLine);
 
-      // Add marker on roof top
-      const roofY = baseY + totalH;
-      this.createAdaptedMarker(free.position.x, roofY, free.position.z, free.category, isUnderConstruction);
+    } catch (e) {
+      console.warn('Failed rendering freestanding building:', e);
+    }
+  }
+
+  /**
+   * Completed gates are drawn as a header beam, two side posts and two door
+   * panels hinged at the posts. The door groups are stored in gateAnimations so
+   * update() can swing them open/closed; the root group carries the buildingId
+   * userData (propagated to every child mesh) so click inspection still works.
+   */
+  private buildGateStructure(
+    free: AdaptedBuilding,
+    width: number,
+    length: number,
+    height: number,
+    baseY: number,
+    centerElev: number,
+    wallMat: THREE.Material,
+    roofMat: THREE.Material,
+    isUnderConstruction = false
+  ) {
+    const gateGroup = new THREE.Group();
+    gateGroup.position.set(free.position.x, baseY, free.position.z);
+    gateGroup.rotation.y = ((free.rotationDeg || 0) * Math.PI) / 180;
+    gateGroup.castShadow = true;
+    gateGroup.receiveShadow = true;
+
+    const setData = (obj: THREE.Object3D) => {
+      obj.userData = {
+        buildingId: free.buildingId,
+        type: 'building',
+        isFreestanding: true,
+        baseElevation: centerElev,
+      };
+    };
+    setData(gateGroup);
+
+    // Two full-size guard towers flank the gate opening on each side, matching
+    // the scale of player-built watchtowers. They sit OUTSIDE the opening (so the
+    // road gap stays fully passable) and rise above it, bridging the fence line.
+    const towerW = 4.4;
+    const towerD = 4.4;
+    const towerH = free.typeId === 'fortified_gate' ? 9.5 : 8.0;
+    const towerColor = free.typeId === 'wooden_gate' ? 0x78350f : 0x334155;
+    const towerRoofColor = free.typeId === 'wooden_gate' ? 0xca8a04 : 0x475569;
+    const towerMat = new THREE.MeshLambertMaterial({
+      color: towerColor,
+      emissive: isUnderConstruction ? 0x451a03 : 0x100b02,
+      transparent: isUnderConstruction,
+      opacity: isUnderConstruction ? 0.75 : 1.0,
+    });
+    const towerRoofMat = new THREE.MeshLambertMaterial({
+      color: towerRoofColor,
+      emissive: isUnderConstruction ? 0xd97706 : 0x100b02,
+      transparent: isUnderConstruction,
+      opacity: isUnderConstruction ? 0.75 : 1.0,
+    });
+
+    for (const sx of [-1, 1]) {
+      const tower = new THREE.Mesh(new THREE.BoxGeometry(towerW, towerH, towerD), [towerMat, towerRoofMat]);
+      tower.geometry.clearGroups();
+      tower.geometry.addGroup(0, 12, 0);
+      tower.geometry.addGroup(12, 6, 1);
+      tower.geometry.addGroup(18, 6, 0);
+      tower.geometry.addGroup(24, 12, 0);
+      // Centring just outside each side of the opening so the gate stays clear.
+      tower.position.set(sx * (width / 2 + towerW / 2 - 0.2), towerH / 2, 0);
+      tower.castShadow = true;
+      tower.receiveShadow = true;
+      setData(tower);
+      gateGroup.add(tower);
+      // Battlement posts capping each tower.
+      for (const pz of [-1, 1]) {
+        const cap = new THREE.Mesh(new THREE.BoxGeometry(towerW * 0.5, 0.5, towerD * 0.5), towerMat);
+        cap.position.set(sx * (width / 2 + towerW / 2 - 0.2), towerH + 0.25, pz * 0.35);
+        cap.castShadow = true;
+        setData(cap);
+        gateGroup.add(cap);
+      }
+      // Edge wireframe around each tower so the shape is legible at a glance.
+      const towerEdgeGeom = new THREE.EdgesGeometry(new THREE.BoxGeometry(towerW, towerH, towerD));
+      const towerEdgeMat = new THREE.LineBasicMaterial({
+        color: isUnderConstruction ? 0x60a5fa : 0x111317,
+        linewidth: 2,
+      });
+      const towerEdge = new THREE.LineSegments(towerEdgeGeom, towerEdgeMat);
+      towerEdge.position.set(sx * (width / 2 + towerW / 2 - 0.2), towerH / 2, 0);
+      this.edgeGroup.add(towerEdge);
+      const prev = this.freestandingEdges.get(free.buildingId) || [];
+      prev.push(towerEdge);
+      this.freestandingEdges.set(free.buildingId, prev);
+    }
+
+    // A top crossbar bridging the two flanking towers marks the gate's header
+    // and reads as a proper gateway silhouette (instead of a stray strip low over
+    // the opening).
+    const beamMat = new THREE.MeshLambertMaterial({
+      color: isUnderConstruction ? 0xd97706 : 0x92400e,
+      transparent: isUnderConstruction,
+      opacity: isUnderConstruction ? 0.75 : 1.0,
+    });
+    const beamH = 0.5;
+    const beamD = towerD + 0.3;
+    const beam = new THREE.Mesh(new THREE.BoxGeometry(width + towerW * 2 + 0.2, beamH, beamD), beamMat);
+    beam.position.set(0, towerH - beamH / 2, 0);
+    beam.castShadow = true;
+    setData(beam);
+    gateGroup.add(beam);
+    // An overhanging parapet lip on the front of the beam.
+    const lip = new THREE.Mesh(new THREE.BoxGeometry(width + towerW * 2 + 0.2, 0.3, 0.35), beamMat);
+    lip.position.set(0, towerH + 0.25, (towerD + 0.3) / 2 - 0.15);
+    lip.castShadow = true;
+    setData(lip);
+    gateGroup.add(lip);
+
+    // Two tall door panels filling the opening BETWEEN the flanking towers, each
+    // hinged at the inner face of its tower and swinging open perpendicular to
+    // the fence line. Door groups rotate around their origin (the hinge). Doors
+    // rise most of the way to the crossbar so the gap reads as a walled gate.
+    const doorW = width / 2 - 0.12;
+    const doorH = towerH - 0.4;
+    const doorT = 0.28;
+    const hingeX = width / 2 - 0.08;
+    const leftDoor = new THREE.Group();
+    const rightDoor = new THREE.Group();
+    leftDoor.position.set(-hingeX, 0, 0);
+    rightDoor.position.set(hingeX, 0, 0);
+    for (const [side, group] of [
+      [-1, leftDoor],
+      [1, rightDoor],
+    ] as const) {
+      const door = new THREE.Mesh(new THREE.BoxGeometry(doorW, doorH, doorT), wallMat);
+      door.position.set((side * doorW) / 2, doorH / 2, 0);
+      door.castShadow = true;
+      setData(door);
+      group.add(door);
+      gateGroup.add(group);
+    }
+
+    this.registerFreestandingBuilding(free, width, length, height, centerElev, gateGroup);
+    this.gateAnimations.set(free.buildingId, {
+      left: leftDoor,
+      right: rightDoor,
+      open: 0,
+      rotDeg: free.rotationDeg || 0,
+      pos: { x: free.position.x, z: free.position.z },
+    });
+  }
+
+  /** Adds a freestanding structure's root object + clickable building data. */
+  private registerFreestandingBuilding(
+    free: AdaptedBuilding,
+    width: number,
+    length: number,
+    height: number,
+    centerElev: number,
+    root: THREE.Object3D
+  ) {
+    root.userData = {
+      buildingId: free.buildingId,
+      type: 'building',
+      isFreestanding: true,
+      baseElevation: centerElev,
+      constructionStatus: free.constructionStatus,
+    };
+    this.group.add(root);
+    // buildingMeshes is typed as Mesh (material/geometry reads elsewhere); the
+    // gate root is a Group, so cast — three.js treats both as Object3D at runtime.
+    this.buildingMeshes.set(free.buildingId, root as unknown as THREE.Mesh);
+
+    // Store dummy polygon so click inspection works
+    const dummyBldg: BuildingPolygon = {
+      id: free.buildingId,
+      type: 'residential',
+      rawType: 'freestanding',
+      name: free.name,
+      height: height,
+      levels: free.levels || 1,
+      center: free.position,
+      polygon: free.polygon || [
+        { x: free.position.x - width / 2, z: free.position.z - length / 2 },
+        { x: free.position.x + width / 2, z: free.position.z - length / 2 },
+        { x: free.position.x + width / 2, z: free.position.z + length / 2 },
+        { x: free.position.x - width / 2, z: free.position.z + length / 2 },
+      ],
+      tags: { freestanding: 'true', functionalType: free.typeId },
+    };
+    this.buildingData.set(free.buildingId, dummyBldg);
+  }
+
+  /** Removes a freestanding structure's 3D body, edges and bookkeeping. */
+  private destroyFreestandingBody(buildingId: string | number) {
+    const root = this.buildingMeshes.get(buildingId);
+    if (root) {
+      this.group.remove(root);
+      this.buildingMeshes.delete(buildingId);
+      this.buildingData.delete(buildingId);
+      this.freestandingMeshes.delete(buildingId);
+    }
+    const edges = this.freestandingEdges.get(buildingId);
+    if (edges) {
+      for (const e of edges) this.edgeGroup.remove(e);
+      this.freestandingEdges.delete(buildingId);
+    }
+    this.gateAnimations.delete(buildingId);
+  }
+
+  /**
+   * Per-frame gate door animation. Friendly units (squads + vehicles) trigger
+   * the doors open as they approach/traverse; doors ease closed once the area
+   * is clear. Hostile units never open them (they cannot path through anyway).
+   */
+  public update(delta: number, friendlyPositions: { x: number; z: number }[] = []) {
+    if (this.gateAnimations.size === 0 || !this.group.visible) return;
+    for (const anim of this.gateAnimations.values()) {
+      const rad = (anim.rotDeg * Math.PI) / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      let shouldOpen = false;
+      for (const f of friendlyPositions) {
+        const dx = f.x - anim.pos.x;
+        const dz = f.z - anim.pos.z;
+        // World -> gate-local frame (matches getFreestandingCollisionPolygon's
+        // rotation convention: width along local X, length along local Z).
+        const lx = dx * cos - dz * sin;
+        const lz = dx * sin + dz * cos;
+        // Open while a friendly is on/near the opening, with a small margin.
+        if (Math.abs(lx) <= 7 && Math.abs(lz) <= 3.6) {
+          shouldOpen = true;
+          break;
+        }
+      }
+      const target = shouldOpen ? 1 : 0;
+      const rate = shouldOpen ? 2.8 : 1.3; // swing open faster than it closes
+      anim.open += (target - anim.open) * Math.min(1, delta * rate);
+      if (anim.open < 0.002) anim.open = 0;
+      const ang = BuildingRenderer.GATE_OPEN_ANGLE * anim.open;
+      anim.left.rotation.y = ang;
+      anim.right.rotation.y = -ang;
+    }
+  }
+
+  /** Body + roof marker in one call, used during the initial full map build. */
+  private renderFreestandingBuilding(
+    free: AdaptedBuilding,
+    elevation?: ElevationGrid | null,
+    exaggeration = 1.0
+  ) {
+    try {
+      this.renderFreestandingBody(free, elevation, exaggeration);
+      const isUnderConstruction =
+        free.constructionStatus === 'in_progress' || free.constructionStatus === 'planned';
+      const centerElev = sampleElevation(elevation, free.position.x, free.position.z, exaggeration);
+      const roofY = centerElev + (free.height || 4.5) + 3.0;
+      this.createAdaptedMarker(
+        free.position.x,
+        roofY,
+        free.position.z,
+        free.category,
+        isUnderConstruction
+      );
     } catch (e) {
       console.warn('Failed rendering freestanding building:', e);
     }
@@ -1148,6 +1416,7 @@ export class BuildingRenderer {
       if (mesh) {
         mesh.visible = false;
       }
+      this.gateAnimations.delete(demolishedId);
     }
 
     // 5. Rebuild only overlays (HQ beacon & badges)
@@ -1187,11 +1456,28 @@ export class BuildingRenderer {
       }
     }
 
-    // Freestanding building markers
+    // Freestanding buildings: a structure placed after the initial full build has
+    // no box body yet (only the full map render created meshes). Create the 3D
+    // body — with its roof marker — on first sight so newly built towers, gates
+    // and walls actually become visible; just refresh markers for existing ones.
     for (const free of freestandingBuildings) {
       const isUnderConstruction =
         free.constructionStatus === 'in_progress' ||
-        free.constructionStatus === 'planned';
+        free.constructionStatus === 'planned' ||
+        (free.constructionStatus as string) === 'paused';
+      if (!this.buildingMeshes.has(free.buildingId)) {
+        this.renderFreestandingBuilding(free, elevation, exaggeration);
+        continue;
+      }
+      // Rebuild the 3D body when its construction status changes (e.g. the
+      // amber "under construction" gate flips to completed). The body carries
+      // its status in userData so we only re-create it on an actual transition.
+      const existingStatus = (this.buildingMeshes.get(free.buildingId) as any)?.userData?.constructionStatus;
+      if (existingStatus !== free.constructionStatus) {
+        this.destroyFreestandingBody(free.buildingId);
+        this.renderFreestandingBuilding(free, elevation, exaggeration);
+        continue;
+      }
       const centerElev = sampleElevation(elevation, free.position.x, free.position.z, exaggeration);
       const topY = centerElev + (free.height || 6);
       this.createAdaptedMarker(
@@ -1325,6 +1611,8 @@ export class BuildingRenderer {
     this.buildingMeshes.clear();
     this.buildingData.clear();
     this.freestandingMeshes.clear();
+    this.freestandingEdges.clear();
+    this.gateAnimations.clear();
 
     // Clear LOD sources + merged LOD meshes
     this.lodSources = [];

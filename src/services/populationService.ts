@@ -1,4 +1,5 @@
 import { BuildingPolygon } from '../types/map';
+import { PathGrid, stepAlongPath } from './pathfindingService';
 import {
   CitizenBreakdownStats,
   ChildCitizen,
@@ -957,7 +958,7 @@ export function createSquad(
     status: 'idle',
     inventory: [],
     currentWeightKg: 0,
-    maxWeightKg: (1 + clampedGeneral) * 25,
+    maxWeightKg: 1 + clampedGeneral,
     createdAt: Date.now(),
   };
 
@@ -979,7 +980,7 @@ export function createSquad(
     ...cleanedState,
     namedSurvivors: updatedSurvivors,
     squads: [...cleanedState.squads, newSquad],
-    squadInventories: { ...(cleanedState.squadInventories || {}), [newSquad.id]: { capacity: 30, used: 0, items: [] } },
+    squadInventories: { ...(cleanedState.squadInventories || {}), [newSquad.id]: { capacity: 1 + clampedGeneral, used: 0, items: [] } },
   };
 
   return {
@@ -1160,7 +1161,8 @@ export interface CompletedDeconstruction {
  */
 export function tickSettlementSimulation(
   state: SettlementState,
-  deltaSeconds: number
+  deltaSeconds: number,
+  grid?: PathGrid | null
 ): {
   newState: SettlementState;
   completedConstructions: string[];
@@ -1190,18 +1192,18 @@ export function tickSettlementSimulation(
     }
 
     if (order.state === 'traveling') {
-      const dx = order.targetPosition.x - order.position.x;
-      const dz = order.targetPosition.z - order.position.z;
-      const dist = Math.hypot(dx, dz);
-      const moveSpeed = 6.0; // Match tactical squad travel speed
-      const step = moveSpeed * deltaSeconds;
-
-      if (dist <= 2.5 || step >= dist) {
+      // Construction crews path around obstacles (walls, towers, buildings)
+      // instead of walking a straight line through new construction.
+      const stepRes = stepAlongPath(
+        grid, order.pathState, order.position.x, order.position.z,
+        order.targetPosition.x, order.targetPosition.z, 6.0, deltaSeconds, 2.5
+      );
+      order.position.x = stepRes.x;
+      order.position.z = stepRes.z;
+      order.pathState = stepRes.state;
+      if (stepRes.arrived) {
         order.position = { ...order.targetPosition };
         order.state = 'constructing';
-      } else {
-        order.position.x += (dx / dist) * step;
-        order.position.z += (dz / dist) * step;
       }
       updatedOrders.push(order);
     } else if (order.state === 'constructing' || order.state === 'paused_materials') {
@@ -1266,17 +1268,17 @@ export function tickSettlementSimulation(
       }
       updatedOrders.push(order);
     } else if (order.state === 'returning') {
-      const dx = hqCenter.x - order.position.x;
-      const dz = hqCenter.z - order.position.z;
-      const dist = Math.hypot(dx, dz);
-      const moveSpeed = 6.0;
-      const step = moveSpeed * deltaSeconds;
-
-      if (dist <= 3.0 || step >= dist) {
+      // Crew walks back to HQ around any player-built obstacles.
+      const stepRes = stepAlongPath(
+        grid, order.pathState, order.position.x, order.position.z,
+        hqCenter.x, hqCenter.z, 6.0, deltaSeconds, 3.0
+      );
+      order.position.x = stepRes.x;
+      order.position.z = stepRes.z;
+      order.pathState = stepRes.state;
+      if (stepRes.arrived) {
         // Returned to HQ, construction mission completed!
       } else {
-        order.position.x += (dx / dist) * step;
-        order.position.z += (dz / dist) * step;
         updatedOrders.push(order);
       }
     }

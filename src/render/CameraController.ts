@@ -86,11 +86,18 @@ export class CameraController {
     window.removeEventListener('keyup', this.onKeyUp);
   }
 
+  // While a freestanding blue-print placement gesture is capturing the drag
+  // (wall run / tower rotate), the camera must not pan or orbit with it.
+  public placementActive = false;
+
   private onPointerDown = (e: PointerEvent) => {
     this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
     // Stop existing pan inertia on new touch/click
     this.panVelocity.set(0, 0, 0);
+
+    // A placement gesture owns the drag: don't start any camera pan/orbit.
+    if (this.placementActive) return;
 
     if (this.activePointers.size === 1) {
       this.lastMouseX = e.clientX;
@@ -135,6 +142,9 @@ export class CameraController {
 
   private onPointerMove = (e: PointerEvent) => {
     if (!this.activePointers.has(e.pointerId)) return;
+    // A placement gesture owns the drag; don't pan/orbit even if we captured the
+    // initial pointerdown before the placement flag was flipped on.
+    if (this.placementActive) return;
     this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
     // Handle Two-Finger Pinch, Twist & Pan Gesture

@@ -504,7 +504,8 @@ export function buildFreestanding(
   position: Point2D,
   customWidth = 8,
   customLength = 8,
-  customHeight = 4.5
+  customHeight = 4.5,
+  rotationDeg = 0
 ): { success: boolean; newState: SettlementState; error?: string } {
   const def = FUNCTIONAL_BUILDING_DEFINITIONS[typeId];
   if (!def) {
@@ -562,6 +563,9 @@ export function buildFreestanding(
     height: customHeight,
     levels: 1,
     polygon: dummyBldg.polygon,
+    width: customWidth,
+    length: customLength,
+    rotationDeg,
     constructionStatus: 'in_progress',
     constructionProgress: 0,
     constructionWorkRequired: 140,

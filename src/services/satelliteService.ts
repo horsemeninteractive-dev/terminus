@@ -34,10 +34,10 @@ export async function loadSatelliteTexture(
   const cached = satelliteCache.get(cacheKey);
   if (cached) return cached;
 
-  // Scale canvas resolution with the terrain extent so 8km maps stay sharp:
-  // 2048px for small maps up to 4096px for 8km maps (~2.1m per pixel instead
-  // of ~4m). Capped at 4096 to keep the GPU texture at ~64MB.
-  const canvasSize = Math.min(4096, Math.max(2048, Math.round(terrainSizeMeters * 0.5)));
+  // Render at four times the previous pixel density. The 8 km tactical maps
+  // therefore use an 8192² canvas instead of 4096² (~1 m/px instead of ~2 m/px).
+  // Keep a high floor for smaller sectors while capping memory deliberately.
+  const canvasSize = Math.min(8192, Math.max(4096, Math.round(terrainSizeMeters)));
   const canvas = document.createElement('canvas');
   canvas.width = canvasSize;
   canvas.height = canvasSize;
@@ -196,7 +196,7 @@ export async function loadSatelliteTexture(
   texture.generateMipmaps = true;
   texture.minFilter = THREE.LinearMipmapLinearFilter;
   texture.magFilter = THREE.LinearFilter;
-  texture.anisotropy = 8;
+  texture.anisotropy = 16;
   texture.needsUpdate = true;
 
   satelliteCache.set(cacheKey, texture);

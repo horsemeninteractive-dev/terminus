@@ -117,6 +117,8 @@ export class FogOfWarRenderer {
   private strataMeshes: THREE.Mesh[] = [];
   private lastLightingHour: number | null = null;
   private lightingTransition = 1;
+  private fogTarget = new THREE.Color(0xffffff);
+  private exploredTarget = new THREE.Color(0xffffff);
   private strataMaterials: THREE.ShaderMaterial[] = [];
 
   // World bounds
@@ -511,20 +513,26 @@ export class FogOfWarRenderer {
         // Moonlit silver-blue cloud shroud (ground mist is darker, upper cloud catches moonlight)
         const shroudCol = new THREE.Color(0x607898).lerp(new THREE.Color(0x829ec0), altRatio);
         const exploredCol = new THREE.Color(0x384a5e).lerp(new THREE.Color(0x4c627a), altRatio);
-        mat.uniforms.uFogColor.value.copy(shroudCol);
-        mat.uniforms.uFogColorExplored.value.copy(exploredCol);
+        this.fogTarget.copy(shroudCol);
+        this.exploredTarget.copy(exploredCol);
+        mat.uniforms.uFogColor.value.lerp(this.fogTarget, 0.08);
+        mat.uniforms.uFogColorExplored.value.lerp(this.exploredTarget, 0.08);
       } else if (isDuskDawn) {
         // Golden twilight amber haze
         const shroudCol = new THREE.Color(0xd4b4a0).lerp(new THREE.Color(0xf0d0be), altRatio);
         const exploredCol = new THREE.Color(0xa68c7c).lerp(new THREE.Color(0xc2a694), altRatio);
-        mat.uniforms.uFogColor.value.copy(shroudCol);
-        mat.uniforms.uFogColorExplored.value.copy(exploredCol);
+        this.fogTarget.copy(shroudCol);
+        this.exploredTarget.copy(exploredCol);
+        mat.uniforms.uFogColor.value.lerp(this.fogTarget, 0.08);
+        mat.uniforms.uFogColorExplored.value.lerp(this.exploredTarget, 0.08);
       } else {
         // Day - crisp, luminous silvery-white atmospheric cloud field
         const shroudCol = new THREE.Color(config.baseColorHex);
         const exploredCol = new THREE.Color(config.exploredColorHex);
-        mat.uniforms.uFogColor.value.copy(shroudCol);
-        mat.uniforms.uFogColorExplored.value.copy(exploredCol);
+        this.fogTarget.copy(shroudCol);
+        this.exploredTarget.copy(exploredCol);
+        mat.uniforms.uFogColor.value.lerp(this.fogTarget, 0.08);
+        mat.uniforms.uFogColorExplored.value.lerp(this.exploredTarget, 0.08);
       }
     });
   }

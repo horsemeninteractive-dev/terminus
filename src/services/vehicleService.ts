@@ -1,6 +1,6 @@
 import { BuildingPolygon, MapData, Point2D, RoadSegment } from '../types/map';
-import { StatTier } from '../types/population';
-import { SettlementState } from '../types/settlement';
+import { SquadLootItem, StatTier } from '../types/population';
+import { AdaptedBuilding, SettlementState } from '../types/settlement';
 import {
   ScavengeFuelLoot,
   VEHICLE_DEFINITIONS,
@@ -11,6 +11,10 @@ import {
 import { CombatVisualFx, NoiseEvent, TacticalSquadUnit, ZombieUnit } from '../types/combat';
 import { emitNoiseEvent } from './combatService';
 import { RoadNetworkGraph } from './roadPathfinder';
+import {
+  getFreestandingCollisionPolygon,
+  isFreestandingGate,
+} from './freestandingFootprint';
 
 // ==========================================
 // 1. Procedural World Vehicle Spawner (§8)
@@ -181,6 +185,36 @@ export function createWorldVehicleInstance(
     isParkedAtHQ: false,
     totalDistanceDriven: 0,
     killCount: 0,
+    inventory: [],
+  };
+}
+
+// ==========================================
+// 2b. Vehicle Cargo Bay (shared mounted-squad storage)
+// ==========================================
+
+/** Number of physical loot slots in a vehicle's cargo bay. */
+export function getVehicleInventoryCapacity(vehicle: WorldVehicle): number {
+  return VEHICLE_DEFINITIONS[vehicle.type]?.inventoryCapacity || 0;
+}
+
+/**
+ * Moves carried loot from a squad into the vehicle's cargo bay, up to capacity.
+ * Returns the updated vehicle and any items that did not fit (the squad keeps
+ * those in its backpack).
+ */
+export function depositItemsIntoVehicle(
+  vehicle: WorldVehicle,
+  items: SquadLootItem[]
+): { vehicle: WorldVehicle; overflow: SquadLootItem[] } {
+  const bay = vehicle.inventory || [];
+  const capacity = getVehicleInventoryCapacity(vehicle);
+  const room = Math.max(0, capacity - bay.length);
+  const transferred = items.slice(0, room);
+  const overflow = items.slice(room);
+  return {
+    vehicle: { ...vehicle, inventory: [...bay, ...transferred] },
+    overflow,
   };
 }
 
@@ -346,6 +380,11 @@ export function dismountSquadFromVehicle(
     assignedSquadName: undefined,
     isMoving: false,
     roadPathWaypoints: [],
+    currentWaypointIndex: 0,
+    targetPos: null,
+    autoDepotReturn: false,
+    autoScavengeBuildingId: null,
+    autoScavengeBuildingName: null,
   };
 
   // Place squad just to the side of the vehicle
@@ -353,10 +392,18 @@ export function dismountSquadFromVehicle(
   const updatedSquad: TacticalSquadUnit = {
     ...squad,
     mountedVehicleId: undefined,
+    // Fully sever the vehicle link so the squad is a clean on-foot unit: a stale
+    // assignedVehicleId / pendingMount / manualOrder would otherwise make the next
+    // move order (or a low-fuel vehicle) swallow the squad's on-foot movement.
+    assignedVehicleId: null,
+    pendingMountVehicleId: null,
+    manualOrder: false,
     x: vehicle.position.x + Math.cos(sideAngle) * 2.5,
     z: vehicle.position.z + Math.sin(sideAngle) * 2.5,
     state: 'idle',
     targetPos: null,
+    targetBuildingId: null,
+    targetBuildingName: null,
   };
 
   return { updatedVehicle, updatedSquad };
@@ -365,14 +412,16 @@ export function dismountSquadFromVehicle(
 export function orderVehicleRoadTravel(
   vehicle: WorldVehicle,
   targetPos: Point2D,
-  roadGraph: RoadNetworkGraph
+  roadGraph: RoadNetworkGraph,
+  blockedPolys?: Point2D[][]
 ): WorldVehicle {
   if (vehicle.currentFuel <= 0) {
     return vehicle;
   }
 
-  // Calculate route along real OSM road network
-  const route = roadGraph.findRoute(vehicle.position, targetPos);
+  // Calculate route along real OSM road network, avoiding road edges that cross
+  // player-built wall/tower footprints when provided.
+  const route = roadGraph.findRoute(vehicle.position, targetPos, blockedPolys);
   // Keep the final road approach outside the destination footprint. The road
   // graph supplies the route; the simulation validates every step against map
   // obstacles before accepting movement.
@@ -400,10 +449,20 @@ function isPointInsidePolygon(point: Point2D, polygon: Point2D[]): boolean {
   return inside;
 }
 
-function isBlockedByMap(point: Point2D, mapData?: MapData): boolean {
+function isBlockedByMap(
+  point: Point2D,
+  mapData?: MapData,
+  freestandingPolys?: Point2D[][]
+): boolean {
   if (!mapData) return false;
   if ((mapData.landuse || []).some((l) => l.type === 'water' && isPointInsidePolygon(point, l.polygon))) return true;
-  return mapData.buildings.some((b) => b.polygon?.length >= 3 && isPointInsidePolygon(point, b.polygon));
+  if (mapData.buildings.some((b) => b.polygon?.length >= 3 && isPointInsidePolygon(point, b.polygon))) return true;
+  if (freestandingPolys) {
+    for (const poly of freestandingPolys) {
+      if (poly.length >= 3 && isPointInsidePolygon(point, poly)) return true;
+    }
+  }
+  return false;
 }
 
 export interface VehicleTickResult {
@@ -421,11 +480,20 @@ export function updateVehiclesTick(
   zombies: ZombieUnit[],
   effectiveDeltaSec: number,
   now: number,
-  mapData?: MapData
+  mapData?: MapData,
+  roadGraph?: RoadNetworkGraph | null,
+  freestandingBuildings?: AdaptedBuilding[],
+  freestandingRevision = 0
 ): VehicleTickResult {
   const visualFx: CombatVisualFx[] = [];
   const noiseEvents: NoiseEvent[] = [];
   const notifications: Array<{ title: string; desc: string; type: 'info' | 'warn' }> = [];
+
+  // Precompute player-built wall/tower footprints once per tick so vehicles can
+  // never drive through new construction. Gates stay open.
+  const freestandingPolys: Point2D[][] = (freestandingBuildings || [])
+    .filter((f) => !isFreestandingGate(f.typeId))
+    .map((f) => getFreestandingCollisionPolygon(f));
 
   const squadsMap = new Map<string, TacticalSquadUnit>(squads.map((s) => [s.squadId, { ...s }]));
   const zombiesList = zombies.map((z) => ({ ...z }));
@@ -474,6 +542,36 @@ export function updateVehiclesTick(
     // 1. Check if mounted squad exists
     const mountedSquad = current.assignedSquadId ? squadsMap.get(current.assignedSquadId) : null;
 
+    // Invalidate a stale route: if freestanding walls/towers/gates were placed
+    // or removed since this route was computed, drop the cached waypoints and
+    // re-route so the vehicle immediately goes around new construction instead
+    // of driving into it and stalling at the contact check. A route with no
+    // recorded revision (freshly ordered) is considered stale once so its very
+    // first tick is computed against the current obstacle layout.
+    if (
+      current.isMoving &&
+      current.roadPathWaypoints.length > 0 &&
+      current.currentFuel > 0 &&
+      current.routeRevision !== freestandingRevision
+    ) {
+      const stalled = {
+        ...current,
+        isMoving: false,
+        roadPathWaypoints: [],
+        currentWaypointIndex: 0,
+      };
+      // Stamp the revision regardless of whether a re-route is possible, so we
+      // don't re-evaluate the same stale route every tick; a future obstacle
+      // change bumps the revision again and triggers a fresh check.
+      current = { ...stalled, routeRevision: freestandingRevision };
+      if (roadGraph && stalled.targetPos && freestandingPolys.length > 0) {
+        const rerouted = orderVehicleRoadTravel(stalled, stalled.targetPos, roadGraph, freestandingPolys);
+        if (rerouted.isMoving && rerouted.roadPathWaypoints.length > 0) {
+          current = { ...rerouted, routeRevision: freestandingRevision };
+        }
+      }
+    }
+
     // 2. Road Navigation & Fuel Consumption
     if (current.isMoving && current.roadPathWaypoints.length > 0 && current.currentFuel > 0) {
       const targetWp = current.roadPathWaypoints[current.currentWaypointIndex];
@@ -489,9 +587,24 @@ export function updateVehiclesTick(
 
           const newX = current.position.x + dx * moveFraction;
           const newZ = current.position.z + dz * moveFraction;
-          // Never allow a vehicle footprint to enter buildings or water. If a
-          // malformed/legacy road route does, stop before the blocked segment.
-          if (isBlockedByMap({ x: newX, z: newZ }, mapData)) {
+          // Never allow a vehicle footprint to enter buildings or water. Instead
+          // of dead-stopping on a malformed/legacy route, re-route from the
+          // current position toward the original destination so the vehicle finds
+          // a drivable path around the obstruction.
+          if (isBlockedByMap({ x: newX, z: newZ }, mapData, freestandingPolys)) {
+            if (roadGraph && current.targetPos && current.currentFuel > 0) {
+              const stalled = {
+                ...current,
+                isMoving: false,
+                roadPathWaypoints: [],
+                currentWaypointIndex: 0,
+              };
+              const reroute = orderVehicleRoadTravel(stalled, current.targetPos, roadGraph, freestandingPolys);
+              if (reroute.isMoving && reroute.roadPathWaypoints.length > 0) {
+                current = reroute;
+                return current;
+              }
+            }
             current.isMoving = false;
             current.targetPos = null;
             current.roadPathWaypoints = [];

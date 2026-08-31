@@ -18,6 +18,7 @@ import {
   WeaponItemId,
   ZombieUnit,
   ZombieVariant,
+  pickSurvivorFaceUrl,
 } from '../types/combat';
 import { AdaptedBuilding, SettlementState } from '../types/settlement';
 import { isResearchUnlocked } from './researchService';
@@ -218,6 +219,7 @@ export function buildSquadMembers(
     {
       id: `${squadId}_leader`,
       name: leaderName,
+      faceUrl: pickSurvivorFaceUrl(),
       isLeader: true,
       maxHp: 100,
       currentHp: 100,
@@ -230,6 +232,7 @@ export function buildSquadMembers(
     members.push({
       id: `${squadId}_member_${i}`,
       name: `Recruit ${i + 1}`,
+      faceUrl: pickSurvivorFaceUrl(),
       isLeader: false,
       maxHp: 50,
       currentHp: 50,
@@ -352,7 +355,7 @@ export function createTacticalSquadUnit(
     members,
     inventory: [],
     currentWeightKg: 0,
-    maxWeightKg: (1 + generalCount) * 25,
+    maxWeightKg: 1 + generalCount,
   };
 
   return recomputeSquadHealth(recomputeSquadStats(base));
@@ -565,10 +568,10 @@ export function tickCombatSimulation(
   );
 
   // Active Research Checks (§10)
-  const hasFloodlightTech = settlement ? isResearchUnlocked(settlement, 'defense_floodlight') : false;
-  const hasTurretsTech = settlement ? isResearchUnlocked(settlement, 'defense_automated_turrets') : false;
-  const hasSandbagTech = settlement ? isResearchUnlocked(settlement, 'defense_sandbag_fortifications') : false;
-  const hasBastionTech = settlement ? isResearchUnlocked(settlement, 'defense_bastions') : false;
+  const hasFloodlightTech = settlement ? isResearchUnlocked(settlement, 'long_range_antenna') : false;
+  const hasTurretsTech = settlement ? isResearchUnlocked(settlement, 'precision_machinery') : false;
+  const hasSandbagTech = settlement ? isResearchUnlocked(settlement, 'advanced_masonry') : false;
+  const hasBastionTech = settlement ? isResearchUnlocked(settlement, 'structural_bracing') : false;
 
   // Collect active floodlight emitters at night (§6.1, §10 Light Deterrent Mechanic)
   const lightEmitters: { x: number; z: number; radius: number; label: string }[] = [];
@@ -1215,7 +1218,10 @@ export function tickCombatSimulation(
           targetPos.z,
           currentSpeed,
           effectiveDelta,
-          1.2
+          1.2,
+          // The infected cannot pass through gates, and walls are never
+          // traversable for them — a fenced perimeter genuinely keeps them out.
+          { gatesOpen: false, wallsImpassable: true }
         );
         x = step.x;
         z = step.z;
@@ -1260,7 +1266,7 @@ export function tickCombatSimulation(
         return { ...human, state: 'dead' as const };
       }
 
-      let { x, z, rotation, state, targetSquadId, lastAttackTime } = human;
+      let { x, z, rotation, state, targetSquadId, lastAttackTime, pathState } = human;
 
       // Closest living squad
       let targetSquad: TacticalSquadUnit | null = null;
@@ -1343,33 +1349,54 @@ export function tickCombatSimulation(
             }
           }
         } else {
-          // Close to weapon range
-          const dx = targetSquad.x - x;
-          const dz = targetSquad.z - z;
-          const dist = Math.hypot(dx, dz);
-          const step = Math.min(dist, human.speed * effectiveDelta);
-          x += (dx / dist) * step;
-          z += (dz / dist) * step;
-          state = 'moving';
+          // Close to weapon range — route around walls/fences and buildings.
+          // Rival defenders, like the infected, cannot pass through gates.
+          const stepRes = stepAlongPath(
+            pathGrid,
+            pathState,
+            x,
+            z,
+            targetSquad.x,
+            targetSquad.z,
+            human.speed,
+            effectiveDelta,
+            2.0,
+            { gatesOpen: false, wallsImpassable: true }
+          );
+          x = stepRes.x;
+          z = stepRes.z;
+          rotation = stepRes.rotation;
+          pathState = stepRes.state;
+          state = stepRes.arrived ? 'combat' : 'moving';
         }
       } else {
         targetSquadId = null;
-        // Return to guard anchor when no squad is near
+        // Return to guard anchor when no squad is near — also routed.
         const homeDist = Math.hypot(human.homeX - x, human.homeZ - z);
         if (homeDist > 24) {
-          const dx = human.homeX - x;
-          const dz = human.homeZ - z;
-          const dist = Math.hypot(dx, dz);
-          const step = Math.min(dist, human.speed * effectiveDelta);
-          x += (dx / dist) * step;
-          z += (dz / dist) * step;
-          state = 'moving';
+          const stepRes = stepAlongPath(
+            pathGrid,
+            pathState,
+            x,
+            z,
+            human.homeX,
+            human.homeZ,
+            human.speed,
+            effectiveDelta,
+            2.0,
+            { gatesOpen: false, wallsImpassable: true }
+          );
+          x = stepRes.x;
+          z = stepRes.z;
+          rotation = stepRes.rotation;
+          pathState = stepRes.state;
+          state = stepRes.arrived ? 'guarding' : 'moving';
         } else {
           state = 'guarding';
         }
       }
 
-      return { ...human, x, z, rotation, state, targetSquadId, lastAttackTime };
+      return { ...human, x, z, rotation, state, targetSquadId, lastAttackTime, pathState };
     })
     .filter((h) => h.state !== 'dead');
 
@@ -1803,6 +1830,9 @@ export function syncTacticalSquadUnits(
               weaponId: prev.weaponId,
               armorId: prev.armorId,
               isAlive: prev.isAlive,
+              // Newly-generated members carry a fresh random face; existing members
+              // keep the portrait assigned when the squad was first created.
+              faceUrl: prev.faceUrl || d.faceUrl,
             }
           : d;
       });

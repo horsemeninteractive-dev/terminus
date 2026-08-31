@@ -40,7 +40,7 @@ export class PositionSmoother {
   // Keep a short render buffer behind the most recent simulation sample. This
   // avoids reaching the target early and then visibly holding until the next
   // tick when browser scheduling jitters by a few milliseconds.
-  private renderDelayMs = 18;
+  private renderDelayMs = 8;
 
   /** Set the interpolation window length in milliseconds. */
   setTickWindow(ms: number) {

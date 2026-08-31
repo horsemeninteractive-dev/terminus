@@ -1,5 +1,6 @@
 import { StatTier } from './population';
 import { LootItem } from './loot';
+import { Point2D } from './map';
 
 // ==========================================
 // 1. In-Game Real-Time Clock & Day/Night Lore (§6.1)
@@ -109,6 +110,7 @@ export interface TacticalSquadUnit {
   assignedVehicleId?: string | null; // linked expedition vehicle for auto-scavenge returns
   vehicleId?: string | null;
   pendingMountVehicleId?: string | null; // vehicle unit they are moving to board
+  depositVehicleId?: string | null; // dismounted to deposit BOTH squad + this vehicle's cargo bay
   pathState?: any; // A* PathState cache
   members: SquadMemberUnit[]; // per-unit roster: leader first, then general recruits
   inventory: LootItem[];
@@ -237,10 +239,53 @@ export const ARMOR_CATALOG: Record<ArmorItemId, ArmorItemDef> = {
 
 export const ARMOR_IDS: ArmorItemId[] = Object.keys(ARMOR_CATALOG) as ArmorItemId[];
 
+// ==========================================
+// Squad member face portraits (§4.3)
+// A shared catalog of survivor face shots. Each member is assigned one at
+// creation so that every squad displays a varied, stable roster of faces.
+// ==========================================
+export const SURVIVOR_FACE_URLS: string[] = [
+  'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80',
+  'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80',
+  'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+  'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150&auto=format&fit=crop&q=80',
+  'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80',
+  'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=150&auto=format&fit=crop&q=80',
+  'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=150&auto=format&fit=crop&q=80',
+  'https://images.unsplash.com/photo-1508214751196-bcfd4ca60f91?w=150&auto=format&fit=crop&q=80',
+  'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=80',
+  'https://images.unsplash.com/photo-1521119989659-a83eee488004?w=150&auto=format&fit=crop&q=80',
+  'https://images.unsplash.com/photo-1547425260-76bcadfb4f2c?w=150&auto=format&fit=crop&q=80',
+  'https://images.unsplash.com/photo-1488426862026-3ee34a7d66df?w=150&auto=format&fit=crop&q=80',
+];
+
+/** Returns a random face from the survivor face catalog. */
+export function pickSurvivorFaceUrl(): string {
+  return SURVIVOR_FACE_URLS[Math.floor(Math.random() * SURVIVOR_FACE_URLS.length)];
+}
+
+/**
+ * Resolves the face for a member: their assigned face if present, otherwise a
+ * stable hash-derived face so members created before faces existed still get a
+ * consistent portrait rather than a random one each render.
+ */
+export function faceUrlForMember(member: SquadMemberUnit): string {
+  if (member.faceUrl) return member.faceUrl;
+  // Stable string hash -> deterministic face index.
+  let hash = 0;
+  const key = member.survivorId || member.id || member.name || 'unknown';
+  for (let i = 0; i < key.length; i++) {
+    hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  }
+  return SURVIVOR_FACE_URLS[hash % SURVIVOR_FACE_URLS.length];
+}
+
 export interface SquadMemberUnit {
   id: string;
   survivorId?: string;
   name: string;
+  /** Portrait URL assigned randomly at squad creation (§4.3). */
+  faceUrl?: string;
   isLeader: boolean;
   maxHp: number;
   currentHp: number;
@@ -289,6 +334,10 @@ export interface HostileHumanUnit {
   weaponId: WeaponItemId;
   homeX: number; // guard anchor (their hideout)
   homeZ: number;
+  // Cached A* route (see PathState in pathfindingService) so defenders route
+  // around player-built walls/fences and buildings instead of walking through
+  // them in a straight line.
+  pathState?: { path: Point2D[]; index: number; goalKey: string } | null;
 }
 
 // ==========================================

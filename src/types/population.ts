@@ -106,7 +106,9 @@ export interface SquadLootItem {
 }
 
 export interface SquadInventory {
+  /** Number of physical carried-item slots, normally one per living squad member. */
   capacity: number;
+  /** Number of occupied physical slots; item quantities do not increase this value. */
   used: number;
   items: SquadLootItem[];
 }

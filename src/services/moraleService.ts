@@ -41,7 +41,7 @@ export function createInitialMoraleState(): SettlementMoraleState {
       passiveGrowthMultiplier: 1.0,
     },
     passiveGrowth: createInitialPassiveGrowthState(),
-    dailyFoodConsumption: 12,
+    dailyFoodConsumption: 6,
     daysOfFoodRemaining: 9.2,
     dailyWaterConsumption: 18,
     daysOfWaterRemaining: 6.7,
@@ -60,8 +60,8 @@ export function calculateSettlementMorale(
   const totalPop = Math.max(1, (settlement.namedSurvivors?.length || 0) + (typeof settlement.generalPopulation === 'number' ? settlement.generalPopulation : (settlement.generalPopulation?.total || 0)));
   const stockpile = settlement.stockpile;
 
-  // Daily Consumption Rates (1 food unit per pop/day, 1.5 water per pop/day)
-  const dailyFoodConsumption = Math.round(totalPop * 1.0 * 10) / 10;
+  // Daily consumption: each citizen consumes 0.5 food per in-game day.
+  const dailyFoodConsumption = Math.round(totalPop * 0.5 * 10) / 10;
   const dailyWaterConsumption = Math.round(totalPop * 1.5 * 10) / 10;
 
   const totalFood =
@@ -605,7 +605,7 @@ export function tickMoraleAndGrowthSimulation(
   // 1. Consume food and water based on time elapsed
   let currentStock = { ...settlement.stockpile };
   const totalPop = Math.max(1, (settlement.namedSurvivors?.length || 0) + (typeof settlement.generalPopulation === 'number' ? settlement.generalPopulation : (settlement.generalPopulation?.total || 0)));
-  const foodToConsume = totalPop * 1.0 * fractionOfDay;
+  const foodToConsume = totalPop * 0.5 * fractionOfDay;
   const waterToConsume = totalPop * 1.5 * fractionOfDay;
 
   // Deduct food: consume fresh harvest first, then dried, then canned, then MREs

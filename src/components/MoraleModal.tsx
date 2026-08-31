@@ -58,7 +58,7 @@ export const MoraleModal: React.FC<MoraleModalProps> = ({
  totalBirthsAndArrivals: 0,
  estimatedDaysRemaining: 3.2,
  },
- dailyFoodConsumption: 12,
+ dailyFoodConsumption: 6,
  daysOfFoodRemaining: 8,
  dailyWaterConsumption: 18,
  daysOfWaterRemaining: 7,

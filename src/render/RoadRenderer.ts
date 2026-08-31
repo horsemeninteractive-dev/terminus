@@ -729,7 +729,7 @@ export class RoadRenderer {
     for (const road of namedRoads) {
       const rawName = road.name?.trim() || '';
       if (!rawName) continue;
-      const normName = rawName.toUpperCase();
+      const normName = this.decodeStreetName(rawName).toLocaleUpperCase();
 
       const isPedestrian = [
         'pedestrian',
@@ -881,12 +881,14 @@ export class RoadRenderer {
           const leftY = sampleElevation(elevation, leftX, leftZ, exaggeration) + yOffset;
           const rightY = sampleElevation(elevation, rightX, rightZ, exaggeration) + yOffset;
 
-          // 0: Left vertex (bottom of text, v=1), 1: Right vertex (top of text, v=0)
+          // The canvas texture is drawn upright in screen space. On this ground
+          // ribbon, the cross-track axis is the texture's vertical axis; use the
+          // opposite UV order so labels are not rendered upside down.
           vertices.push(leftX, leftY, leftZ);
-          uvs.push(u, 1.0);
+          uvs.push(u, 0.0);
 
           vertices.push(rightX, rightY, rightZ);
-          uvs.push(u, 0.0);
+          uvs.push(u, 1.0);
 
           if (i < samplePts.length - 1) {
             const tl = i * 2;
@@ -923,6 +925,16 @@ export class RoadRenderer {
 
         placedLabels.push({ x: midPt.x, z: midPt.z, name: normName });
       }
+    }
+  }
+
+  private decodeStreetName(value: string): string {
+    try {
+      if (!/[ÃÂâ€™â€œâ€\u009d]/.test(value)) return value;
+      const bytes = Uint8Array.from(value, (char) => char.charCodeAt(0) & 0xff);
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch {
+      return value;
     }
   }
 

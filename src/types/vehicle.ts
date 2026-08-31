@@ -1,4 +1,5 @@
 import { Point2D } from './map';
+import { SquadLootItem } from './population';
 
 // ==========================================
 // 1. Vehicle Archetypes & Classifications (§8)
@@ -21,6 +22,7 @@ export interface VehicleDefinition {
   speedMps: number; // Speed in meters/sec on road (14 - 22 m/s)
   cargoBonus: number; // Hauling / loot capacity bonus
   crewCapacity: number; // max squad size (4)
+  inventoryCapacity: number; // number of physical loot slots in the cargo bay
   hasMountedTurret: boolean;
   turretDamage?: number;
   turretFireRate?: number;
@@ -42,6 +44,7 @@ export const VEHICLE_DEFINITIONS: Record<VehicleType, VehicleDefinition> = {
     speedMps: 18.0, // ~65 km/h
     cargoBonus: 25,
     crewCapacity: 4,
+    inventoryCapacity: 12,
     hasMountedTurret: false,
     repairMetalCost: 20,
     soundRadius: 35,
@@ -57,6 +60,7 @@ export const VEHICLE_DEFINITIONS: Record<VehicleType, VehicleDefinition> = {
     speedMps: 14.5, // ~52 km/h
     cargoBonus: 50,
     crewCapacity: 4,
+    inventoryCapacity: 16,
     hasMountedTurret: true,
     turretDamage: 38,
     turretFireRate: 0.35, // 0.35s between high-caliber rounds
@@ -75,6 +79,7 @@ export const VEHICLE_DEFINITIONS: Record<VehicleType, VehicleDefinition> = {
     speedMps: 13.0, // ~47 km/h
     cargoBonus: 140, // High payload capacity!
     crewCapacity: 4,
+    inventoryCapacity: 25,
     hasMountedTurret: false,
     repairMetalCost: 25,
     soundRadius: 40,
@@ -130,7 +135,24 @@ export interface WorldVehicle {
   osmRoadId?: string | number;
   autoScavengeBuildingId?: string | number | null;
   autoScavengeBuildingName?: string | null;
+
+  // Cargo bay: physical loot slots shared by the mounted squad. The squad
+  // deposits scavenged items here before continuing to the next building, and
+  // the whole bay is emptied at HQ/storage when the squad returns to deposit.
+  inventory?: SquadLootItem[];
+
+  // Set when the mounted squad finishes a run with the cargo bay full (or an
+  // overflow backpack): after the squad boards again the vehicle drives home to
+  // HQ/storage to deposit both the squad and vehicle inventories.
+  autoDepotReturn?: boolean;
+
+  // Obstacle revision the current roadPathWaypoints were computed against. If
+  // freestanding construction is placed/removed, this no longer matches the
+  // grid's revision and the vehicle re-routes immediately instead of driving a
+  // stale route into new walls.
+  routeRevision?: number;
 }
+
 
 // Scavenged Fuel Node / Canister
 export interface ScavengeFuelLoot {

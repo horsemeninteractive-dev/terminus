@@ -274,6 +274,12 @@ export interface AdaptedBuilding {
   height: number;
   levels: number;
   polygon?: Point2D[];
+  rotationDeg?: number;
+  // Rendered footprint applied to freestanding structures. Fence/wall segments
+  // store their true per-segment run length so consecutive segments butt
+  // end-to-end with no gaps; defaults fall back to the type's canonical dims.
+  width?: number;
+  length?: number;
   // Construction Progress & Labour (§4.6, §7.1)
   constructionStatus: 'planned' | 'in_progress' | 'completed';
   constructionProgress: number; // 0 to 100
@@ -329,6 +335,10 @@ export interface ConstructionWorkOrder {
   deductedCost: ResourceCost;
   progress: number; // 0 to 100
   createdAt: number;
+  // Cached A* path state so construction crews route around obstacles (walls,
+  // towers, buildings) instead of walking straight through them. Structurally
+  // matches PathState from services/pathfindingService.
+  pathState?: { path: Point2D[]; index: number; goalKey: string };
 }
 
 export type DeconstructionSource = 'adapted' | 'freestanding' | 'osm';

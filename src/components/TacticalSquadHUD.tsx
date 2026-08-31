@@ -4,7 +4,6 @@ import {
   ChevronDown,
   ChevronUp,
   Crosshair,
-  Droplets,
   Edit2,
   Flashlight,
   Footprints,
@@ -25,11 +24,14 @@ import {
   UserCheck,
   UserMinus,
   Users,
-  Wheat,
   X,
+  Apple,
+  Droplets,
+  Crosshair as CrosshairIcon,
   Zap,
 } from 'lucide-react';
 import { WorldVehicle } from '../types/vehicle';
+import { getVehicleInventoryCapacity } from '../services/vehicleService';
 import {
   ARMOR_CATALOG,
   ArmorItemId,
@@ -38,6 +40,7 @@ import {
   TacticalSquadUnit,
   WEAPON_CATALOG,
   WeaponItemId,
+  faceUrlForMember,
 } from '../types/combat';
 import { soundEngine } from '../services/soundService';
 
@@ -52,7 +55,7 @@ interface TacticalSquadHUDProps {
   allSquads?: TacticalSquadUnit[];
   onSelectSquad?: (squadId: string) => void;
   onDisbandSquad?: (squadId: string) => void;
-  inventory?: { capacity: number; used: number; items: { id: string; quantity: number }[] };
+  inventory?: { capacity: number; used: number; items: { id: string; kind?: string; label?: string; quantity: number; itemId?: string }[] };
   /** Vehicle the selected squad is currently riding in (shows condition/fuel + unmount). */
   mountedVehicle?: WorldVehicle | null;
   onDismountVehicle?: () => void;
@@ -60,14 +63,8 @@ interface TacticalSquadHUDProps {
   isScavengeAreaActive?: boolean;
 }
 
-// Survivor portrait avatars for realistic squad representation
-const SURVIVOR_AVATARS = [
-  'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80',
-  'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80',
-  'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-  'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150&auto=format&fit=crop&q=80',
-];
-
+// Survivor portrait faces are stored per squad member (assigned at creation) and
+// resolved via faceUrlForMember; see types/combat.ts for the shared catalog.
 export const TacticalSquadHUD: React.FC<TacticalSquadHUDProps> = ({
   squad,
   onDeselect,
@@ -282,7 +279,7 @@ export const TacticalSquadHUD: React.FC<TacticalSquadHUDProps> = ({
           <div className="flex items-center justify-between text-[9px] font-mono text-slate-400">
             <span>Progress: {squad.searchProgress || 0}/100%</span>
             <span className={inventory && inventory.used >= inventory.capacity * 0.9 ? 'text-red-400 font-bold' : 'text-slate-300'}>
-              Weight: {inventory?.used || 0}/{inventory?.capacity || 45}kg
+              Carrying: {inventory?.used || 0}/{inventory?.capacity ?? aliveCount} slots
             </span>
           </div>
         </div>
@@ -294,7 +291,7 @@ export const TacticalSquadHUD: React.FC<TacticalSquadHUDProps> = ({
               RETURNING TO STORAGE
             </span>
             <span className="font-mono text-sky-400 text-[10px]">
-              {inventory?.used || 0}/{inventory?.capacity || 45}kg
+              {inventory?.used || 0}/{inventory?.capacity ?? aliveCount} slots
             </span>
           </div>
           <div className="text-[10px] text-slate-300 font-mono truncate">
@@ -312,9 +309,9 @@ export const TacticalSquadHUD: React.FC<TacticalSquadHUDProps> = ({
 
         {/* 4 Survivor Portrait Tiles */}
         <div className="grid grid-cols-4 gap-2">
-          {squad.members.map((member, idx) => {
+          {squad.members.map((member) => {
             const hpPct = member.maxHp > 0 ? (member.currentHp / member.maxHp) * 100 : 0;
-            const avatarUrl = SURVIVOR_AVATARS[idx % SURVIVOR_AVATARS.length];
+            const avatarUrl = faceUrlForMember(member);
             const weapon = WEAPON_CATALOG[member.weaponId];
             const armor = member.armorId ? ARMOR_CATALOG[member.armorId] : null;
 
@@ -380,36 +377,34 @@ export const TacticalSquadHUD: React.FC<TacticalSquadHUDProps> = ({
         <div className="flex items-center justify-between text-[11px] font-heading font-bold text-slate-300 tracking-wide">
           <span>SQUAD RESOURCES:</span>
           <div className="flex items-center gap-1 font-mono text-white text-[10px]">
-            <span>{inventory?.items.length || 0}/{inventory?.capacity || 0}</span>
-            <Lock className="w-3 h-3 text-[#64748B]" />
+            <span>{inventory?.items.length || 0}/{inventory?.capacity ?? aliveCount}</span>
+            <span className="text-[9px] text-slate-500">SLOTS</span>
           </div>
         </div>
 
-        {/* 4 Inventory Slot Boxes */}
+        {/* One carried-item slot per living squad member. Items remain stacks, but each
+            discovered loot type occupies one physical slot. */}
         <div className="grid grid-cols-4 gap-2">
-          {/* Slot 1: Active Loot / Food wheat icon */}
-          <div className="h-10 bg-[#10141C] border border-[#2D3B4E] flex items-center justify-center text-[#10B981]">
-            <Wheat className="w-4 h-4 text-[#10B981]" />
-          </div>
-
-          {/* Slot 2: Empty / Ammo if carrying */}
-          <div className="h-10 bg-[#0A0D12] border border-[#1E293B] flex items-center justify-center text-[#64748B]">
-            {inventory?.items?.[0] ? (
-              <Package className="w-4 h-4 text-[#E8E8E8]" />
-            ) : null}
-          </div>
-
-          {/* Slot 3: Empty */}
-          <div className="h-10 bg-[#0A0D12] border border-[#1E293B] flex items-center justify-center text-[#64748B]">
-            {inventory?.items?.[1] ? (
-              <Package className="w-4 h-4 text-[#E8E8E8]" />
-            ) : null}
-          </div>
-
-          {/* Slot 4: Locked */}
-          <div className="h-10 bg-[#07090C] border border-[#151D28] flex items-center justify-center text-[#475569]">
-            <Lock className="w-3 h-3 text-[#334155]" />
-          </div>
+          {Array.from({ length: totalSlots }, (_, index) => {
+            const item = inventory?.items?.[index];
+            const label = item?.label || '';
+            const icon = item?.kind === 'weapon'
+              ? <CrosshairIcon className="w-4 h-4 text-rose-300" />
+              : item?.kind === 'armor'
+              ? <Shield className="w-4 h-4 text-sky-300" />
+              : label.includes('water')
+              ? <Droplets className="w-4 h-4 text-cyan-300" />
+              : label.includes('food') || label.includes('ration') || label.includes('canned')
+              ? <Apple className="w-4 h-4 text-emerald-300" />
+              : item
+              ? <Package className="w-4 h-4 text-amber-300" />
+              : null;
+            return (
+              <div key={index} className={`h-10 flex items-center justify-center border ${item ? 'bg-[#10141C] border-[#10B981]/70' : 'bg-[#0A0D12] border-[#1E293B]'}`} title={item ? `${item.label || 'Loot'} ×${item.quantity}` : `Empty slot ${index + 1}`}>
+                {icon}
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -490,6 +485,8 @@ export const TacticalSquadHUD: React.FC<TacticalSquadHUDProps> = ({
         const vehFuelPct = Math.round((mountedVehicle.currentFuel / mountedVehicle.maxFuel) * 100);
         const vehHpPct = Math.round((mountedVehicle.currentHp / mountedVehicle.maxHp) * 100);
         const vehDef = mountedVehicle.type === 'cargo_van' ? 'CARGO VAN' : mountedVehicle.type === 'armed_truck' ? 'ARMED TRUCK' : 'PICKUP TRUCK';
+        const vehCargoCap = getVehicleInventoryCapacity(mountedVehicle);
+        const vehCargo = mountedVehicle.inventory || [];
         return (
           <div className="p-2.5 border-b border-[#1E293B] bg-[#0A0D12] space-y-2">
             <div className="flex items-center justify-between">
@@ -547,6 +544,44 @@ export const TacticalSquadHUD: React.FC<TacticalSquadHUDProps> = ({
                   className={`h-full ${vehHpPct < 30 ? 'bg-red-500' : 'bg-[#334155]'}`}
                   style={{ width: `${Math.max(0, Math.min(100, vehHpPct))}%` }}
                 />
+              </div>
+            </div>
+
+            {/* Cargo bay — shared loot storage the mounted squad fills while scavenging */}
+            <div className="space-y-0.5">
+              <div className="flex justify-between text-[9px] font-mono text-slate-400">
+                <span className="flex items-center gap-1">
+                  <Package className="w-2.5 h-2.5 text-emerald-400" />
+                  CARGO BAY
+                </span>
+                <span className="font-bold text-emerald-400">
+                  {vehCargo.length}/{vehCargoCap}
+                </span>
+              </div>
+              <div className="grid grid-cols-5 gap-1">
+                {Array.from({ length: vehCargoCap }, (_, index) => {
+                  const item = vehCargo[index];
+                  const icon = item
+                    ? item.kind === 'weapon'
+                      ? <CrosshairIcon className="w-3 h-3 text-rose-300" />
+                      : item.kind === 'armor'
+                      ? <Shield className="w-3 h-3 text-sky-300" />
+                      : (item.label || '').includes('water')
+                      ? <Droplets className="w-3 h-3 text-cyan-300" />
+                      : (item.label || '').includes('food') || (item.label || '').includes('ration') || (item.label || '').includes('canned')
+                      ? <Apple className="w-3 h-3 text-emerald-300" />
+                      : <Package className="w-3 h-3 text-amber-300" />
+                    : null;
+                  return (
+                    <div
+                      key={index}
+                      className={`h-6 flex items-center justify-center border ${item ? 'bg-[#10141C] border-[#10B981]/60' : 'bg-[#0A0D12] border-[#1E293B]'}`}
+                      title={item ? `${item.label || 'Loot'} ×${item.quantity}` : `Empty cargo slot ${index + 1}`}
+                    >
+                      {icon}
+                    </div>
+                  );
+                })}
               </div>
             </div>
 

@@ -77,6 +77,21 @@ import { RESEARCH_TREE_NODES, RESEARCH_BRANCHES } from '../data/researchTreeData
 import { calculateResearchGenerationRate } from '../services/researchService';
 import { soundService } from '../services/soundService';
 
+function isPointInsideBuilding(squad: TacticalSquadUnit, building: BuildingPolygon): boolean {
+  if (!building.polygon || building.polygon.length < 3) {
+    return Math.hypot(squad.x - building.center.x, squad.z - building.center.z) <= 4;
+  }
+
+  let inside = false;
+  for (let i = 0, j = building.polygon.length - 1; i < building.polygon.length; j = i++) {
+    const a = building.polygon[i];
+    const b = building.polygon[j];
+    const crosses = a.z > squad.z !== b.z > squad.z;
+    if (crosses && squad.x < ((b.x - a.x) * (squad.z - a.z)) / (b.z - a.z) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
 interface TacticalEdgeSidebarProps {
  activeTab: ActiveSidebarTab;
  onClose: () => void;
@@ -226,7 +241,20 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  : undefined;
  const selectedSearch = selectedBuilding ? settlement.buildingSearches?.get(selectedBuilding.id) : undefined;
  const selectedSquadDistance = selectedBuilding && selectedSquad ? Math.hypot(selectedSquad.x-selectedBuilding.center.x,selectedSquad.z-selectedBuilding.center.z) : null;
- const selectedHiddenGroup = selectedBuilding ? settlement.hiddenGroups?.get(selectedBuilding.id) : undefined;
+ const selectedHiddenGroup = selectedBuilding
+ ? (
+     settlement.hiddenGroups instanceof Map
+       ? Array.from(settlement.hiddenGroups.values())
+       : Array.isArray(settlement.hiddenGroups)
+       ? settlement.hiddenGroups
+       : Object.values((settlement.hiddenGroups || {}) as Record<string, HiddenSurvivorGroup>)
+   ).find((group) => String(group.buildingId) === String(selectedBuilding.id))
+ : undefined;
+ const selectedSquadInsideBuilding = Boolean(
+   selectedBuilding &&
+   selectedSquad &&
+   isPointInsideBuilding(selectedSquad, selectedBuilding)
+ );
  const squadInventory = selectedSquad ? settlement.squadInventories?.[selectedSquad.squadId] : undefined;
 
  return (
@@ -752,9 +780,7 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  <span className="text-[#CBD5E1]">
  {Math.floor(research?.researchPoints ?? 0)} RP (+{calculateResearchGenerationRate(settlement).totalRatePerSec.toFixed(1)}/s)
  </span>
- </div>
-
- {research?.activeResearchId && (
+ </div>        {research?.activeResearchId && (
  <div className="text-[11px] font-mono text-[#94A3B8] mt-1">
  CURRENT PROJECT: <span className="text-[#CBD5E1] font-bold">{RESEARCH_TREE_NODES[research.activeResearchId]?.name || research.activeResearchId}</span>
  </div>
@@ -766,9 +792,9 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  style={{
  width: `${Math.min(
  100,
- research?.activeResearchId
- ? ((research.researchPoints || 0) /
- (RESEARCH_TREE_NODES[research.activeResearchId]?.costRP || 100)) *
+ research?.activeResearchId && RESEARCH_TREE_NODES[research.activeResearchId]
+ ? (research.activeProgressSec || 0) /
+ RESEARCH_TREE_NODES[research.activeResearchId].baseTimeSec *
  100
  : 0
  )}%`,
@@ -1031,7 +1057,7 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
 
  <div className="p-2.5 bg-[#11141A] border border-[#2B323C] flex flex-col gap-2 clip-card-chip">
  <div className="flex justify-between"><span className="font-heading font-bold text-[10px]">WORLD SEARCH STATE</span><span className="text-[10px] font-mono text-[#94A3B8]">{selectedSearch?.searched?'SEARCHED':selectedSearch?.searchProgress ? `SEARCHING (${selectedSearch.searchProgress}%)` : selectedSearch?.observed?'OBSERVED':'UNKNOWN'}</span></div>
- <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-[#94A3B8]"><div>DISTANCE: {selectedSquadDistance===null?'—':`${Math.round(selectedSquadDistance)}m`}</div><div>CARRY: {squadInventory?`${squadInventory.used.toFixed(1)}/${squadInventory.capacity}kg`:'—'}</div></div>
+ <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-[#94A3B8]"><div>DISTANCE: {selectedSquadDistance===null?'—':`${Math.round(selectedSquadDistance)}m`}</div><div>CARRY: {squadInventory?`${squadInventory.used}/${squadInventory.capacity} slots`:'—'}</div></div>
  {selectedSearch?.searchProgress !== undefined && selectedSearch.searchProgress > 0 && !selectedSearch.searched ? (
    <div className="space-y-1">
      <div className="h-1.5 w-full bg-black/80 border border-amber-500/40 rounded-sm overflow-hidden">
@@ -1047,7 +1073,7 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
    </div>
  ) : selectedSearch?.searched&&selectedSearch.loot.map(l=><div key={l.id} className="text-[9px] font-mono text-[#CBD5E1]">{l.label.replace(/([a-z])([A-Z])/g, '$1 $2').replaceAll('_',' ').replace(/\b\w/g, c => c.toUpperCase()).toUpperCase()} ×{l.quantity}</div>)}
  </div>
- {selectedHiddenGroup?.isDiscovered&&!selectedHiddenGroup.isRecruited&&<div className="p-2.5 bg-[#15171B] border border-[#4B5563] flex flex-col gap-2 clip-card-chip"><div className="font-heading font-bold text-[10px]">SURVIVORS DETECTED · GROUP OF {selectedHiddenGroup.generalCount+1}</div><div className="text-[9px] font-mono text-[#718096]">{selectedHiddenGroup.hasSmokeClue?'CHIMNEY SMOKE CONFIRMS HUMAN ACTIVITY.':'SIGNS OF HUMAN ACTIVITY.'}</div><button onClick={()=>onOpenRecruitment?.(selectedHiddenGroup)} className="w-full py-1.5 bg-[#17202B] border border-[#CBD5E1]/60 text-[10px] font-heading font-bold">APPROACH GROUP LEADER</button></div>}
+ {selectedHiddenGroup && !selectedHiddenGroup.isRecruited && (selectedHiddenGroup.isDiscovered || (selectedHiddenGroup.hasSmokeClue && selectedSquadInsideBuilding)) && <div className="p-2.5 bg-[#15171B] border border-[#4B5563] flex flex-col gap-2 clip-card-chip"><div className="font-heading font-bold text-[10px]">SURVIVORS DETECTED · GROUP OF {selectedHiddenGroup.generalCount+1}</div><div className="text-[9px] font-mono text-[#718096]">{selectedHiddenGroup.hasSmokeClue?'CHIMNEY SMOKE CONFIRMS HUMAN ACTIVITY.':'SIGNS OF HUMAN ACTIVITY.'}</div><button onClick={()=>onOpenRecruitment?.({ ...selectedHiddenGroup, isDiscovered: true })} className="w-full py-1.5 bg-[#17202B] border border-[#CBD5E1]/60 text-[10px] font-heading font-bold">MAKE CONTACT WITH SURVIVORS</button></div>}
 
  {/* Rival Hideout (§5.2) — hostile-on-sight human faction */}
  {selectedHideout && selectedHideout.isDiscovered && !selectedHideout.isCleared && (

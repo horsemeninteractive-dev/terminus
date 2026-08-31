@@ -9,6 +9,7 @@ import { BuildingSearchState } from '../types/scavenging';
 import { WorldVehicle } from '../types/vehicle';
 import { classifyPoint } from '../services/fogOfWarService';
 import { sampleElevation } from '../services/elevationService';
+import { getFreestandingDimensions, getFreestandingCollisionPolygon } from '../services/freestandingFootprint';
 import { BuildingRenderer } from './BuildingRenderer';
 import { CameraController } from './CameraController';
 import { CombatRenderer } from './CombatRenderer';
@@ -24,6 +25,13 @@ import { SkyAtmosphere } from './SkyAtmosphere';
 
 /** Yields to the browser so the loading overlay can animate between heavy build stages. */
 const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+/** Thin cross-section of a wall/fence segment (meters). Kept in sync with
+ * BuildingRenderer.renderFreestandingBody and freestandingFootprint. */
+const FENCE_WIDTH = 1.2;
+
+/** Radius (meters) around a freestanding structure's edge that a fence drag will snap to. */
+const FREESTANDING_SNAP_DIST = 1.6;
 
 export type TimeOfDay = 'day' | 'dusk' | 'night' | 'dawn';
 
@@ -132,6 +140,16 @@ const TIME_OF_DAY_HOURS: Record<TimeOfDay, number> = {
   dawn: 6.5,
 };
 
+export interface FreestandingPlacementPoint {
+  x: number;
+  z: number;
+  rotationDeg: number;
+  // Explicit footprint applied at build time so fence segments render with their
+  // exact per-segment run length (no gaps) and towers carry their real dims.
+  width?: number;
+  length?: number;
+}
+
 export interface WorldSceneOptions {
   container: HTMLElement;
   onSelectBuilding?: (building: BuildingPolygon | null) => void;
@@ -144,6 +162,10 @@ export interface WorldSceneOptions {
   onOrderSquadAttack?: (squadId: string, zombieId: string) => void;
   onMountVehicle?: (squadId: string, vehicleId: string) => void;
   onScavengeViewToggle?: (active: boolean) => void;
+  onPlaceFreestandingRun?: (
+    typeId: FunctionalBuildingTypeId,
+    placements: FreestandingPlacementPoint[]
+  ) => void;
 }
 
 interface PrecomputedLootPin {
@@ -202,6 +224,10 @@ export class WorldScene {
   private onOrderSquadAttack?: (squadId: string, zombieId: string) => void;
   private onMountVehicle?: (squadId: string, vehicleId: string) => void;
   public onScavengeViewToggle?: (active: boolean) => void;
+  private onPlaceFreestandingRun?: (
+    typeId: FunctionalBuildingTypeId,
+    placements: FreestandingPlacementPoint[]
+  ) => void;
 
   private pointerDownX = 0;
   private pointerDownY = 0;
@@ -252,11 +278,26 @@ export class WorldScene {
   private blueprintGhostGroup: THREE.Group = new THREE.Group();
   private blueprintGhostMesh: THREE.Mesh | null = null;
   private blueprintGhostEdges: THREE.LineSegments | null = null;
+  private blueprintGhostMaterial: THREE.MeshBasicMaterial | null = null;
+  private blueprintPlacementStart: THREE.Vector3 | null = null;
+  private blueprintPlacementRotation = 0;
+  private placementGestureActive = false;
+  private placementIsFence = false;
+  private placementSegmentSpacing = 10;
+  // Water polygons (landuse type === 'water') used to reject placement of
+  // walls/towers/gates on water: the ghost turns red while the cursor is over
+  // water and placement is cancelled on release.
+  private waterPolygons: Point2D[][] = [];
 
   // Fog of war state (§3.5)
   private fogGrid: FogOfWarState | null = null;
   private visibleCells: Set<number> = new Set();
   private fogEnabled = false;
+
+  // Friendly units that trigger gate doors to open (squads + vehicles). Kept
+  // separate so updateCombat/updateVehicles can each refresh their half.
+  private gateTriggerSquads: { x: number; z: number }[] = [];
+  private gateTriggerVehicles: { x: number; z: number }[] = [];
 
   // Render stats
   public fps = 60;
@@ -278,6 +319,7 @@ export class WorldScene {
     this.onOrderSquadMove = options.onOrderSquadMove;
     this.onOrderSquadAttack = options.onOrderSquadAttack;
     this.onMountVehicle = options.onMountVehicle;
+    this.onPlaceFreestandingRun = options.onPlaceFreestandingRun;
 
     const width = this.container.clientWidth || window.innerWidth;
     const height = this.container.clientHeight || window.innerHeight;
@@ -388,6 +430,9 @@ export class WorldScene {
     const stale = () => gen !== this.loadGeneration;
 
     this.currentMapData = mapData;
+    this.waterPolygons = (mapData.landuse || [])
+      .filter((l) => l.type === 'water' && l.polygon?.length >= 3)
+      .map((l) => l.polygon as Point2D[]);
     this.showBuildingEdges = showBuildingEdges;
     this.currentExaggeration = exaggeration;
     this.disableElevation = disableElevation;
@@ -638,6 +683,12 @@ export class WorldScene {
     const y = elevation * 200;
     this.sunLight.position.set(Math.cos(azimuth) * dist, y, Math.sin(azimuth) * dist);
 
+    // Apply the same continuous daylight colour grade to satellite imagery and
+    // land-use surfaces; GroundRenderer eases toward this target every frame.
+    const groundGrade = this.scratchB.copy(this.ambientLight.color).multiplyScalar(
+      Math.min(1.15, Math.max(0.55, mix(k0.ambientIntensity, k1.ambientIntensity)))
+    );
+    this.groundRenderer.updateLighting(groundGrade);
     this.fogOfWarRenderer.updateLighting(this.fog.color, mix(k0.ambientIntensity, k1.ambientIntensity), h);
   }
 
@@ -678,6 +729,39 @@ export class WorldScene {
       this.longPressTimer = null;
     }
 
+    // Armed freestanding blueprint: mouse-down anchors the placement. For fences
+    // this becomes the start point of a run; for towers/gates the centre of the
+    // footprint that you then rotate by dragging before releasing. Lock the
+    // camera so the drag rotates/extends the blueprint instead of panning.
+    if (this.pendingFreestandingType) {
+      this.cameraController.placementActive = true;
+      const rect = this.container.getBoundingClientRect();
+      this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      this.raycaster.setFromCamera(this.mouse, this.camera);
+      const groundHits = this.raycaster.intersectObjects(this.groundRenderer.group.children, true);
+      if (groundHits.length > 0) {
+        const pt = groundHits[0].point;
+        // Snap a fence run's anchor to the edge of a nearby freestanding
+        // structure (tower, gate or wall) so the run starts flush against it.
+        // Towers/gates keep their free centre (snapping would offset the
+        // footprint or skew the rotate-by-drag angle).
+        const snap = this.placementIsFence ? this.snapToFreestandingEdge(pt.x, pt.z) : null;
+        this.blueprintPlacementStart = new THREE.Vector3(
+          snap ? snap.x : pt.x,
+          pt.y,
+          snap ? snap.z : pt.z
+        );
+        this.blueprintPlacementRotation = 0;
+        this.placementGestureActive = true;
+        this.blueprintGhostGroup.visible = true;
+        this.blueprintGhostGroup.position.copy(pt);
+        this.blueprintGhostGroup.scale.set(1, 1, 1);
+        this.blueprintGhostGroup.rotation.y = 0;
+      }
+      return;
+    }
+
     // On touch devices, set up long-press timer for context actions (movement, combat focus, enter building)
     if (this.pointerType === 'touch') {
       const clientX = e.clientX;
@@ -708,12 +792,47 @@ export class WorldScene {
 
     this.raycaster.setFromCamera(this.mouse, this.camera);
 
-    // If a freestanding blueprint is armed, update hologram ghost position
+    // While placing, the ghost follows the cursor. After the gesture starts,
+    // fences become a live run stretched between the anchored start and the cursor;
+    // towers/gates lock their centre and rotate the footprint toward the cursor.
     if (this.pendingFreestandingType && this.blueprintGhostGroup.visible) {
       const groundHits = this.raycaster.intersectObjects(this.groundRenderer.group.children, true);
       if (groundHits.length > 0) {
         const pt = groundHits[0].point;
-        this.blueprintGhostGroup.position.set(pt.x, pt.y, pt.z);
+        // Reject placement over water: tint the ghost red while the footprint
+        // would straddle a river/lake so the player sees the invalid spot.
+        const placementRot = this.placementGestureActive ? this.blueprintPlacementRotation : 0;
+        const overWater = this.isPlacementOverWater(pt.x, pt.z, placementRot);
+        if (this.blueprintGhostMaterial) {
+          this.blueprintGhostMaterial.color.setHex(overWater ? 0xef4444 : 0x10b981);
+        }
+        // Snap the live cursor to a freestanding structure's edge so the ghost
+        // preview matches the exact run that will be built (fence runs only).
+        const snap = this.placementIsFence ? this.snapToFreestandingEdge(pt.x, pt.z) : null;
+        const ex = snap ? snap.x : pt.x;
+        const ez = snap ? snap.z : pt.z;
+        if (this.placementGestureActive && this.blueprintPlacementStart) {
+          const dx = ex - this.blueprintPlacementStart.x;
+          const dz = ez - this.blueprintPlacementStart.z;
+          const ang = Math.atan2(dx, dz);
+          this.blueprintPlacementRotation = ang;
+          this.blueprintGhostGroup.position.copy(this.blueprintPlacementStart);
+          this.blueprintGhostGroup.rotation.y = ang;
+          if (this.placementIsFence) {
+            // Scale the small square footprint up to the dragged run length (units
+            // of FENCE_WIDTH), so at rest it is a precise 1.2m marker and once
+            // the drag begins it stretches A→B covering the exact run.
+            const dragLength = Math.max(FENCE_WIDTH, Math.hypot(dx, dz));
+            this.blueprintGhostGroup.scale.set(1, 1, dragLength / FENCE_WIDTH);
+          } else {
+            // Centre is locked; rotation is the only thing that changes while dragging.
+            this.blueprintGhostGroup.scale.set(1, 1, 1);
+          }
+        } else if (!this.placementGestureActive) {
+          this.blueprintGhostGroup.position.set(pt.x, pt.y, pt.z);
+          this.blueprintGhostGroup.scale.set(1, 1, 1);
+          this.blueprintGhostGroup.rotation.y = 0;
+        }
       }
     }
 
@@ -734,8 +853,78 @@ export class WorldScene {
     }
   };
 
+  private isPointInsidePoly(p: Point2D, poly: Point2D[]): boolean {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const a = poly[i];
+      const b = poly[j];
+      if (a.z > p.z !== b.z > p.z && p.x < ((b.x - a.x) * (p.z - a.z)) / (b.z - a.z) + a.x) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  /**
+   * True when the current freestanding structure, placed at (x, z) with the
+   * given rotation, has its footprint centre or any corner inside a water
+   * polygon. Used to tint the placement ghost red and reject the placement.
+   */
+  private isPlacementOverWater(x: number, z: number, rotDeg: number): boolean {
+    if (this.waterPolygons.length === 0) return false;
+    const type = this.pendingFreestandingType;
+    if (!type) return false;
+    const poly = getFreestandingCollisionPolygon({ typeId: type, position: { x, z }, rotationDeg: rotDeg });
+    const corners = [{ x, z }, ...poly];
+    for (const water of this.waterPolygons) {
+      for (const c of corners) {
+        if (this.isPointInsidePoly(c, water)) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Fence runs snap to the edges of existing freestanding structures — towers,
+   * gates and wall segments alike. Given a world point, returns the closest
+   * point on any structure's footprint edge if it is within
+   * FREESTANDING_SNAP_DIST, otherwise null. Lets a wall dragged from or into
+   * any built structure connect flush to it instead of stopping beside it, so
+   * adjoining runs butt end-to-end (or T-junction into a wall's side).
+   */
+  private snapToFreestandingEdge(px: number, pz: number): { x: number; z: number } | null {
+    const structures = this.freestandingBuildings;
+    if (!structures || structures.length === 0) return null;
+    let best: { x: number; z: number } | null = null;
+    let bestD = FREESTANDING_SNAP_DIST;
+    for (const f of structures) {
+      const poly = getFreestandingCollisionPolygon(f);
+      if (!poly || poly.length < 2) continue;
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i];
+        const b = poly[(i + 1) % poly.length];
+        const abx = b.x - a.x;
+        const abz = b.z - a.z;
+        const ab2 = abx * abx + abz * abz;
+        const t = ab2 > 0 ? ((px - a.x) * abx + (pz - a.z) * abz) / ab2 : 0;
+        const ct = Math.max(0, Math.min(1, t));
+        const cx = a.x + abx * ct;
+        const cz = a.z + abz * ct;
+        const d = Math.hypot(px - cx, pz - cz);
+        if (d < bestD) {
+          bestD = d;
+          best = { x: cx, z: cz };
+        }
+      }
+    }
+    return best;
+  }
+
   public setPendingFreestandingType(type: FunctionalBuildingTypeId | null) {
     this.pendingFreestandingType = type;
+    this.blueprintPlacementStart = null;
+    this.blueprintPlacementRotation = 0;
+    this.placementGestureActive = false;
     if (!type) {
       this.blueprintGhostGroup.visible = false;
       return;
@@ -758,13 +947,20 @@ export class WorldScene {
     const isGate = type === 'wooden_gate' || type === 'metal_gate' || type === 'fortified_gate';
     const isTower = type === 'wooden_tower' || type === 'metal_tower' || type === 'fortified_tower' || type === 'floodlight_tower';
 
+    // Fences are placed as click-drag-release *runs*: many consecutive segments.
+    // The ghost's length axis (local Z) runs along the dragged direction so it can
+    // be stretched with scale z to preview the total run.
+    this.placementIsFence = isWall;
+
     let width = 8;
     let length = 8;
     let height = 4.5;
 
     if (isWall) {
-      width = 10;
-      length = 2.4;
+      width = FENCE_WIDTH;
+      // A small square footprint at rest so the player can pinpoint exactly where
+      // a run starts; it stretches into the full run length only while dragging.
+      length = FENCE_WIDTH;
       height = type === 'fortified_wall' ? 4.2 : type === 'brick_wall' ? 3.6 : 3.2;
     } else if (isGate) {
       width = 10;
@@ -777,14 +973,19 @@ export class WorldScene {
     }
 
     const boxGeom = new THREE.BoxGeometry(width, height, length);
-    boxGeom.translate(0, height / 2, 0);
+    // Fences start as a small square at the anchor (local Z 0..FENCE_WIDTH) and
+    // stretch toward the cursor when scaled (scale.z = runLen / FENCE_WIDTH), so
+    // the ghost reads as a precise placement marker rather than a full segment
+    // hanging off the anchor symmetrically in both directions.
+    boxGeom.translate(0, height / 2, isWall ? length / 2 : 0);
 
-    const ghostMat = new THREE.MeshBasicMaterial({
+    this.blueprintGhostMaterial = new THREE.MeshBasicMaterial({
       color: 0x10b981,
       transparent: true,
       opacity: 0.45,
       wireframe: false,
     });
+    const ghostMat = this.blueprintGhostMaterial;
     const ghostMesh = new THREE.Mesh(boxGeom, ghostMat);
 
     const edgeGeom = new THREE.EdgesGeometry(boxGeom);
@@ -806,6 +1007,43 @@ export class WorldScene {
     this.blueprintGhostGroup.add(ghostMesh);
     this.blueprintGhostGroup.add(edgeLine);
     this.blueprintGhostGroup.add(ringMesh);
+
+    // Gate previews as two door panels flanked by two full-size towers (like the
+    // built gate), so the ghost doesn't read as a plain box.
+    if (isGate) {
+      const gateGhostMat = new THREE.MeshBasicMaterial({
+        color: 0xec4899,
+        transparent: true,
+        opacity: 0.6,
+        wireframe: true,
+      });
+      const twW = 4.4;
+      const twH = type === 'fortified_gate' ? 9.5 : 8.0;
+      const twD = 4.4;
+      for (const sx of [-1, 1]) {
+        const twGeom = new THREE.BoxGeometry(twW, twH, twD);
+        twGeom.translate(0, twH / 2, 0);
+        const tw = new THREE.Mesh(twGeom, gateGhostMat);
+        tw.position.x = sx * (width / 2 + twW / 2 - 0.2);
+        this.blueprintGhostGroup.add(tw);
+      }
+      // Two translucent door slabs spanning the full opening between the towers.
+      const doorMat = new THREE.MeshBasicMaterial({
+        color: 0xec4899,
+        transparent: true,
+        opacity: 0.35,
+        wireframe: false,
+      });
+      const doorH = height;
+      for (const sx of [-1, 1]) {
+        const doorGeom = new THREE.BoxGeometry(width / 2 - 0.12, doorH, 0.28);
+        doorGeom.translate(0, doorH / 2, 0);
+        const door = new THREE.Mesh(doorGeom, doorMat);
+        door.position.x = sx * (width / 4);
+        this.blueprintGhostGroup.add(door);
+      }
+    }
+
     this.blueprintGhostGroup.visible = true;
   }
 
@@ -817,11 +1055,104 @@ export class WorldScene {
       this.longPressTimer = null;
     }
 
+    // Finishing a freestanding placement gesture (click + drag + release).
+    if (this.placementGestureActive && this.pendingFreestandingType) {
+      this.cameraController.placementActive = false;
+      this.finalizeFreestandingPlacement(e.clientX, e.clientY);
+      this.lastProcessedTapTime = performance.now();
+      return;
+    }
+
     if (e.pointerType === 'touch' && !this.pointerDragged && performance.now() - this.pointerDownTime < 380) {
       this.handleTapAt(e.clientX, e.clientY);
       this.lastProcessedTapTime = performance.now();
     }
   };
+
+  private finalizeFreestandingPlacement(clientX: number, clientY: number) {
+    const type = this.pendingFreestandingType;
+    const start = this.blueprintPlacementStart;
+    const finalRotation = this.blueprintPlacementRotation;
+    this.blueprintPlacementStart = null;
+    this.blueprintPlacementRotation = 0;
+    this.placementGestureActive = false;
+    if (!type || !start || !this.onPlaceFreestandingRun) return;
+
+    const rect = this.container.getBoundingClientRect();
+    this.mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    this.mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    this.raycaster.setFromCamera(this.mouse, this.camera);
+    const groundHits = this.raycaster.intersectObjects(this.groundRenderer.group.children, true);
+    if (groundHits.length === 0) return;
+    const pt = groundHits[0].point;
+
+    const round = (v: number) => Math.round(v * 10) / 10;
+    const placements: FreestandingPlacementPoint[] = [];
+
+    if (this.placementIsFence) {
+      // Click-start -> drag -> release builds the whole run as consecutive,
+      // independent fence segments from anchor A to cursor B. The cursor is
+      // snapped to any adjacent tower edge first so the wall terminates flush
+      // against a tower.
+      const snapEnd = this.snapToFreestandingEdge(pt.x, pt.z);
+      const ex = snapEnd ? snapEnd.x : pt.x;
+      const ez = snapEnd ? snapEnd.z : pt.z;
+      const dx = ex - start.x;
+      const dz = ez - start.z;
+      const len = Math.hypot(dx, dz);
+      const ang = Math.atan2(dx, dz);
+      const rotDeg = (ang * 180) / Math.PI;
+      const spacing = this.placementSegmentSpacing;
+      const ux = len > 0.5 ? dx / len : 1;
+      const uz = len > 0.5 ? dz / len : 0;
+      // Tile the run from A with consecutive segments of AT MOST the max spacing:
+      // as many full 10m segments as fit, then one shorter remainder. So a 17.5m
+      // drag becomes a 10m + 7.5m pair (never even-split fragments), and segments
+      // butt exactly end-to-end covering the whole dragged distance with no gap.
+      const segLens: number[] = [];
+      if (len < 0.8) {
+        // A sub-metre flick produces a single short segment instead of an empty run.
+        segLens.push(Math.max(0.4, len));
+      } else {
+        const fullSegments = Math.floor(len / spacing);
+        for (let i = 0; i < fullSegments; i++) {
+          segLens.push(spacing);
+        }
+        const remainder = len - fullSegments * spacing;
+        if (remainder >= 0.5) {
+          segLens.push(remainder);
+        }
+      }
+      let cursor = 0;
+      for (const segLen of segLens) {
+        const cx = start.x + ux * (cursor + segLen / 2);
+        const cz = start.z + uz * (cursor + segLen / 2);
+        cursor += segLen;
+        placements.push({
+          x: round(cx),
+          z: round(cz),
+          rotationDeg: round(rotDeg),
+          width: FENCE_WIDTH,
+          length: round(segLen),
+        });
+      }
+    } else {
+      // Tower/gate: click places the centre, drag (still held) rotates the
+      // footprint, release places it with the final rotation.
+      const dims = getFreestandingDimensions(type);
+      placements.push({
+        x: round(start.x),
+        z: round(start.z),
+        rotationDeg: round((finalRotation * 180) / Math.PI),
+        width: dims.width,
+        length: dims.length,
+      });
+    }
+
+    this.spawnTapFeedback(pt.x, pt.y, pt.z, 0x10b981);
+    this.blueprintGhostGroup.scale.set(1, 1, 1);
+    this.onPlaceFreestandingRun(type, placements);
+  }
 
   private onClick = (e: MouseEvent) => {
     if (e.button !== 0 || this.pointerDragged) return;
@@ -830,25 +1161,15 @@ export class WorldScene {
   };
 
   private handleTapAt(clientX: number, clientY: number) {
+    // Freestanding placement is fully driven by the pointerdown/drag/up gesture
+    // (finalizeFreestandingPlacement), so taps while armed must not double-place.
+    if (this.pendingFreestandingType) return;
+
     const rect = this.container.getBoundingClientRect();
     this.mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
     this.mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
 
     this.raycaster.setFromCamera(this.mouse, this.camera);
-
-    // Priority Check: If a freestanding blueprint is pending, place it immediately on ground or hit
-    if (this.pendingFreestandingType) {
-      const groundIntersects = this.raycaster.intersectObjects(this.groundRenderer.group.children, true);
-      if (groundIntersects.length > 0) {
-        const pt = groundIntersects[0].point;
-        const position = { x: Math.round(pt.x * 10) / 10, z: Math.round(pt.z * 10) / 10 };
-        this.spawnTapFeedback(pt.x, pt.y, pt.z, 0x10b981);
-        if (this.onSelectPosition) {
-          this.onSelectPosition(position);
-        }
-        return;
-      }
-    }
 
     // 0. Check if an Entity Marker label/badge was clicked
     const markerHit = this.markerRenderer.raycastMarker(this.raycaster);
@@ -1225,6 +1546,9 @@ export class WorldScene {
     constructionOrders: ConstructionWorkOrder[] = []
   ) {
     this.selectedSquadId = selectedSquadId;
+    this.gateTriggerSquads = squads
+      .filter((s) => s.currentHp > 0)
+      .map((s) => ({ x: s.x, z: s.z }));
     this.combatRenderer.updateState(
       zombies,
       squads,
@@ -1242,6 +1566,7 @@ export class WorldScene {
     selectedVehicleId: string | null
   ) {
     this.selectedVehicleId = selectedVehicleId;
+    this.gateTriggerVehicles = vehicles.map((v) => ({ x: v.position.x, z: v.position.z }));
     this.vehicleRenderer.setSelectedVehicle(selectedVehicleId);
     this.vehicleRenderer.updateVehicles(
       vehicles,
@@ -1587,6 +1912,7 @@ export class WorldScene {
           anchorY: pin.topY,
           label: pin.label,
           lootCategory: pin.cat,
+          lootCategories: searchState?.unlootedItems?.map((item) => item.label) || [pin.cat],
           buildingId: pin.id,
           detailMode: detail,
         });
@@ -1614,6 +1940,7 @@ export class WorldScene {
           anchorY: topY,
           label: bldg.name || bldg.type || 'Structure',
           lootCategory: cat,
+          lootCategories: searchState?.unlootedItems?.map((item) => item.label) || [cat],
           buildingId: bldg.id,
           detailMode: detail,
         });
@@ -1765,6 +2092,9 @@ export class WorldScene {
 
     // Update Combat & Zombies Animations
     this.combatRenderer.update(delta, now / 1000);
+
+    // Animate gate doors — swing open as friendly squads/vehicles pass through
+    this.buildingRenderer.update(delta, this.gateTriggerSquads.concat(this.gateTriggerVehicles));
 
     // Interpolate vehicle positions between simulation ticks
     this.vehicleRenderer.update(delta, now / 1000);

@@ -3,8 +3,19 @@ import { SettlementState } from '../types/settlement';
 import { SquadInventory, SquadLootItem } from '../types/population';
 import { BuildingSearchState } from '../types/scavenging';
 import { ArmorItemId, TacticalSquadUnit, WeaponItemId } from '../types/combat';
+import { WorldVehicle } from '../types/vehicle';
+import { depositItemsIntoVehicle, getVehicleInventoryCapacity } from './vehicleService';
 
-const DEFAULT_CAPACITY = 45;
+const DEFAULT_CAPACITY = 4;
+
+/** One inventory slot represents one carried loot item stack. */
+export function getSquadInventoryCapacity(squad: TacticalSquadUnit): number {
+  return Math.max(0, squad.members.filter((member) => member.isAlive).length);
+}
+
+function currentItemsCount(items: SquadLootItem[]): number {
+  return items.length;
+}
 
 /** Convert internal identifiers such as `canned_goods` or `food_canned` to UI text. */
 export function formatLootLabel(label: string): string {
@@ -369,15 +380,22 @@ export function tickBuildingScavengeProgress(
   const unlooted = search.unlootedItems ? [...search.unlootedItems] : [...search.loot];
   const looted = search.lootedItems ? [...search.lootedItems] : [];
   const totalItemsCount = search.loot.length;
+  const previouslyResolvedCount = Math.max(0, totalItemsCount - unlooted.length);
 
   let elapsed = (search.elapsedDurationSec || 0) + deltaSec;
   let progress = Math.min(100, Math.round((elapsed / totalDuration) * 100));
 
   // Determine newly unlocked items this tick based on progress milestones
   const itemsFoundThisTick: SquadLootItem[] = [];
-  const inv = state.squadInventories?.[squad.squadId] || createEmptySquadInventory();
-  let currentUsed = inv.used;
+  const slotCapacity = getSquadInventoryCapacity(squad);
+  const existingInv = state.squadInventories?.[squad.squadId];
+  // Keep the authoritative carried inventory in sync with the tactical unit.
+  // Combat ticks can replace the unit object, so never recreate an occupied
+  // inventory from the unit's legacy weight fields.
+  const inv = existingInv || createEmptySquadInventory(slotCapacity);
+  let currentUsed = currentItemsCount(inv.items);
   let currentItems = [...inv.items];
+  const capacity = slotCapacity;
   let inventoryFull = false;
 
   if (unlooted.length > 0 && totalItemsCount > 0) {
@@ -386,13 +404,12 @@ export function tickBuildingScavengeProgress(
 
     for (let idx = 0; idx < unlooted.length; idx++) {
       const item = unlooted[idx];
-      const itemTotalIndex = totalItemsCount - unlooted.length + idx;
+      const itemTotalIndex = previouslyResolvedCount + idx;
       const milestoneProgress = Math.round(((itemTotalIndex + 0.4) / totalItemsCount) * 100);
 
       if (progress >= milestoneProgress && !inventoryFull) {
-        const itemWeight = (item.quantity || 1) * (item.weight || 1);
-        if (currentUsed + itemWeight <= inv.capacity) {
-          currentUsed += itemWeight;
+        if (currentUsed < capacity) {
+          currentUsed += 1;
           currentItems.push(item);
           looted.push(item);
           itemsFoundThisTick.push(item);
@@ -410,11 +427,11 @@ export function tickBuildingScavengeProgress(
   }
 
   // Check if inventory has reached or exceeded capacity
-  if (currentUsed >= inv.capacity * 0.98) {
+  if (currentUsed >= capacity) {
     inventoryFull = true;
   }
 
-  const isCompleted = progress >= 100 && search.unlootedItems.length === 0;
+  const isCompleted = progress >= 100 && search.unlootedItems!.length === 0;
 
   search.elapsedDurationSec = elapsed;
   search.totalDurationSec = totalDuration;
@@ -429,8 +446,7 @@ export function tickBuildingScavengeProgress(
   // Update squad state and destination
   let nextSquad: TacticalSquadUnit = {
     ...squad,
-    searchProgress: progress,
-    currentWeightKg: currentUsed,
+    searchProgress: progress,        currentWeightKg: currentUsed,
   };
 
   let dropoffDestination: { x: number; z: number; name: string } | undefined;
@@ -439,10 +455,42 @@ export function tickBuildingScavengeProgress(
     ? state.vehicles?.find((v) => v.id === squad.assignedVehicleId && v.condition !== 'wrecked')
     : null;
 
-  if (inventoryFull) {
+  // A squad must finish searching its current building even when its carry
+  // slots fill. Once progress reaches 100%, the remaining items stay in the
+  // building and the squad returns with the partial haul.
+  const shouldReturnAfterSearch = inventoryFull && isCompleted;
+
+  // Mounted squads deposit their haul into the vehicle's cargo bay the moment
+  // the building is cleared, so the expedition can keep driving to the next
+  // building without shuttling home after every structure.
+  let updatedVehicles: WorldVehicle[] | undefined;
+
+  if (shouldReturnAfterSearch || isCompleted) {
     if (assignedVeh) {
-      // Return to parked expedition vehicle to board it and drive loot home
-      dropoffDestination = { x: assignedVeh.position.x, z: assignedVeh.position.z, name: assignedVeh.name };
+      // 1. Transfer squad loot into the cargo bay (up to its capacity).
+      const transfer = depositItemsIntoVehicle(assignedVeh, currentItems);
+      let updatedVehicle = transfer.vehicle;
+      const vehicleFull = (updatedVehicle.inventory || []).length >= getVehicleInventoryCapacity(updatedVehicle);
+      // Whatever didn't fit stays in the squad's backpack.
+      currentItems = transfer.overflow;
+      currentUsed = transfer.overflow.length;
+      inventoryFull = currentUsed >= capacity;
+      updatedVehicles = (state.vehicles || []).map((v) => (v.id === updatedVehicle.id ? updatedVehicle : v));
+
+      if (vehicleFull) {
+        // 2a. Cargo bay is full -> after the squad boards, the vehicle drives
+        // home to HQ/storage so BOTH the backpack and the bay are deposited.
+        updatedVehicle = { ...updatedVehicle, autoDepotReturn: true };
+        updatedVehicles = (state.vehicles || []).map((v) => (v.id === updatedVehicle.id ? updatedVehicle : v));
+        dropoffDestination = findNearestStorageDropoff(
+          state,
+          { x: assignedVeh.position.x, z: assignedVeh.position.z },
+          buildings
+        );
+      }
+
+      // 2b. Walk back to the parked vehicle and board it. The simulation loop
+      // then drives it either home (bay full) or to the next queued building.
       nextSquad = {
         ...nextSquad,
         state: 'returning',
@@ -451,9 +499,11 @@ export function tickBuildingScavengeProgress(
         targetBuildingId: null,
         targetBuildingName: `Return to ${assignedVeh.name}`,
         searchProgress: undefined,
+        pathState: undefined,
       };
-    } else {
-      // Inventory full -> Auto-path on foot to storage depot (or HQ if none)
+    } else if (shouldReturnAfterSearch || currentUsed > 0) {
+      // Inventory full or carrying loot -> Auto-path on foot to storage depot
+      // (or HQ if none)
       dropoffDestination = findNearestStorageDropoff(state, { x: squad.x, z: squad.z }, buildings);
       nextSquad = {
         ...nextSquad,
@@ -464,34 +514,8 @@ export function tickBuildingScavengeProgress(
         searchProgress: undefined,
         pathState: undefined,
       };
-    }
-  } else if (isCompleted) {
-    if (assignedVeh) {
-      // Search complete -> Return to expedition vehicle
-      dropoffDestination = { x: assignedVeh.position.x, z: assignedVeh.position.z, name: assignedVeh.name };
-      nextSquad = {
-        ...nextSquad,
-        state: 'returning',
-        targetPos: { x: assignedVeh.position.x, z: assignedVeh.position.z },
-        pendingMountVehicleId: assignedVeh.id,
-        targetBuildingId: null,
-        targetBuildingName: `Return to ${assignedVeh.name}`,
-        searchProgress: undefined,
-        pathState: undefined,
-      };
-    } else if (currentUsed > 0) {
-      // Search complete! If carrying items, return to storage on foot, otherwise idle
-      dropoffDestination = findNearestStorageDropoff(state, { x: squad.x, z: squad.z }, buildings);
-      nextSquad = {
-        ...nextSquad,
-        state: 'returning',
-        targetPos: { x: dropoffDestination.x, z: dropoffDestination.z },
-        targetBuildingId: null,
-        targetBuildingName: dropoffDestination.name,
-        searchProgress: undefined,
-        pathState: undefined,
-      };
     } else {
+      // Empty haul and nothing left to carry -> go idle.
       nextSquad = {
         ...nextSquad,
         state: 'idle',
@@ -502,7 +526,8 @@ export function tickBuildingScavengeProgress(
       };
     }
   } else {
-    // Still scavenging in progress
+    // Still scavenging in progress. A full backpack does not interrupt the
+    // current building search; it only prevents additional loot pickup.
     nextSquad = {
       ...nextSquad,
       state: 'searching',
@@ -512,10 +537,12 @@ export function tickBuildingScavengeProgress(
   const newState: SettlementState = {
     ...state,
     buildingSearches: m,
+    ...(updatedVehicles ? { vehicles: updatedVehicles } : {}),
     squadInventories: {
       ...(state.squadInventories || {}),
       [squad.squadId]: {
         ...inv,
+        capacity,
         used: currentUsed,
         items: currentItems,
       },
@@ -531,6 +558,59 @@ export function tickBuildingScavengeProgress(
     dropoff: dropoffDestination,
     searchProgress: progress,
   };
+}
+
+/** Adds a single loot stack into the settlement stockpile. */
+function addLootToStockpile(stock: any, l: SquadLootItem): void {
+  switch (l.label) {
+    case 'canned_goods':
+      stock.food.canned_goods += l.quantity;
+      break;
+    case 'dried_rations':
+      stock.food.dried_rations += l.quantity;
+      break;
+    case 'bottled_water':
+      stock.water.bottled_water += l.quantity;
+      break;
+    case 'first_aid_kits':
+      stock.medical.first_aid_kits += l.quantity;
+      break;
+    case 'sterile_bandages':
+      stock.medical.sterile_bandages += l.quantity;
+      break;
+    case 'antibiotics':
+      stock.medical.antibiotics += l.quantity;
+      break;
+    case 'painkillers':
+      stock.medical.painkillers += l.quantity;
+      break;
+    case 'gasoline':
+      stock.fuel.gasoline += l.quantity;
+      break;
+    case 'diesel':
+      stock.fuel.diesel += l.quantity;
+      break;
+    case 'ammunition':
+      stock.ammo.sharedPool += l.quantity;
+      break;
+    case 'wood':
+      stock.materials.wood += l.quantity;
+      break;
+    case 'metal':
+      stock.materials.metal += l.quantity;
+      break;
+    case 'bricks':
+      stock.materials.bricks += l.quantity;
+      break;
+  }
+}
+
+/** Adds weapons/armor loot stacks into the settlement armory. */
+function addLootToArmory(armory: { weapons: WeaponItemId[]; armor: ArmorItemId[] }, items: SquadLootItem[]): void {
+  for (const l of items) {
+    if (l.kind === 'weapon' && l.itemId) armory.weapons.push(l.itemId as WeaponItemId);
+    if (l.kind === 'armor' && l.itemId) armory.armor.push(l.itemId as ArmorItemId);
+  }
 }
 
 /**
@@ -556,58 +636,14 @@ export function unloadSquadAtDropoff(
   const items = inv.items;
 
   for (const l of items) {
-    switch (l.label) {
-      case 'canned_goods':
-        stock.food.canned_goods += l.quantity;
-        break;
-      case 'dried_rations':
-        stock.food.dried_rations += l.quantity;
-        break;
-      case 'bottled_water':
-        stock.water.bottled_water += l.quantity;
-        break;
-      case 'first_aid_kits':
-        stock.medical.first_aid_kits += l.quantity;
-        break;
-      case 'sterile_bandages':
-        stock.medical.sterile_bandages += l.quantity;
-        break;
-      case 'antibiotics':
-        stock.medical.antibiotics += l.quantity;
-        break;
-      case 'painkillers':
-        stock.medical.painkillers += l.quantity;
-        break;
-      case 'gasoline':
-        stock.fuel.gasoline += l.quantity;
-        break;
-      case 'diesel':
-        stock.fuel.diesel += l.quantity;
-        break;
-      case 'ammunition':
-        stock.ammo.sharedPool += l.quantity;
-        break;
-      case 'wood':
-        stock.materials.wood += l.quantity;
-        break;
-      case 'metal':
-        stock.materials.metal += l.quantity;
-        break;
-      case 'bricks':
-        stock.materials.bricks += l.quantity;
-        break;
-    }
+    addLootToStockpile(stock, l);
   }
 
   const armory = {
     weapons: [...(state.armory?.weapons || [])],
     armor: [...(state.armory?.armor || [])],
   };
-
-  for (const l of items) {
-    if (l.kind === 'weapon' && l.itemId) armory.weapons.push(l.itemId as WeaponItemId);
-    if (l.kind === 'armor' && l.itemId) armory.armor.push(l.itemId as ArmorItemId);
-  }
+  addLootToArmory(armory, items);
 
   return {
     newState: {
@@ -620,6 +656,47 @@ export function unloadSquadAtDropoff(
       },
     },
     unloaded: items,
+  };
+}
+
+/**
+ * Unloads a vehicle's cargo bay when the mounted squad returns to a storage
+ * dropoff or HQ fortress. The whole bay is emptied into the settlement stockpile
+ * and armory, so mounted expeditions deposit their cargo in one trip.
+ */
+export function unloadVehicleAtDropoff(
+  state: SettlementState,
+  vehicle: WorldVehicle,
+  dropoff: { x: number; z: number; name?: string },
+  radius = 20
+): { newState: SettlementState; unloaded: SquadLootItem[] } {
+  const bay = vehicle.inventory || [];
+  if (bay.length === 0) {
+    return { newState: state, unloaded: [] };
+  }
+  if (Math.hypot(vehicle.position.x - dropoff.x, vehicle.position.z - dropoff.z) > radius) {
+    return { newState: state, unloaded: [] };
+  }
+
+  const stock = structuredClone(state.stockpile);
+  for (const l of bay) {
+    addLootToStockpile(stock, l);
+  }
+
+  const armory = {
+    weapons: [...(state.armory?.weapons || [])],
+    armor: [...(state.armory?.armor || [])],
+  };
+  addLootToArmory(armory, bay);
+
+  return {
+    newState: {
+      ...state,
+      stockpile: stock,
+      armory,
+      vehicles: (state.vehicles || []).map((v) => (v.id === vehicle.id ? { ...v, inventory: [] } : v)),
+    },
+    unloaded: bay,
   };
 }
 

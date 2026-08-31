@@ -26,18 +26,11 @@ export class RoadNetworkGraph {
   private buildGraph() {
     this.nodes.clear();
 
+    // Post-apocalypse driving: every road, path and track is drivable — nothing
+    // is excluded (footways included), so the graph and the snapping used for
+    // routes always agree and vehicles never get routed off the network onto a
+    // footway point the graph doesn't contain.
     for (const road of this.roads) {
-      const isPedestrian = [
-        'footway',
-        'pedestrian',
-        'steps',
-        'path',
-        'cycleway',
-      ].includes(road.highwayType);
-
-      // Only include drivable roads in vehicle graph
-      if (isPedestrian && road.width < 3.5) continue;
-
       const pts = road.points;
       for (let i = 0; i < pts.length; i++) {
         const p1 = pts[i];
@@ -61,10 +54,12 @@ export class RoadNetworkGraph {
             const node0 = this.nodes.get(key0)!;
             const node1 = this.nodes.get(key1)!;
 
+            // Post-apocalypse driving: ignore OSM one-way restrictions — vehicles
+            // may travel either direction on any road, path or track.
             if (!node0.neighbors.some((n) => n.nodeId === key1)) {
               node0.neighbors.push({ nodeId: key1, dist });
             }
-            if (!road.isOneway && !node1.neighbors.some((n) => n.nodeId === key0)) {
+            if (!node1.neighbors.some((n) => n.nodeId === key0)) {
               node1.neighbors.push({ nodeId: key0, dist });
             }
           }
@@ -124,9 +119,18 @@ export class RoadNetworkGraph {
   }
 
   /**
-   * Compute A* route along real road geometry from start to target
+   * Compute A* route along real road geometry from start to target. When
+   * blockedPolys (player-built wall/tower footprints) are provided, road edges
+   * whose midpoint falls inside a blocked footprint are skipped, so the route
+   * genuinely goes around freestanding construction rather than re-computing a
+   * path that dead-ends against a freshly placed wall.
    */
-  public findRoute(startPos: Point2D, targetPos: Point2D): Point2D[] {
+  public findRoute(
+    startPos: Point2D,
+    targetPos: Point2D,
+    blockedPolys?: Point2D[][],
+    edgeSize = 3.0
+  ): Point2D[] {
     const roadStart = this.findClosestPointOnRoad(startPos);
     const roadEnd = this.findClosestPointOnRoad(targetPos);
 
@@ -134,13 +138,34 @@ export class RoadNetworkGraph {
       return [roadStart.point, roadEnd.point];
     }
 
+    const isBlockedSegment = (ax: number, az: number, bx: number, bz: number): boolean => {
+      if (!blockedPolys || blockedPolys.length === 0) return false;
+      // Sample along the segment roughly every edgeSize metres (min 2 samples).
+      // If any sample falls inside a wall/tower footprint the edge is impassable,
+      // so a short wall sitting mid-road is reliably caught.
+      const segLen = Math.hypot(bx - ax, bz - az);
+      const n = Math.max(2, Math.ceil(segLen / Math.max(1, edgeSize)));
+      for (let i = 1; i < n; i++) {
+        const t = i / n;
+        const sx = ax + (bx - ax) * t;
+        const sz = az + (bz - az) * t;
+        for (const poly of blockedPolys) {
+          if (poly.length >= 3 && isPointInPoly(sx, sz, poly)) return true;
+        }
+      }
+      return false;
+    };
+
     // Direct segment check if both start and end are on the same road
     if (roadStart.road.id === roadEnd.road.id) {
       const straightDist = Math.hypot(
         roadEnd.point.x - roadStart.point.x,
         roadEnd.point.z - roadStart.point.z
       );
-      if (straightDist < 60) {
+      if (
+        straightDist < 60 &&
+        !isBlockedSegment(roadStart.point.x, roadStart.point.z, roadEnd.point.x, roadEnd.point.z)
+      ) {
         return [roadStart.point, roadEnd.point];
       }
     }
@@ -192,6 +217,12 @@ export class RoadNetworkGraph {
       const currentG = gScore.get(currentId) ?? Infinity;
 
       for (const neighbor of currentNode.neighbors) {
+        // If the road edge to this neighbor crosses a wall/tower footprint, treat
+        // it as impassable so A* routes around the construction.
+        const neighborNode = this.nodes.get(neighbor.nodeId)!;
+        if (isBlockedSegment(currentNode.x, currentNode.z, neighborNode.x, neighborNode.z)) {
+          continue;
+        }
         const tentativeG = currentG + neighbor.dist;
         const neighborG = gScore.get(neighbor.nodeId) ?? Infinity;
 
@@ -199,7 +230,6 @@ export class RoadNetworkGraph {
           cameFrom.set(neighbor.nodeId, currentId);
           gScore.set(neighbor.nodeId, tentativeG);
 
-          const neighborNode = this.nodes.get(neighbor.nodeId)!;
           const h = Math.hypot(
             endNode.x - neighborNode.x,
             endNode.z - neighborNode.z
@@ -233,6 +263,21 @@ export class RoadNetworkGraph {
     // Clean up close duplicates
     return cleanPath(finalPath);
   }
+}
+
+/**
+ * Ray-cast point-in-polygon test (same convention used by the PathGrid).
+ */
+function isPointInPoly(x: number, z: number, poly: Point2D[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i];
+    const b = poly[j];
+    if (a.z > z !== b.z > z && x < ((b.x - a.x) * (z - a.z)) / (b.z - a.z) + a.x) {
+      inside = !inside;
+    }
+  }
+  return inside;
 }
 
 /**

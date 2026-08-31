@@ -1,916 +1,347 @@
 import React, { useMemo, useState } from 'react';
 import {
- AlertTriangle,
- Award,
- BookOpen,
- Building2,
- CheckCircle2,
- ChevronRight,
- Clock,
- Droplets,
- Eye,
- Flame,
- Globe2,
- Hammer,
- HeartPulse,
- Info,
- Layers,
- Lock,
- MinusCircle,
- PlusCircle,
- Radio,
- RefreshCw,
- Search,
- Shield,
- ShieldAlert,
- Sparkles,
- Sprout,
- Sun,
- Truck,
- Users,
- Wrench,
- X,
- Zap,
+  Antenna, Archive, Baby, Beer, BookOpenCheck, Bomb, Boxes, BrickWall, Car,
+  Check, ClipboardList, CloudSun, Cog, CookingPot, Cross, Crosshair, Droplet,
+  Fish, Flame, FlaskConical, Focus, Fuel, Gauge, GraduationCap, Hammer,
+  HeartPulse, Layers, Leaf, Lock, Microscope, Pickaxe, Pill, Radar, Radio,
+  RadioTower, Recycle, Rocket, School, Scissors, Shield, ShieldCheck, Skull,
+  Soup, Sprout, Stethoscope, Sun, Swords, Syringe, Target, TreePine, Users,
+  Wheat, Wine, Wrench, X, Zap,
 } from 'lucide-react';
+import { RESEARCH_BRANCHES, RESEARCH_TREE_NODES } from '../data/researchTreeData';
 import {
- BranchInfo,
- RESEARCH_BRANCHES,
- RESEARCH_TREE_NODES,
-} from '../data/researchTreeData';
-import {
- calculateResearchGenerationRate,
- canUnlockResearchNode,
- grantDebugResearchPoints,
- isResearchUnlocked,
- unlockResearchNode,
+  calculateResearchGenerationRate,
+  canUnlockResearchNode,
+  getEstimatedResearchSeconds,
+  pauseResearch,
+  startResearchNode,
 } from '../services/researchService';
 import { ResearchBranch, ResearchNode } from '../types/research';
 import { SettlementState } from '../types/settlement';
 import { soundService } from '../services/soundService';
 
 interface ResearchTreeModalProps {
- settlement: SettlementState;
- onUpdateSettlement: (updated: SettlementState) => void;
- onClose: () => void;
- onOpenBuildingDrawer?: () => void;
+  settlement: SettlementState;
+  onUpdateSettlement: (updated: SettlementState) => void;
+  onClose: () => void;
+  onOpenBuildingDrawer?: () => void;
 }
 
-// Icon mapper helper
-function renderNodeIcon(iconName: string, className = 'w-5 h-5') {
- switch (iconName) {
- case 'Droplets':
- return <Droplets className={className} />;
- case 'Sprout':
- return <Sprout className={className} />;
- case 'Building':
- case 'Building2':
- return <Building2 className={className} />;
- case 'Sun':
- return <Sun className={className} />;
- case 'Shield':
- return <Shield className={className} />;
- case 'ShieldAlert':
- return <ShieldAlert className={className} />;
- case 'Zap':
- return <Zap className={className} />;
- case 'HeartPulse':
- return <HeartPulse className={className} />;
- case 'Eye':
- return <Eye className={className} />;
- case 'Users':
- return <Users className={className} />;
- case 'Sparkles':
- return <Sparkles className={className} />;
- case 'Hammer':
- return <Hammer className={className} />;
- case 'Flame':
- return <Flame className={className} />;
- case 'Wrench':
- return <Wrench className={className} />;
- case 'Truck':
- return <Truck className={className} />;
- case 'Radio':
- return <Radio className={className} />;
- case 'Globe2':
- return <Globe2 className={className} />;
- case 'Award':
- return <Award className={className} />;
- default:
- return <BookOpen className={className} />;
- }
-}
+const BRANCH_ICONS: Record<ResearchBranch, React.FC<{ className?: string }>> = {
+  medicine: Pill,
+  communication: Radio,
+  chemistry: FlaskConical,
+  arms: Wrench,
+  construction: Wrench,
+  food: Soup,
+  infection: Skull,
+  education: GraduationCap,
+};
 
-export const ResearchTreeModal: React.FC<ResearchTreeModalProps> = ({
- settlement,
- onUpdateSettlement,
- onClose,
- onOpenBuildingDrawer,
-}) => {
- const [activeBranchId, setActiveBranchId] = useState<ResearchBranch | 'overview'>('survival');
- const [selectedNodeId, setSelectedNodeId] = useState<string | null>('survival_water_purification');
- const [filterQuery, setFilterQuery] = useState('');
- const [toastNotification, setToastNotification] = useState<{
- title: string;
- desc: string;
- type: 'success' | 'warn' | 'info';
- } | null>(null);
+// Per-node tech icon, matching the reference tree (each node carries its own
+// discipline icon, with a padlock overlay when the node is still locked).
+const NODE_ICONS: Record<string, React.FC<{ className?: string }>> = {
+  // Medicine
+  medical_care: Cross, drugs_production: Pill, first_aid: Cross,
+  surgery: Scissors, clinical_efficiency: Gauge,
+  // Communication
+  basic_antenna: RadioTower, weather_forecast: CloudSun,
+  triangulation: Radar, long_range_antenna: Antenna,
+  // Chemistry
+  chemistry: FlaskConical, fertilizer_production: Sprout,
+  manufacture_of_fuels: Fuel, nitrocellulose_powder: Bomb,
+  polymers: Layers, biofuel_production: Leaf,
+  process_intensification: Flame, explosives_production: Bomb,
+  // Arms Production
+  pistol: Crosshair, assault_rifle: Target, shotgun: Swords,
+  sniper_rifle: Focus, precision_machinery: Cog,
+  heavy_machine_gun: Shield, mortar: Rocket,
+  // Construction
+  tool_factory: Wrench, advanced_woodworks: TreePine,
+  clay_processing: BrickWall, advanced_metalworks: Hammer,
+  recycling: Recycle, advanced_masonry: BrickWall,
+  mechanics: Car, ore_extraction_and_smelting: Pickaxe,
+  workflow_management: ClipboardList, structural_bracing: ShieldCheck,
+  advanced_mechanics: Cog, prefabricated_elements: Boxes,
+  // Food
+  farming: Wheat, fishery: Fish, fertilization_techniques: Sprout,
+  greenhouses: Sun, food_preservation: Archive, fermentation: Beer,
+  efficient_cooking: CookingPot, high_efficiency_brewing: Wine,
+  // Infection
+  early_diagnosis: Stethoscope, symptomatic_treatment: HeartPulse,
+  vaccine: Syringe, dosing_optimisation: Droplet, turning_prevention: Skull,
+  // Education
+  survival_training: Flame, combat_training: Crosshair, nursery: Baby,
+  scientific_apprenticeship: Microscope, archery_techniques: Target,
+  nursery_assistants: Users,
+};
 
- const researchState = settlement.research || {
- researchPoints: 0,
- totalAccumulatedRP: 0,
- passiveRatePerSec: 1.0,
- unlockedNodes: [],
- activeResearchId: null,
- activeProgressSec: 0,
- };
+// Per-category scene backdrop for the detail panel, standing in for the
+// reference's photography while keeping the same layout.
+const BRANCH_SCENES: Record<ResearchBranch, { gradient: string; icon: React.FC<{ className?: string }>; label: string }> = {
+  medicine: { gradient: 'linear-gradient(135deg,#10161c 0%,#12212b 45%,#1b2b30 100%)', icon: HeartPulse, label: 'Field Care' },
+  communication: { gradient: 'linear-gradient(135deg,#0d1518 0%,#0e2430 45%,#12384a 100%)', icon: RadioTower, label: 'Signal Networks' },
+  chemistry: { gradient: 'linear-gradient(135deg,#141310 0%,#1e1a12 45%,#33260f 100%)', icon: FlaskConical, label: 'Applied Science' },
+  arms: { gradient: 'linear-gradient(135deg,#171112 0%,#241418 45%,#3a1614 100%)', icon: Crosshair, label: 'Firearms & Ordnance' },
+  construction: { gradient: 'linear-gradient(135deg,#12141a 0%,#171b29 45%,#232342 100%)', icon: Wrench, label: 'Workshops & Engineering' },
+  food: { gradient: 'linear-gradient(135deg,#101710 0%,#152115 45%,#203016 100%)', icon: Wheat, label: 'Agriculture & Provision' },
+  infection: { gradient: 'linear-gradient(135deg,#131310 0%,#1e1c12 45%,#2b2610 100%)', icon: Skull, label: 'Virology & Containment' },
+  education: { gradient: 'linear-gradient(135deg,#141118 0%,#1e1524 45%,#331a3d 100%)', icon: GraduationCap, label: 'Training & Expertise' },
+};
 
- const unlockedNodes = researchState.unlockedNodes || [];
- const currentRP = Math.floor(researchState.researchPoints || 0);
+// Compact node metrics so the tallest, widest trees (Construction: 4 tiers × 4
+// wide) fit inside the panel without the central canvas needing to scroll.
+const NODE_W = 132;
+const NODE_H = 60;
+const COL_GAP = 44;
+const ROW_GAP = 26;
 
- // Rate Breakdown
- const rateBreakdown = useMemo(() => {
- return calculateResearchGenerationRate(settlement);
- }, [settlement]);
+const fmtTime = (seconds: number) => {
+  if (!isFinite(seconds) || seconds <= 0) return 'Instant';
+  const totalMin = Math.ceil(seconds / 60);
+  if (totalMin < 60) return `${totalMin} MIN`;
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return `${h}H ${m}M`;
+};
 
- // Selected Node data
- const selectedNode = selectedNodeId ? RESEARCH_TREE_NODES[selectedNodeId] : null;
+export const ResearchTreeModal: React.FC<ResearchTreeModalProps> = ({ settlement, onUpdateSettlement, onClose }) => {
+  const [activeBranch, setActiveBranch] = useState<ResearchBranch>('medicine');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [showHelp, setShowHelp] = useState(false);
 
- // Check if selected node can be unlocked
- const unlockStatus = useMemo(() => {
- if (!selectedNodeId) return { allowed: false, reason: 'No node selected' };
- return canUnlockResearchNode(settlement, selectedNodeId);
- }, [settlement, selectedNodeId]);
+  const research = settlement.research!;
+  const nodes = useMemo(
+    () => Object.values(RESEARCH_TREE_NODES).filter((node) => node.branch === activeBranch),
+    [activeBranch]
+  );
+  const selected = selectedId ? RESEARCH_TREE_NODES[selectedId] : null;
+  const rate = calculateResearchGenerationRate(settlement);
+  const SceneIcon = BRANCH_SCENES[activeBranch].icon;
+  const branch = RESEARCH_BRANCHES.find((item) => item.id === activeBranch)!;
+  const unlockedNodes = research.unlockedNodes || [];
+  const unlocked = (node: ResearchNode) => unlockedNodes.includes(node.id);
+  const isActive = (node: ResearchNode) => research.activeResearchId === node.id;
 
- const handleUnlockNode = (nodeId: string) => {
- try {
- const { updatedSettlement, node } = unlockResearchNode(settlement, nodeId);
- soundService.playTechUnlock();
- onUpdateSettlement(updatedSettlement);
- setToastNotification({
- title: `RESEARCH UNLOCKED: ${node.name}`,
- desc: `${node.tagline} is now active colony-wide.`,
- type: 'success',
- });
- setTimeout(() => setToastNotification(null), 4000);
- } catch (err: any) {
- soundService.playToastSound('warn');
- setToastNotification({
- title: 'RESEARCH BLOCKED',
- desc: err.message || 'Cannot unlock research node at this time.',
- type: 'warn',
- });
- setTimeout(() => setToastNotification(null), 4000);
- }
- };
+  const maxTier = Math.max(1, ...nodes.map((node) => node.tier));
+  const tiers = useMemo(
+    () => Array.from({ length: maxTier }, (_, i) => nodes.filter((node) => node.tier === i + 1).sort((a, b) => a.costRP - b.costRP)),
+    [nodes, maxTier]
+  );
+  const maxRow = Math.max(1, ...tiers.map((t) => t.length));
+  // Tiers progress top-to-bottom: tier 1 (root) sits at the top, deeper tiers
+  // cascade downward as they unlock. Within each tier the nodes are fanned out
+  // horizontally, centred so branches read symmetrically instead of left-to-right.
+  const layout = useMemo(() => {
+    const map = new Map<string, { x: number; y: number }>();
+    const slotW = NODE_W + COL_GAP;
+    const centerX = (maxRow * slotW) / 2;
+    tiers.forEach((tierNodes, tierIdx) => {
+      const span = tierNodes.length * slotW;
+      const startX = centerX - span / 2;
+      tierNodes.forEach((node, i) =>
+        map.set(node.id, { x: startX + i * slotW, y: tierIdx * (NODE_H + ROW_GAP) })
+      );
+    });
+    return map;
+  }, [tiers, maxRow]);
+  const graphW = Math.max(520, maxRow * (NODE_W + COL_GAP));
+  const graphH = Math.max(320, maxTier * (NODE_H + ROW_GAP) + 70);
 
- const handleGrantDebugRP = (amount: number) => {
- const updated = grantDebugResearchPoints(settlement, amount);
- onUpdateSettlement(updated);
- setToastNotification({
- title: amount > 0 ? `+${amount} RP ADDED` : 'RP RESET',
- desc: `Current available Research Points: ${Math.floor(updated.research.researchPoints)} RP`,
- type: 'info',
- });
- setTimeout(() => setToastNotification(null), 3000);
- };
+  const edgePath = (parentId: string, childId: string) => {
+    const from = layout.get(parentId);
+    const to = layout.get(childId);
+    if (!from || !to) return null;
+    if (from.x === to.x && to.y > from.y) {
+      // Pure vertical (single child)
+      return (
+        <path key={`${parentId}-${childId}`} d={`M ${from.x + NODE_W / 2} ${from.y + NODE_H} V ${to.y}`} fill="none" stroke="#3B5054" strokeWidth="2" />
+      );
+    }
+    const x1 = from.x + NODE_W / 2;
+    const y1 = from.y + NODE_H;
+    const x2 = to.x + NODE_W / 2;
+    const y2 = to.y;
+    const midY = y1 + Math.max(30, (y2 - y1) / 2);
+    return (
+      <path key={`${parentId}-${childId}`} d={`M ${x1} ${y1} V ${midY} H ${x2} V ${y2}`} fill="none" stroke="#3B5054" strokeWidth="2" />
+    );
+  };
+  const edgeColor = (childId: string) => {
+    const node = RESEARCH_TREE_NODES[childId];
+    if (!node) return '#3B5054';
+    if (unlocked(node)) return '#35D895';
+    if (isActive(node)) return '#38BDF8';
+    return canUnlockResearchNode(settlement, childId).allowed ? '#4E6A70' : '#2C3A3D';
+  };
+  const coloredEdge = (parentId: string, to: { x: number; y: number }, childId: string) => {
+    const from = layout.get(parentId)!;
+    if (from.x === to.x) {
+      return <path key={`${parentId}-${childId}`} d={`M ${from.x + NODE_W / 2} ${from.y + NODE_H} V ${to.y}`} fill="none" stroke={edgeColor(childId)} strokeWidth="2" />;
+    }
+    const y1 = from.y + NODE_H;
+    const midY = y1 + Math.max(30, (to.y - y1) / 2);
+    return <path key={`${parentId}-${childId}`} d={`M ${from.x + NODE_W / 2} ${y1} V ${midY} H ${to.x + NODE_W / 2} V ${to.y}`} fill="none" stroke={edgeColor(childId)} strokeWidth="2" />;
+  };
 
- const allNodesList = useMemo(() => Object.values(RESEARCH_TREE_NODES), []);
+  const start = () => {
+    if (!selected) return;
+    try { const r = startResearchNode(settlement, selected.id); onUpdateSettlement(r.updatedSettlement); soundService.playTechUnlock(); setError(null); } catch (e: any) { setError(e?.message || 'Cannot start research.'); soundService.playToastSound('warn'); }
+  };
+  const pause = () => { onUpdateSettlement(pauseResearch(settlement)); soundService.playToastSound('info'); setError(null); };
 
- const totalUnlockedCount = unlockedNodes.length;
- const totalNodesCount = allNodesList.length;
- const progressPercent = Math.round((totalUnlockedCount / totalNodesCount) * 100);
+  const selectedProgress = selected && isActive(selected) ? Math.min(100, (research.activeProgressSec / selected.baseTimeSec) * 100) : 0;
+  const selectedActive = selected ? isActive(selected) : false;
+  const check = selected ? canUnlockResearchNode(settlement, selected.id) : null;
 
- // Filtered nodes for search
- const filteredNodes = useMemo(() => {
- if (!filterQuery.trim()) return null;
- const q = filterQuery.toLowerCase();
- return allNodesList.filter(
- (n) =>
- n.name.toLowerCase().includes(q) ||
- n.tagline.toLowerCase().includes(q) ||
- n.description.toLowerCase().includes(q) ||
- n.categoryTag.toLowerCase().includes(q) ||
- n.branch.toLowerCase().includes(q)
- );
- }, [filterQuery, allNodesList]);
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/75 backdrop-blur-sm p-3 sm:p-6">
+      <section className="relative w-full max-w-[1260px] h-[min(86vh,740px)] bg-[#0B1114] border border-[#52656B] clip-tactical-bracket flex flex-col overflow-hidden font-sans shadow-[0_0_70px_rgba(0,0,0,.85)]">
+        <header className="h-12 shrink-0 flex items-center justify-between px-4 bg-[#151D20] border-b border-[#42545A]">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 border border-[#9BAEB2] rounded-full grid place-items-center text-white"><Microscope className="w-5 h-5" /></div>
+            <span className="font-heading text-sm uppercase tracking-widest text-white">Technology</span>
+          </div>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 text-[11px] text-[#AEBEC0]">
+              <span className="uppercase tracking-wider">Researchers</span>
+              <strong className="text-white">{rate.researchWorkers}</strong>
+            </div>
+            <div className="flex items-center gap-1.5 border border-[#2F8F5B] bg-[#0E241A] px-2.5 py-1">
+              <BookOpenCheck className="w-4 h-4 text-[#37F59A]" />
+              <strong className="text-[#37F59A] text-lg leading-none">{Math.floor(research.researchPoints || 0)}</strong>
+            </div>
+            <div className="relative">
+              <button onClick={() => setShowHelp((v) => !v)} className="p-1.5 text-[#AEBEC0] hover:text-white hover:bg-[#263033]" aria-label="Help">?</button>
+              {showHelp && (
+                <div className="absolute right-0 top-full z-10 mt-1 w-72 border border-[#42545A] bg-[#151D20] p-3 text-[11px] leading-relaxed text-[#B5C2C3] shadow-xl">
+                  <p className="mb-1 font-bold uppercase tracking-wider text-white">How research works</p>
+                  <p>Each category holds its own branch of technologies. Assign survivors to completed <strong className="text-[#5DF0AC]">Research Stations</strong> to generate Research Points (green book) and accelerate the active project — the more researchers, the faster it completes. Only one project can run at a time.</p>
+                </div>
+              )}
+            </div>
+            <button onClick={onClose} className="p-1.5 text-[#AEBEC0] hover:text-white hover:bg-[#263033]"><X className="w-5 h-5" /></button>
+          </div>
+        </header>
 
- return (
- <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md p-4 sm:p-6 overflow-hidden">
- <div className="relative w-full max-w-7xl h-[92vh] max-h-[850px] bg-slate-900 border border-slate-700/80 clip-tactical-bracket surface-bevel flex flex-col overflow-hidden text-slate-100 font-sans">
- {/* Toast Alert Banner */}
- {toastNotification && (
- <div
- className={`absolute top-4 left-1/2 -translate-x-1/2 z-50 px-5 py-3 border clip-card-chip flex items-center gap-3 animate-in fade-in slide-in-from-top-4 duration-300 ${
- toastNotification.type === 'success'
- ? 'bg-emerald-950/95 border-emerald-500/80 text-emerald-100'
- : toastNotification.type === 'warn'
- ? 'bg-amber-950/95 border-amber-500/80 text-amber-100'
- : 'bg-indigo-950/95 border-indigo-500/80 text-indigo-100'
- }`}
- >
- {toastNotification.type === 'success' ? (
- <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
- ) : toastNotification.type === 'warn' ? (
- <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
- ) : (
- <Info className="w-5 h-5 text-indigo-400 shrink-0" />
- )}
- <div>
- <div className="font-bold text-sm tracking-wide">{toastNotification.title}</div>
- <div className="text-xs text-slate-300">{toastNotification.desc}</div>
- </div>
- <button
- onClick={() => setToastNotification(null)}
- className="ml-2 text-slate-400 hover:text-white p-1"
- >
- <X className="w-4 h-4" />
- </button>
- </div>
- )}
+        <div className="flex min-h-0 flex-1">
+          <aside className="w-[180px] shrink-0 bg-[#11191C] border-r border-[#34464A] p-3">
+            <div className="text-[10px] font-bold text-[#7E9194] uppercase tracking-wider mb-2.5">Categories:</div>
+            <div className="space-y-1">
+              {RESEARCH_BRANCHES.map((item) => {
+                const Icon = BRANCH_ICONS[item.id] || School;
+                const branchNodes = Object.values(RESEARCH_TREE_NODES).filter((n) => n.branch === item.id);
+                const done = branchNodes.filter((n) => unlocked(n)).length;
+                const selectedBranch = activeBranch === item.id;
+                return (
+                  <button key={item.id} onClick={() => { setActiveBranch(item.id); setSelectedId(null); setError(null); }} className={`w-full flex items-center gap-2 px-2 py-2 text-left border-l-2 transition-colors ${selectedBranch ? 'bg-[#123A2E] border-[#37F59A] text-white' : 'bg-[#22303A] hover:bg-[#2A3A46] border-[#26343B] text-[#B8C5C6]'}`}>
+                    <Icon className="w-4 h-4 shrink-0" />
+                    <span className="flex-1 truncate font-heading text-[11px] font-bold uppercase">{item.id === 'medicine' ? 'Medicine' : item.id === 'construction' ? 'Construction' : item.name}</span>
+                    <span className="text-[10px] text-[#8FA1A4]">{done}/{branchNodes.length}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </aside>
 
- {/* 1. Header Bar */}
- <div className="px-6 py-4 bg-slate-950/90 border-b border-slate-800 flex flex-wrap items-center justify-between gap-4 shrink-0">
- <div className="flex items-center gap-3">
- <div className="w-10 h-10 bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-center text-indigo-400">
- <BookOpen className="w-6 h-6" />
- </div>
- <div>
- <div className="flex items-center gap-2">
- <h2 className="text-lg font-bold tracking-tight text-white uppercase">
- Colony Technology Tree
- </h2>
- <span className="px-2 py-0.5 text-xs font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
- §10 Unified Tech System
- </span>
- </div>
- <p className="text-xs text-slate-400">
- Unlock technological advancements across 6 scientific disciplines to enhance defense, medicine, and survival.
- </p>
- </div>
- </div>
+          <main className="relative flex-1 min-w-0 overflow-auto bg-[#0B1316] p-5">
+            <div className="mb-4 flex items-center gap-2 text-[10px] uppercase tracking-widest" style={{ color: branch.accentColor }}>
+              {branch.name} <span className="h-px flex-1 bg-[#314A4A]" />
+            </div>
+            <div className="relative" style={{ width: graphW, height: graphH }}>
+              <svg className="absolute inset-0 h-full w-full pointer-events-none" aria-hidden="true">
+                {nodes.flatMap((node) => {
+                  const to = layout.get(node.id);
+                  if (!to) return null;
+                  return node.prerequisites.map((parentId) => {
+                    const from = layout.get(parentId);
+                    if (!from) return null;
+                    return edgeColor(node.id) === '#3B5054' ? edgePath(parentId, node.id) : coloredEdge(parentId, to, node.id);
+                  });
+                })}
+              </svg>
+              {nodes.map((node) => {
+                const pos = layout.get(node.id)!;
+                const done = unlocked(node);
+                const active = isActive(node);
+                const available = canUnlockResearchNode(settlement, node.id).allowed;
+                const chosen = selectedId === node.id;
+                const progress = active ? Math.min(100, (research.activeProgressSec / node.baseTimeSec) * 100) : 0;
+                const NodeIcon = NODE_ICONS[node.id] || Zap;
+                return (
+                  <button key={node.id} onClick={() => { setSelectedId(node.id); setError(null); }} className={`absolute text-center transition-transform ${chosen ? 'scale-105' : ''}`} style={{ left: pos.x, top: pos.y, width: NODE_W }}>
+                    <div className={`relative mx-auto w-8 h-8 grid place-items-center border-2 ${done ? 'border-[#39F39A] bg-[#123C30] text-[#43F5A4]' : active ? 'border-[#38BDF8] bg-[#12303D] text-[#42D4FF]' : available ? 'border-[#29C8FF]/70 bg-[#12303D] text-[#42D4FF]' : 'border-[#4B5A5E] bg-[#1C262A] text-[#6E7F82] opacity-80'} ${chosen ? 'ring-2 ring-white/60' : ''}`}>
+                      <NodeIcon className="w-4 h-4" />
+                      {done && <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-[#37F59A]" />}
+                      {!done && !active && !available && (
+                        <span className="absolute -top-1 -right-1 grid h-3.5 w-3.5 place-items-center rounded-full border border-[#2C3A3D] bg-[#0F1618] text-[#8FA1A4]"><Lock className="h-2.5 w-2.5" /></span>
+                      )}
+                    </div>
+                    <span className={`mt-1 block min-h-6 px-1.5 py-0.5 text-[8px] font-heading font-bold uppercase leading-tight border ${done ? 'bg-[#173129] border-[#35D895] text-[#5DF0AC]' : active ? 'bg-[#12303D] border-[#38BDF8] text-[#A8D9EE]' : 'bg-[#293538] border-[#3B4045] text-[#9AA6A8]'}`}>
+                      {node.name}
+                      {active && <span className="mt-0.5 block h-1 w-full bg-[#1C262A]"><span className="block h-full bg-[#38BDF8]" style={{ width: `${progress}%` }} /></span>}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </main>
 
- {/* Research Resource Counters & Debug Buttons */}
- <div className="flex items-center gap-4">
- <div className="flex items-center gap-3 bg-slate-900/90 border border-slate-700/80 px-3.5 py-1.5 clip-card-chip">
- <div className="flex items-center gap-2">
- <div className="w-3 h-3 bg-cyan-400 animate-pulse" />
- <span className="text-xs text-slate-400 font-medium">Available RP:</span>
- <span className="text-base font-bold text-cyan-300 font-mono">
- {currentRP} <span className="text-xs font-normal text-cyan-500">RP</span>
- </span>
- </div>
- <div className="h-4 w-px bg-slate-700" />
- <div className="flex items-center gap-1.5 text-xs text-emerald-400 font-medium">
- <Zap className="w-3.5 h-3.5" />
- <span>+{rateBreakdown.totalRatePerSec.toFixed(1)} RP/s</span>
- </div>
- </div>
+          <aside className="w-[300px] shrink-0 bg-[#11191C] border-l border-[#34464A] flex flex-col overflow-hidden">
+            <div className="relative h-[120px] shrink-0 overflow-hidden border-b border-[#34464A]" style={{ background: BRANCH_SCENES[activeBranch].gradient }}>
+              <div className="absolute inset-0 opacity-[0.14]" style={{ background: 'repeating-linear-gradient(115deg, transparent 0 14px, rgba(255,255,255,0.35) 14px 15px)' }} />
+              <SceneIcon className="absolute -right-4 -bottom-6 h-28 w-28 text-white/10" />
+              <span className="absolute left-4 top-4 font-heading text-[10px] font-bold uppercase tracking-widest" style={{ color: branch.accentColor }}>{branch.name}</span>
+              <span className="absolute bottom-3 left-4 text-[10px] uppercase tracking-widest text-[#7D9295]">{BRANCH_SCENES[activeBranch].label}</span>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto p-5">
+            {selected ? (
+              <>
+                <div className="text-[10px] uppercase tracking-widest text-[#7D9295]">Tier {selected.tier} · {selected.categoryTag}</div>
+                <h2 className="mt-3 font-heading text-2xl font-black uppercase text-white">{selected.name}</h2>
+                <p className="mt-2.5 text-[11px] leading-relaxed text-[#B5C2C3]">{selected.description}</p>
 
- {/* Quick Debug RP Grant */}
- <div className="hidden lg:flex items-center gap-1.5 bg-slate-950 px-2 py-1 border border-slate-800 text-xs">
- <span className="text-slate-500 text-[10px] font-bold uppercase tracking-wider px-1">
- RP Dev:
- </span>
- <button
- onClick={() => handleGrantDebugRP(100)}
- className="px-2 py-0.5 bg-cyan-950 hover:bg-cyan-900 text-cyan-300 border border-cyan-700/60 font-mono text-[11px] transition-colors"
- title="Grant 100 RP for testing"
- >
- +100
- </button>
- <button
- onClick={() => handleGrantDebugRP(500)}
- className="px-2 py-0.5 bg-cyan-950 hover:bg-cyan-900 text-cyan-300 border border-cyan-700/60 font-mono text-[11px] transition-colors"
- title="Grant 500 RP for testing"
- >
- +500
- </button>
- </div>
+                {selected.effects.length > 0 && (
+                  <div className="mt-5"><div className="text-[10px] uppercase tracking-widest text-[#7D9295]">Effects</div>
+                    <div className="mt-2 space-y-2">{selected.effects.map((effect, i) => (
+                      <div key={i} className="flex justify-between gap-3 border-b border-[#293B3E] py-2 text-[11px]"><span className="text-[#B8C5C6]">{effect.stat}</span><strong className="text-[#4BEFA8]">{effect.value}</strong></div>
+                    ))}</div>
+                  </div>
+                )}
 
- <button
- onClick={onClose}
- className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
- >
- <X className="w-5 h-5" />
- </button>
- </div>
- </div>
+                <div className="mt-auto pt-4">
+                  <div className="flex items-center justify-between text-[10px] text-[#87999B]"><span className="uppercase tracking-wider">Research Cost</span><span className="text-white font-bold"><BookOpenCheck className="inline w-3.5 h-3.5 mr-1 text-[#37F59A]" />{selected.costRP}</span></div>
+                  {selectedActive && (
+                    <>
+                      <div className="mt-2 flex items-center justify-between text-[11px]"><span className="text-[#87999B]">ESTIMATED TIME</span><strong className="text-white">{fmtTime(getEstimatedResearchSeconds(settlement, selected, research.activeProgressSec))}</strong></div>
+                      <div className="mt-1 flex items-center justify-between text-[11px]"><span className="text-[#87999B]">PROGRESS</span><strong className="text-[#38BDF8]">{selectedProgress.toFixed(1)}%</strong></div>
+                      <div className="mt-2 h-2 w-full bg-[#1C262A] overflow-hidden"><div className="h-full bg-[#38BDF8]" style={{ width: `${selectedProgress}%` }} /></div>
+                    </>
+                  )}
 
- {/* 2. Main Content Body */}
- <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-hidden">
- {/* Left Column: Branch Navigator & Stats */}
- <div className="w-full md:w-64 bg-slate-950/60 border-r border-slate-800 flex flex-col shrink-0">
- {/* Search Input */}
- <div className="p-3 border-b border-slate-800/80">
- <div className="relative">
- <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-500" />
- <input
- type="text"
- value={filterQuery}
- onChange={(e) => setFilterQuery(e.target.value)}
- placeholder="Search technologies..."
- className="w-full pl-9 pr-3 py-1.5 bg-slate-900 border border-slate-700/80 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors"
- />
- {filterQuery && (
- <button
- onClick={() => setFilterQuery('')}
- className="absolute right-2.5 top-2 text-slate-400 hover:text-white text-xs"
- >
- ×
- </button>
- )}
- </div>
- </div>
+                  {error && <div className="mt-3 border border-[#7f1d1d] bg-[#2a171a] p-2 text-[10px] text-[#fca5a5]">{error}</div>}
 
- {/* Branch List */}
- <div className="flex-1 p-2 space-y-1 overflow-y-auto custom-scrollbar">
- <button
- onClick={() => {
- setActiveBranchId('overview');
- setFilterQuery('');
- }}
- className={`w-full flex items-center justify-between px-3 py-2.5 text-left transition-all ${
- activeBranchId === 'overview'
- ? 'bg-indigo-600/20 border border-indigo-500/50 text-indigo-200'
- : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200 border border-transparent'
- }`}
- >
- <div className="flex items-center gap-2.5">
- <Layers className="w-4 h-4 text-indigo-400" />
- <span className="text-xs font-bold uppercase tracking-wide">Colony Tech Matrix</span>
- </div>
- <span className="text-[11px] font-mono font-semibold px-2 py-0.5 bg-slate-800 text-slate-300">
- {totalUnlockedCount}/{totalNodesCount}
- </span>
- </button>
-
- <div className="pt-2 pb-1 px-3">
- <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
- Six Scientific Branches
- </span>
- </div>
-
- {RESEARCH_BRANCHES.map((branch) => {
- const branchNodes = allNodesList.filter((n) => n.branch === branch.id);
- const branchUnlocked = branchNodes.filter((n) => unlockedNodes.includes(n.id)).length;
- const isSelected = activeBranchId === branch.id;
-
- return (
- <button
- key={branch.id}
- onClick={() => {
- setActiveBranchId(branch.id);
- setFilterQuery('');
- // Select first node in branch if current is not in branch
- const firstInBranch = branchNodes[0];
- if (firstInBranch && (!selectedNode || selectedNode.branch !== branch.id)) {
- setSelectedNodeId(firstInBranch.id);
- }
- }}
- className={`w-full flex items-center justify-between px-3 py-2.5 text-left transition-all ${
- isSelected
- ? 'bg-slate-800/90 border border-slate-700 text-white'
- : 'text-slate-400 hover:bg-slate-900/60 hover:text-slate-200 border border-transparent'
- }`}
- >
- <div className="flex items-center gap-2.5 min-w-0">
- <div
- className="w-6 h-6 flex items-center justify-center shrink-0"
- style={{
- backgroundColor: `${branch.accentColor}20`,
- color: branch.accentColor,
- border: `1px solid ${branch.accentColor}40`,
- }}
- >
- {renderNodeIcon(branch.iconName, 'w-3.5 h-3.5')}
- </div>
- <div className="truncate">
- <div className="text-xs font-semibold truncate">{branch.name}</div>
- <div className="text-[10px] text-slate-500 truncate">{branch.tagline}</div>
- </div>
- </div>
- <span
- className={`text-[10px] font-mono font-bold px-1.5 py-0.5 shrink-0 ${
- branchUnlocked === branchNodes.length
- ? 'bg-emerald-950 text-emerald-400 border border-emerald-700/50'
- : branchUnlocked > 0
- ? 'bg-indigo-950 text-indigo-300 border border-indigo-800/50'
- : 'bg-slate-900 text-slate-500'
- }`}
- >
- {branchUnlocked}/{branchNodes.length}
- </span>
- </button>
- );
- })}
- </div>
-
- {/* RP Generation Source Box */}
- <div className="p-3 border-t border-slate-800 bg-slate-950/90">
- <div className="flex items-center justify-between mb-1.5">
- <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
- <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
- RP Ingestion
- </span>
- <span className="text-xs font-mono font-bold text-cyan-400">
- +{rateBreakdown.totalRatePerSec.toFixed(1)}/s
- </span>
- </div>
- <div className="space-y-1 text-[10px] text-slate-400">
- {rateBreakdown.details.map((d, i) => (
- <div key={i} className="truncate text-slate-300 flex items-center gap-1">
- <span className="text-slate-600">•</span>
- <span className="truncate">{d}</span>
- </div>
- ))}
- </div>
- </div>
- </div>
-
- {/* Center Column: Node Graph or Matrix View */}
- <div className="flex-1 flex flex-col bg-slate-900/50 min-h-0 overflow-y-auto p-4 sm:p-6 custom-scrollbar">
- {/* Active Branch Header */}
- {activeBranchId !== 'overview' && !filterQuery && (
- <div className="mb-6 p-4 bg-slate-950/80 border border-slate-800 flex flex-wrap items-center justify-between gap-4">
- {(() => {
- const br = RESEARCH_BRANCHES.find((b) => b.id === activeBranchId)!;
- const nodes = allNodesList.filter((n) => n.branch === br.id);
- const unlocked = nodes.filter((n) => unlockedNodes.includes(n.id)).length;
- return (
- <>
- <div className="flex items-center gap-3">
- <div
- className="w-10 h-10 flex items-center justify-center"
- style={{
- backgroundColor: `${br.accentColor}25`,
- color: br.accentColor,
- border: `1px solid ${br.accentColor}60`,
- }}
- >
- {renderNodeIcon(br.iconName, 'w-5 h-5')}
- </div>
- <div>
- <div className="flex items-center gap-2">
- <h3 className="text-base font-bold text-white">{br.name}</h3>
- <span className="text-[11px] font-mono text-slate-400">
- Tier 1 → Tier 4 Progression
- </span>
- </div>
- <p className="text-xs text-slate-400 max-w-xl">{br.description}</p>
- </div>
- </div>
- <div className="text-right">
- <div className="text-xs text-slate-400 font-medium">Branch Completion</div>
- <div className="text-sm font-bold font-mono text-white">
- {unlocked} / {nodes.length} Nodes ({Math.round((unlocked / nodes.length) * 100)}%)
- </div>
- </div>
- </>
- );
- })()}
- </div>
- )}
-
- {/* If Search Query Active */}
- {filterQuery && (
- <div className="mb-4">
- <div className="text-xs text-slate-400 mb-3">
- Search results for <span className="font-bold text-white">"{filterQuery}"</span> (
- {filteredNodes?.length || 0} found)
- </div>
- <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
- {filteredNodes?.map((node) => {
- const isUnlocked = unlockedNodes.includes(node.id);
- const isSelected = selectedNodeId === node.id;
- const canUnlock = canUnlockResearchNode(settlement, node.id).allowed;
- return (
- <div
- key={node.id}
- onClick={() => setSelectedNodeId(node.id)}
- className={`p-3.5 border cursor-pointer transition-all ${
- isSelected
- ? 'bg-indigo-950/60 border-indigo-500'
- : isUnlocked
- ? 'bg-emerald-950/30 border-emerald-800/40 hover:bg-emerald-950/50'
- : canUnlock
- ? 'bg-slate-900 border-cyan-500/50 hover:bg-slate-800'
- : 'bg-slate-950/60 border-slate-800 hover:bg-slate-900/60'
- }`}
- >
- <div className="flex items-start justify-between gap-2 mb-1.5">
- <div className="flex items-center gap-2">
- <div
- className={`p-1.5 text-xs font-bold ${
- isUnlocked
- ? 'bg-emerald-500/20 text-emerald-400'
- : canUnlock
- ? 'bg-cyan-500/20 text-cyan-400'
- : 'bg-slate-800 text-slate-400'
- }`}
- >
- {renderNodeIcon(node.iconName, 'w-4 h-4')}
- </div>
- <div>
- <div className="text-xs font-bold text-white">{node.name}</div>
- <div className="text-[10px] text-slate-400">{node.categoryTag}</div>
- </div>
- </div>
- <span
- className={`text-[10px] font-mono font-bold px-2 py-0.5 ${
- isUnlocked
- ? 'bg-emerald-950 text-emerald-400 border border-emerald-700/60'
- : canUnlock
- ? 'bg-cyan-950 text-cyan-400 border border-cyan-700/60'
- : 'bg-slate-800 text-slate-400'
- }`}
- >
- {isUnlocked ? 'RESEARCHED' : `${node.costRP} RP`}
- </span>
- </div>
- <p className="text-[11px] text-slate-300 line-clamp-2">{node.tagline}</p>
- </div>
- );
- })}
- </div>
- </div>
- )}
-
- {/* Tree Branch Tiers Layout */}
- {activeBranchId !== 'overview' && !filterQuery && (
- <div className="space-y-6">
- {[1, 2, 3, 4].map((tierNum) => {
- const branchNodes = allNodesList.filter(
- (n) => n.branch === activeBranchId && n.tier === tierNum
- );
- if (branchNodes.length === 0) return null;
-
- return (
- <div key={tierNum} className="relative">
- <div className="flex items-center gap-2 mb-3">
- <span className="px-2 py-0.5 bg-slate-800 border border-slate-700 text-[10px] font-mono font-bold text-slate-300 uppercase">
- Tier 0{tierNum}
- </span>
- <div className="h-px flex-1 bg-slate-800" />
- </div>
-
- <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
- {branchNodes.map((node) => {
- const isUnlocked = unlockedNodes.includes(node.id);
- const isSelected = selectedNodeId === node.id;
- const check = canUnlockResearchNode(settlement, node.id);
- const canUnlock = check.allowed;
-
- // Prerequisites status
- const missingPrereqs = node.prerequisites.filter(
- (p) => !unlockedNodes.includes(p)
- );
-
- return (
- <div
- key={node.id}
- onClick={() => setSelectedNodeId(node.id)}
- className={`relative p-4 border cursor-pointer transition-all ${
- isSelected
- ? 'bg-indigo-950/80 border-indigo-400 ring-2 ring-indigo-500/30'
- : isUnlocked
- ? 'bg-emerald-950/20 border-emerald-600/50 hover:bg-emerald-950/40'
- : canUnlock
- ? 'bg-slate-900/90 border-cyan-500/60 hover:bg-slate-850 hover:border-cyan-400'
- : 'bg-slate-950/50 border-slate-800/80 opacity-75 hover:opacity-100 hover:bg-slate-900/40'
- }`}
- >
- <div className="flex items-start justify-between gap-3 mb-2">
- <div className="flex items-center gap-2.5">
- <div
- className={`w-8 h-8 flex items-center justify-center ${
- isUnlocked
- ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
- : canUnlock
- ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 animate-pulse'
- : 'bg-slate-800 text-slate-500 border border-slate-700'
- }`}
- >
- {isUnlocked ? (
- <CheckCircle2 className="w-4 h-4 text-emerald-400" />
- ) : canUnlock ? (
- renderNodeIcon(node.iconName, 'w-4 h-4')
- ) : (
- <Lock className="w-4 h-4" />
- )}
- </div>
- <div>
- <h4 className="text-xs font-bold text-white tracking-wide">
- {node.name}
- </h4>
- <div className="text-[10px] text-slate-400 font-medium">
- {node.categoryTag}
- </div>
- </div>
- </div>
-
- <span
- className={`text-[10px] font-mono font-bold px-2 py-0.5 shrink-0 ${
- isUnlocked
- ? 'bg-emerald-950 text-emerald-400 border border-emerald-700/60'
- : canUnlock
- ? 'bg-cyan-950 text-cyan-300 border border-cyan-600/80'
- : 'bg-slate-850 text-slate-400 border border-slate-700'
- }`}
- >
- {isUnlocked ? 'RESEARCHED' : `${node.costRP} RP`}
- </span>
- </div>
-
- <p className="text-[11px] text-slate-300 mb-3 leading-relaxed">
- {node.tagline}
- </p>
-
- {/* Effects Pills */}
- <div className="flex flex-wrap gap-1.5 mb-2">
- {node.effects.slice(0, 2).map((eff, i) => (
- <span
- key={i}
- className="px-2 py-0.5 bg-slate-950/80 border border-slate-800 text-[10px] text-slate-300 font-mono"
- >
- <span className="text-cyan-400 font-bold">{eff.value}</span> {eff.stat}
- </span>
- ))}
- </div>
-
- {/* Prerequisites Warning if Locked */}
- {!isUnlocked && missingPrereqs.length > 0 && (
- <div className="text-[10px] text-amber-400/90 flex items-center gap-1 font-medium mt-1">
- <Lock className="w-3 h-3" />
- <span>
- Requires: {missingPrereqs.map((p) => RESEARCH_TREE_NODES[p]?.name || p).join(', ')}
- </span>
- </div>
- )}
- </div>
- );
- })}
- </div>
- </div>
- );
- })}
- </div>
- )}
-
- {/* Colony Overview Matrix Tab */}
- {activeBranchId === 'overview' && !filterQuery && (
- <div className="space-y-6">
- <div className="p-5 bg-gradient-to-r from-indigo-950/60 via-slate-900 to-slate-950 border border-indigo-900/50 flex flex-wrap items-center justify-between gap-6">
- <div>
- <h3 className="text-base font-bold text-white mb-1 flex items-center gap-2">
- <Globe2 className="w-5 h-5 text-indigo-400" />
- Civilization Resurgence Matrix
- </h3>
- <p className="text-xs text-slate-300 max-w-xl">
- Rebuilding human knowledge across all 6 core survival pillars. Unlocking nodes provides passive boosts, new building construction blue-prints, and direct gameplay enhancements.
- </p>
- </div>
- <div className="flex items-center gap-4 bg-slate-950/80 px-4 py-3 border border-slate-800">
- <div>
- <div className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">
- Colony Progress
- </div>
- <div className="text-lg font-bold font-mono text-cyan-300">
- {progressPercent}% Complete
- </div>
- </div>
- <div className="w-16 bg-slate-800 h-2.5 overflow-hidden">
- <div
- className="bg-cyan-500 h-full transition-all duration-500"
- style={{ width: `${progressPercent}%` }}
- />
- </div>
- </div>
- </div>
-
- <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
- {RESEARCH_BRANCHES.map((br) => {
- const nodes = allNodesList.filter((n) => n.branch === br.id);
- const unlocked = nodes.filter((n) => unlockedNodes.includes(n.id)).length;
- const isComplete = unlocked === nodes.length;
-
- return (
- <div
- key={br.id}
- onClick={() => {
- setActiveBranchId(br.id);
- const firstNode = nodes[0];
- if (firstNode) setSelectedNodeId(firstNode.id);
- }}
- className="p-4 bg-slate-950/70 border border-slate-800 hover:border-slate-700 hover:bg-slate-900 cursor-pointer transition-all flex flex-col justify-between"
- >
- <div>
- <div className="flex items-center justify-between mb-2">
- <div className="flex items-center gap-2">
- <div
- className="w-7 h-7 flex items-center justify-center"
- style={{
- backgroundColor: `${br.accentColor}25`,
- color: br.accentColor,
- }}
- >
- {renderNodeIcon(br.iconName, 'w-4 h-4')}
- </div>
- <span className="text-xs font-bold text-white">{br.name}</span>
- </div>
- <span
- className={`text-[10px] font-mono font-bold px-2 py-0.5 ${
- isComplete
- ? 'bg-emerald-950 text-emerald-400 border border-emerald-700/60'
- : unlocked > 0
- ? 'bg-indigo-950 text-indigo-300 border border-indigo-800/60'
- : 'bg-slate-900 text-slate-500'
- }`}
- >
- {unlocked}/{nodes.length}
- </span>
- </div>
- <p className="text-[11px] text-slate-400 mb-3 line-clamp-2">{br.tagline}</p>
- </div>
-
- <div className="space-y-1.5 pt-2 border-t border-slate-800/80">
- {nodes.map((n) => {
- const isNodeUnlocked = unlockedNodes.includes(n.id);
- return (
- <div
- key={n.id}
- className="flex items-center justify-between text-[10px]"
- >
- <span
- className={
- isNodeUnlocked
- ? 'text-emerald-300 font-medium'
- : 'text-slate-500'
- }
- >
- {n.name}
- </span>
- {isNodeUnlocked ? (
- <CheckCircle2 className="w-3 h-3 text-emerald-400" />
- ) : (
- <span className="font-mono text-slate-600">{n.costRP} RP</span>
- )}
- </div>
- );
- })}
- </div>
- </div>
- );
- })}
- </div>
- </div>
- )}
- </div>
-
- {/* Right Column: Node Details & Unlock Action */}
- <div className="w-full md:w-80 bg-slate-950/90 border-t md:border-t-0 md:border-l border-slate-800 p-5 flex flex-col shrink-0 overflow-y-auto custom-scrollbar">
- {selectedNode ? (
- <div className="flex-1 flex flex-col justify-between space-y-4">
- <div>
- <div className="flex items-center justify-between gap-2 mb-2">
- <span className="px-2 py-0.5 bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-[10px] font-mono font-bold uppercase tracking-wider">
- Tier 0{selectedNode.tier} • {selectedNode.categoryTag}
- </span>
- <span
- className={`text-[10px] font-mono font-bold px-2 py-0.5 ${
- unlockedNodes.includes(selectedNode.id)
- ? 'bg-emerald-950 text-emerald-400 border border-emerald-700/60'
- : unlockStatus.allowed
- ? 'bg-cyan-950 text-cyan-300 border border-cyan-600/80'
- : 'bg-slate-800 text-slate-400'
- }`}
- >
- {unlockedNodes.includes(selectedNode.id) ? 'RESEARCHED' : `${selectedNode.costRP} RP`}
- </span>
- </div>
-
- <div className="flex items-center gap-3 mb-3">
- <div className="w-10 h-10 bg-slate-900 border border-slate-700 flex items-center justify-center text-cyan-400">
- {renderNodeIcon(selectedNode.iconName, 'w-5 h-5')}
- </div>
- <div>
- <h3 className="text-sm font-bold text-white">{selectedNode.name}</h3>
- <div className="text-[11px] text-slate-400">{selectedNode.tagline}</div>
- </div>
- </div>
-
- <div className="p-3 bg-slate-900/80 border border-slate-800 text-xs text-slate-300 leading-relaxed mb-4">
- {selectedNode.description}
- </div>
-
- {/* Effects Breakdown */}
- <div className="space-y-2 mb-4">
- <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
- Research Modifiers & Effects
- </span>
- <div className="space-y-1.5">
- {selectedNode.effects.map((eff, i) => (
- <div
- key={i}
- className="p-2.5 bg-slate-900 border border-slate-800 text-xs"
- >
- <div className="flex items-center justify-between font-medium mb-0.5">
- <span className="text-slate-200">{eff.stat}</span>
- <span className="text-cyan-400 font-mono font-bold">{eff.value}</span>
- </div>
- <div className="text-[10px] text-slate-400">{eff.description}</div>
- </div>
- ))}
- </div>
- </div>
-
- {/* Unlocked Building notice */}
- {selectedNode.unlockedBuildingTypeId && (
- <div className="p-3 bg-indigo-950/40 border border-indigo-800/60 mb-4 flex items-center gap-3">
- <Building2 className="w-5 h-5 text-indigo-400 shrink-0" />
- <div>
- <div className="text-xs font-bold text-indigo-200">
- Unlocks Construction Blueprints
- </div>
- <div className="text-[10px] text-slate-300">
- Can be built via Adaptation or Freestanding construction.
- </div>
- </div>
- </div>
- )}
-
- {/* Prerequisites Requirement */}
- {selectedNode.prerequisites && selectedNode.prerequisites.length > 0 && (
- <div className="space-y-1 mb-4">
- <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
- Prerequisites
- </span>
- <div className="space-y-1">
- {selectedNode.prerequisites.map((pId) => {
- const prereq = RESEARCH_TREE_NODES[pId];
- const isMet = unlockedNodes.includes(pId);
- return (
- <div
- key={pId}
- className={`px-2.5 py-1 border text-xs flex items-center justify-between ${
- isMet
- ? 'bg-emerald-950/40 border-emerald-800 text-emerald-300'
- : 'bg-slate-900 border-slate-800 text-slate-400'
- }`}
- >
- <span>{prereq ? prereq.name : pId}</span>
- {isMet ? (
- <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
- ) : (
- <Lock className="w-3.5 h-3.5 text-slate-500" />
- )}
- </div>
- );
- })}
- </div>
- </div>
- )}
- </div>
-
- {/* Unlock Action Button */}
- <div className="pt-3 border-t border-slate-800 space-y-2">
- {unlockedNodes.includes(selectedNode.id) ? (
- <div className="w-full py-3 bg-emerald-950/60 border border-emerald-700/60 text-emerald-300 text-xs font-bold flex items-center justify-center gap-2">
- <CheckCircle2 className="w-4 h-4 text-emerald-400" />
- Technology Researched & Active
- </div>
- ) : (
- <>
- <button
- onClick={() => handleUnlockNode(selectedNode.id)}
- disabled={!unlockStatus.allowed}
- className={`w-full py-3 px-4 font-bold text-xs flex items-center justify-center gap-2 transition-all ${
- unlockStatus.allowed
- ? 'bg-gradient-to-r from-cyan-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 text-white cursor-pointer'
- : 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed'
- }`}
- >
- <Zap className="w-4 h-4" />
- Unlock Technology ({selectedNode.costRP} RP)
- </button>
-
- {!unlockStatus.allowed && (
- <p className="text-[10px] text-amber-400/90 text-center font-medium">
- {unlockStatus.reason}
- </p>
- )}
- </>
- )}
- </div>
- </div>
- ) : (
- <div className="flex-1 flex flex-col items-center justify-center text-center p-4 text-slate-500">
- <BookOpen className="w-8 h-8 mb-2 opacity-40" />
- <p className="text-xs">Select any node on the left to view technical details, prerequisites, and unlock modifiers.</p>
- </div>
- )}
- </div>
- </div>
- </div>
- </div>
- );
+                  {unlocked(selected) ? (
+                    <div className="mt-3 w-full py-2.5 border border-[#2F8F5B] bg-[#123A2E] text-[#5DF0AC] font-heading text-xs font-bold uppercase flex items-center justify-center gap-2"><Check className="w-4 h-4" />Researched</div>
+                  ) : selectedActive ? (
+                    <button onClick={pause} className="mt-3 w-full py-2.5 bg-[#344549] hover:bg-[#456066] border border-[#718386] font-heading text-xs font-bold uppercase">Pause Research</button>
+                  ) : (
+                    <>
+                      <button onClick={start} className="mt-3 w-full py-2.5 bg-[#243941] hover:bg-[#2E4A54] disabled:opacity-40 border border-[#4E8FA0] text-white font-heading text-xs font-bold uppercase flex items-center justify-center gap-2" disabled={!!check && !check.allowed}>Start Research <Zap className="w-4 h-4" /></button>
+                      <div className="mt-2 text-[11px] text-[#87999B]"><span className="uppercase">Estimated time:</span> <strong className="text-white">{fmtTime(getEstimatedResearchSeconds(settlement, selected))}</strong></div>
+                      {check && !check.allowed && <div className="mt-1 text-[10px] text-[#f59e0b]">{check.reason}</div>}
+                    </>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="m-auto text-center text-[#718487]"><Microscope className="mx-auto mb-3 w-8 h-8 opacity-50" /><p className="text-[11px] uppercase">Select a technology</p></div>
+            )}
+            </div>
+          </aside>
+        </div>
+      </section>
+    </div>
+  );
 };

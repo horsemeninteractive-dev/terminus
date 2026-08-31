@@ -35,7 +35,7 @@ export function rollBiteChance(variant: ZombieVariant, settlement?: SettlementSt
   }
 
   // Medical Research: Experimental Necro-Vaccine (§10) halves field bite chance
-  if (settlement && isResearchUnlocked(settlement, 'medical_vaccine')) {
+  if (settlement && isResearchUnlocked(settlement, 'vaccine')) {
     baseChance *= 0.5;
   }
 
@@ -99,9 +99,9 @@ export function diagnoseSurvivor(
   const remainingTurnSeconds = Math.max(0, infection.totalTurnTimeSec - infection.elapsedSec);
   const pathogenLoad = Math.min(100, Math.round((infection.elapsedSec / infection.totalTurnTimeSec) * 100));
 
-  const hasAntiseptics = settlement ? isResearchUnlocked(settlement, 'medical_antiseptics') : false;
-  const hasAntivirals = settlement ? isResearchUnlocked(settlement, 'medical_antivirals') : false;
-  const hasVaccine = settlement ? isResearchUnlocked(settlement, 'medical_vaccine') : false;
+  const hasAntiseptics = settlement ? isResearchUnlocked(settlement, 'first_aid') : false;
+  const hasAntivirals = settlement ? isResearchUnlocked(settlement, 'symptomatic_treatment') : false;
+  const hasVaccine = settlement ? isResearchUnlocked(settlement, 'vaccine') : false;
 
   let currentCureOdds = 90;
   if (infection.stage === 'incubation') {
@@ -252,9 +252,9 @@ export function administerTreatment(
   }
 
   // Base cure odds scale with how early it's caught (§6.2, §10)
-  const hasAntiseptics = isResearchUnlocked(state, 'medical_antiseptics');
-  const hasAntivirals = isResearchUnlocked(state, 'medical_antivirals');
-  const hasVaccine = isResearchUnlocked(state, 'medical_vaccine');
+  const hasAntiseptics = isResearchUnlocked(state, 'first_aid');
+  const hasAntivirals = isResearchUnlocked(state, 'symptomatic_treatment');
+  const hasVaccine = isResearchUnlocked(state, 'vaccine');
 
   let baseOdds = 70;
   const remainingSec = Math.max(0, infection.totalTurnTimeSec - infection.elapsedSec);
@@ -488,7 +488,7 @@ export function tickInfectionSimulation(
   const updatedInfections = new Map(currentState.infections);
   const updatedOutbreaks = new Map(currentState.outbreaks);
 
-  const hasCryoQuarantine = isResearchUnlocked(currentState, 'medical_cryo_quarantine');
+  const hasCryoQuarantine = isResearchUnlocked(currentState, 'clinical_efficiency');
 
   // 1. Process Active Infections
   for (const [id, inf] of updatedInfections.entries()) {

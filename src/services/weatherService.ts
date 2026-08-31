@@ -467,8 +467,8 @@ export function calculateCropYieldFactors(
     (b) => b.typeId === 'greenhouse_hydro' && b.constructionStatus === 'completed'
   ).length;
 
-  const hasHydroponicsTech = isResearchUnlocked(settlement, 'survival_hydroponics');
-  const hasPermacultureTech = isResearchUnlocked(settlement, 'survival_permaculture');
+  const hasHydroponicsTech = isResearchUnlocked(settlement, 'greenhouses');
+  const hasPermacultureTech = isResearchUnlocked(settlement, 'fertilization_techniques');
 
   // Greenhouse is fully insulated from winter frost (-75% does not apply to greenhouses!)
   let greenhouseMultiplier = 1.0;

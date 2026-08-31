@@ -76,6 +76,7 @@ import {
   tickInfectionSimulation,
 } from './services/infectionService';
 import {
+  startResearchNode,
   tickResearchSimulation,
   unlockResearchNode,
 } from './services/researchService';
@@ -161,6 +162,7 @@ import {
   ZombieUnit,
 } from './types/combat';
 import { BuildingPolygon, LocationPreset, MapData, Point2D, SettlementPlacement } from './types/map';
+import { BuildingSearchState } from './types/scavenging';
 import {
   HiddenSurvivorGroup,
   JobSector,
@@ -172,6 +174,7 @@ import {
   SettlementStockpile,
 } from './types/settlement';
 import { FUNCTIONAL_BUILDING_DEFINITIONS } from './data/functionalBuildings';
+import { getFreestandingCollisionPolygon, getFreestandingDimensions } from './services/freestandingFootprint';
 import { RivalHideout } from './types/rivalFaction';
 import { WorldVehicle } from './types/vehicle';
 import { CaravanDispatchConfig, SettlementRecord, TradeCaravan } from './types/caravan';
@@ -179,17 +182,50 @@ import { SeasonType, WeatherType } from './types/weather';
 import {
   formatLootLabel,
   ensureBuildingSearchStates,
+  isPointInsidePolygon,
   isSquadInsideBuilding,
   startBuildingSearch,
   tickBuildingScavengeProgress,
   findNearestStorageDropoff,
   unloadSquadAtDropoff,
   unloadSquadAtHQ,
+  unloadVehicleAtDropoff,
   getBuildingSearchDurationSec,
   searchBuilding,
 } from './services/scavengingService';
 import { assignResourceGatherers, tickResourceGathering } from './services/resourceGatheringService';
 import { ResourceNode } from './types/map';
+
+function getHiddenGroupValues(value: unknown): HiddenSurvivorGroup[] {
+  if (value instanceof Map) return Array.from(value.values()) as HiddenSurvivorGroup[];
+  if (Array.isArray(value)) return value as HiddenSurvivorGroup[];
+  if (value && typeof value === 'object') return Object.values(value) as HiddenSurvivorGroup[];
+  return [];
+}
+
+/** True when a building has been fully cleared (searched and nothing left to take). */
+function isBuildingExhausted(id: string | number, searches: Map<string | number, BuildingSearchState>): boolean {
+  const search = searches.get(id) ?? searches.get(String(id));
+  if (!search) return false;
+  return search.searched === true || (Array.isArray(search.unlootedItems) && search.unlootedItems.length === 0);
+}
+
+/**
+ * Walk a scavenge queue and return the first building that still has loot.
+ * Cleared/empty buildings are skipped so squads never get sent to dead ends.
+ */
+function findNextScavengeTarget(
+  queueIds: Array<string | number>,
+  buildings: BuildingPolygon[],
+  searches: Map<string | number, BuildingSearchState>
+): BuildingPolygon | null {
+  for (const id of queueIds) {
+    const b = buildings.find((candidate) => String(candidate.id) === String(id));
+    if (b && !isBuildingExhausted(b.id, searches)) return b;
+  }
+  return null;
+}
+
 
 export type AppViewMode = 'start_screen' | 'intro' | 'main_menu' | 'globe' | 'world';
 
@@ -309,6 +345,12 @@ export default function App() {
   );
   const [pendingFreestandingType, setPendingFreestandingType] = useState<FunctionalBuildingTypeId | null>(null);
   const [scavengeQueue, setScavengeQueue] = useState<Record<string, Array<string | number>>>({});
+  // Live mirror of the queue so the fast simulation loop can read freshly-created
+  // queues (the loop's closure can otherwise lag behind handleDesignateSquadScavenge).
+  const scavengeQueueRef = useRef(scavengeQueue);
+  useEffect(() => {
+    scavengeQueueRef.current = scavengeQueue;
+  }, [scavengeQueue]);
   const [isFreestandingModalOpen, setIsFreestandingModalOpen] = useState(false);
   const [isPopulationModalOpen, setIsPopulationModalOpen] = useState(false);
   const [isSquadModalOpen, setIsSquadModalOpen] = useState(false);
@@ -557,6 +599,25 @@ export default function App() {
     }
   }, [gameClock.speed]);
 
+  // While a strategic time-out modal is open (Radio communications or the
+  // Research tree) the game pauses automatically, and returns to whichever speed
+  // was set beforehand once the modal is closed / confirmed. If both open at
+  // once, the speed is only restored after they have all closed.
+  const modalPauseRef = useRef<0 | 1 | 2 | 4 | null>(null);
+  useEffect(() => {
+    const anyOpen = isRadioModalOpen || isResearchModalOpen;
+    if (anyOpen) {
+      if (modalPauseRef.current === null) {
+        modalPauseRef.current = gameClockRef.current.speed;
+        setGameClock((c) => (c.speed === 0 ? c : { ...c, speed: 0 }));
+      }
+    } else if (modalPauseRef.current !== null) {
+      const restore = modalPauseRef.current;
+      modalPauseRef.current = null;
+      setGameClock((c) => ({ ...c, speed: restore }));
+    }
+  }, [isRadioModalOpen, isResearchModalOpen]);
+
   // Initialize Web Audio Context on first player gesture (§15)
   useEffect(() => {
     const handleGesture = () => {
@@ -696,14 +757,14 @@ export default function App() {
       const dt = 0.5 * (gameClockRef.current?.speed ?? 1);
       if (dt <= 0) {
         // Still update resource amounts from a no-op tick (position unchanged).
-        const idle = tickResourceGathering(st, md, 0, isNight, isAlarmActive);
+        const idle = tickResourceGathering(st, md, 0, isNight, isAlarmActive, pathGridRef.current);
         settlementRef.current = idle.newState;
         mapDataRef.current = idle.mapData;
         setSettlement(idle.newState);
         sceneRef.current?.updateResourceAmounts(idle.mapData.resourceNodes);
         return;
       }
-      const result = tickResourceGathering(st, md, dt, isNight, isAlarmActive);
+      const result = tickResourceGathering(st, md, dt, isNight, isAlarmActive, pathGridRef.current);
       settlementRef.current = result.newState;
       mapDataRef.current = result.mapData;
       setSettlement(result.newState);
@@ -722,6 +783,14 @@ export default function App() {
       pathGridRef.current = null;
     }
   }, [mapData]);
+
+  // Apply player-built freestanding structures (walls, fences, towers) to the
+  // squad path grid so squads route around new construction instead of walking
+  // through it. Re-runs when the map (grid rebuilt) or the freestanding list
+  // changes; gates stay open as the intended way through a fence line.
+  useEffect(() => {
+    pathGridRef.current?.setFreestandingObstacles(settlement.freestandingBuildings);
+  }, [mapData, settlement.freestandingBuildings]);
 
   // Spawn initial ambient dormant zombies when map data or HQ is updated
   useEffect(() => {
@@ -757,7 +826,7 @@ export default function App() {
         // nothing moves, including site workers.
         const simDelta = 1.0 * gameClock.speed;
         const { newState, completedConstructions, completedDeconstructions } =
-          tickSettlementSimulation(prev, simDelta);
+          tickSettlementSimulation(prev, simDelta, pathGridRef.current);
         const withResearch = tickResearchSimulation(newState, 1.0, gameClock.speed);
         
         const currentWeatherState = prev.weather || createInitialWeatherState(gameClock.day);
@@ -1120,7 +1189,7 @@ export default function App() {
       }
 
       let workingZombies = combatResult.updatedZombies;
-      let workingSettlement = settlement;
+      let workingSettlement = settlementRef.current;
       setDroppedItems(combatResult.droppedItems);
       setNoiseEvents(combatResult.activeNoiseEvents);
       setHostileHumans(combatResult.updatedHostileHumans);
@@ -1167,6 +1236,7 @@ export default function App() {
 
               workingSettlement = scavResult.newState;
               combatResult.updatedSquads[i] = scavResult.updatedSquad;
+              combatSquadsRef.current = combatResult.updatedSquads;
 
               // If items were found this tick
               if (scavResult.itemsFoundThisTick.length > 0) {
@@ -1187,11 +1257,13 @@ export default function App() {
                 }
               }
 
-              // If inventory reached capacity
-              if (scavResult.inventoryFull) {
+              // Full carry slots no longer interrupt the active building search.
+              // The warning is shown once the building has finished so the player
+              // can see that any undiscovered loot remains behind.
+              if (scavResult.inventoryFull && scavResult.isCompleted) {
                 setToastMessage({
                   title: 'INVENTORY CAPACITY FULL',
-                  desc: `${sq.name}'s backpack is full (${scavResult.updatedSquad.currentWeightKg}kg)! Returning to ${scavResult.dropoff?.name || 'Storage Depot'} to deposit supplies.`,
+                  desc: `${sq.name} finished searching with ${scavResult.updatedSquad.currentWeightKg}/${scavResult.updatedSquad.members.filter((member) => member.isAlive).length} slots occupied. Remaining supplies stay at ${targetBldg.name || 'the structure'} before returning to ${scavResult.dropoff?.name || 'Storage Depot'}.`,
                   type: 'warn',
                 });
                 soundService.playCombatActionSFX('assault_order');
@@ -1208,30 +1280,58 @@ export default function App() {
                   (id) => String(id) !== String(targetBldg.id)
                 );
                 setScavengeQueue((prev) => ({ ...prev, [sq.squadId]: remainingQueue }));
-                const nextId = remainingQueue[0];
-                const nextBuilding = nextId === undefined
-                  ? undefined
-                  : mapData.buildings.find((b) => String(b.id) === String(nextId));
-                if (nextBuilding) {
-                  combatResult.updatedSquads[i] = orderSquadMove(
-                    combatResult.updatedSquads,
-                    sq.squadId,
-                    nextBuilding.center,
-                    nextBuilding.id,
-                    nextBuilding.name || nextBuilding.type
-                  ).find((s) => s.squadId === sq.squadId) || combatResult.updatedSquads[i];
+                const finishedSquad = combatResult.updatedSquads[i];
+                const finishedInventory = workingSettlement.squadInventories?.[sq.squadId];
+                const searches = workingSettlement.buildingSearches || (new Map() as Map<string | number, BuildingSearchState>);
+                const carrying = !!finishedInventory?.items?.length;
+
+                if (carrying && finishedSquad.state !== 'returning') {
+                  // Full or partial haul: force a return to HQ/storage to deposit
+                  // BEFORE touching any queued building. The unload handler below
+                  // resumes the preserved queue once the loot is dropped off.
+                  const dropoff = findNearestStorageDropoff(workingSettlement, { x: finishedSquad.x, z: finishedSquad.z }, mapData.buildings);
+                  combatResult.updatedSquads[i] = {
+                    ...finishedSquad,
+                    state: 'returning',
+                    targetPos: { x: dropoff.x, z: dropoff.z },
+                    targetBuildingId: null,
+                    targetBuildingName: dropoff.name,
+                    searchProgress: undefined,
+                    pathState: undefined,
+                  };
+                } else if (!carrying && finishedSquad.state !== 'returning') {
+                  // Empty haul: continue straight to the next queued building
+                  // that still has loot, skipping any already-cleared structures.
+                  const nextBuilding = findNextScavengeTarget(remainingQueue, mapData.buildings, searches);
+                  if (nextBuilding) {
+                    combatResult.updatedSquads[i] = orderSquadMove(
+                      combatResult.updatedSquads,
+                      sq.squadId,
+                      nextBuilding.center,
+                      nextBuilding.id,
+                      nextBuilding.name || nextBuilding.type
+                    ).find((s) => s.squadId === sq.squadId) || finishedSquad;
+                  }
                 }
+                // Else (carrying and already 'returning', as set by the scavenging
+                // service): leave the squad heading to deposit. The unload handler
+                // resumes the preserved queue after unloading.
               }
             }
           }
         }
       }
 
-      // Auto-unload squad inventories when returning inside HQ fortress OR any completed Storage Depot
+      // Auto-unload squad inventories (and the cargo bay of the vehicle they are
+      // mounted in) when returning inside HQ fortress OR any completed Storage Depot.
       for (let i = 0; i < combatResult.updatedSquads.length; i++) {
         const sq = combatResult.updatedSquads[i];
         const inv = workingSettlement.squadInventories?.[sq.squadId];
-        if (!inv?.items?.length) continue;
+        const mountedVeh =
+          workingSettlement.vehicles?.find((v) => v.assignedSquadId === sq.squadId) ||
+          workingSettlement.vehicles?.find((v) => v.id === sq.depositVehicleId);
+        const vehCargo = mountedVeh ? (mountedVeh.inventory || []).length : 0;
+        if (!inv?.items?.length && vehCargo === 0) continue;
 
         const dropoff = findNearestStorageDropoff(workingSettlement, { x: sq.x, z: sq.z }, mapData?.buildings);
         if (dropoff) {
@@ -1241,29 +1341,160 @@ export default function App() {
             : Math.hypot(sq.x - dropoff.x, sq.z - dropoff.z) <= 4.0;
 
           if (isInsideDropoff) {
-            const res = unloadSquadAtDropoff(workingSettlement, sq.squadId, { x: sq.x, z: sq.z }, dropoff, 10);
-            if (res.unloaded.length > 0) {
-              workingSettlement = res.newState;
-              const summary = res.unloaded.map((u) => `${formatLootLabel(u.label)} ×${u.quantity}`).join(', ');
-              setToastMessage({
-                title: `SUPPLIES SECURED AT ${dropoff.name.toUpperCase()}`,
-                desc: `${sq.name} deposited haul into stockpile: ${summary}`,
-                type: 'success',
-              });
-              soundService.playBuildingPlaced();
-
-              if (sq.state === 'returning') {
-                const nextId = scavengeQueue[sq.squadId]?.[0];
-                const nextBuilding = nextId === undefined
-                  ? undefined
-                  : mapData?.buildings.find((b) => String(b.id) === String(nextId));
-                combatResult.updatedSquads[i] = nextBuilding
-                  ? orderSquadMove(combatResult.updatedSquads, sq.squadId, nextBuilding.center, nextBuilding.id, nextBuilding.name || nextBuilding.type)
-                      .find((s) => s.squadId === sq.squadId) || { ...sq, state: 'idle', targetPos: null, targetBuildingName: null }
-                  : { ...sq, state: 'idle', targetPos: null, targetBuildingName: null };
+            let depositedAny = false;
+            if (inv?.items?.length) {
+              const res = unloadSquadAtDropoff(workingSettlement, sq.squadId, { x: sq.x, z: sq.z }, dropoff, 10);
+              if (res.unloaded.length > 0) {
+                workingSettlement = res.newState;
+                depositedAny = true;
+                const summary = res.unloaded.map((u) => `${formatLootLabel(u.label)} ×${u.quantity}`).join(', ');
+                setToastMessage({
+                  title: `SUPPLIES SECURED AT ${dropoff.name.toUpperCase()}`,
+                  desc: `${sq.name} deposited haul into stockpile: ${summary}`,
+                  type: 'success',
+                });
+                soundService.playBuildingPlaced();
               }
             }
+
+            // A mounted squad also empties its vehicle's cargo bay at the dropoff.
+            if (mountedVeh && vehCargo > 0) {
+              const vehRes = unloadVehicleAtDropoff(workingSettlement, mountedVeh, dropoff, 10);
+              if (vehRes.unloaded.length > 0) {
+                workingSettlement = vehRes.newState;
+                depositedAny = true;
+                const summary = vehRes.unloaded.map((u) => `${formatLootLabel(u.label)} ×${u.quantity}`).join(', ');
+                setToastMessage({
+                  title: `VEHICLE CARGO DEPOSITED AT ${dropoff.name.toUpperCase()}`,
+                  desc: `${mountedVeh.name} unloaded ${vehRes.unloaded.length} cargo slots into stockpile: ${summary}`,
+                  type: 'success',
+                });
+                soundService.playBuildingPlaced();
+              }
+            }
+
+            // Resume the preserved scavenge queue after depositing — but only for
+            // squads ON FOOT. Mounted squads are picked up by the vehicle dispatch
+            // logic below (the vehicle drives to the next queued building).
+            if (depositedAny && sq.state === 'returning' && !mountedVeh) {
+              // Skip any buildings that have since been fully cleared. If nothing
+              // remains, the squad returns to idle.
+              const searches = workingSettlement.buildingSearches || (new Map() as Map<string | number, BuildingSearchState>);
+              const nextBuilding = findNextScavengeTarget(scavengeQueue[sq.squadId] || [], mapData?.buildings || [], searches);
+              combatResult.updatedSquads[i] = nextBuilding
+                ? orderSquadMove(combatResult.updatedSquads, sq.squadId, nextBuilding.center, nextBuilding.id, nextBuilding.name || nextBuilding.type)
+                    .find((s) => s.squadId === sq.squadId) || { ...sq, state: 'idle', targetPos: null, targetBuildingName: null }
+                : { ...sq, state: 'idle', targetPos: null, targetBuildingName: null };
+            } else if (depositedAny && mountedVeh && sq.state === 'returning') {
+              // Mounted squad just deposited: settle it to idle at the vehicle so
+              // the dispatch loop below can drive to the next queued building.
+              combatResult.updatedSquads[i] = { ...sq, state: 'idle', targetPos: null, targetBuildingName: null };
+            } else if (depositedAny && sq.depositVehicleId) {
+              // This squad dismounted to deposit BOTH its inventory and its
+              // vehicle's cargo bay. After unloading, send it back to the parked
+              // vehicle to re-board and resume the scavenge queue.
+              const depotVeh = workingSettlement.vehicles?.find((v) => v.id === sq.depositVehicleId);
+              combatResult.updatedSquads[i] = depotVeh
+                ? {
+                    ...sq,
+                    depositVehicleId: null,
+                    pendingMountVehicleId: depotVeh.id,
+                    state: 'moving',
+                    manualOrder: false,
+                    targetPos: { x: depotVeh.position.x, z: depotVeh.position.z },
+                    targetBuildingId: null,
+                    targetBuildingName: `Return to ${depotVeh.name}`,
+                    pathState: undefined,
+                  }
+                : { ...sq, depositVehicleId: null, state: 'idle', targetPos: null, targetBuildingName: null };
+            }
           }
+        }
+      }
+
+      // Mounted-squad logistics: vehicles carry the scavenge queue. Once a squad
+      // finishes a building and boards again, dispatch its vehicle to the next
+      // queued building; when the cargo bay is full (autoDepotReturn) drive the
+      // vehicle home to deposit instead.
+      if (mapData && roadGraphRef.current) {
+        const searches =
+          workingSettlement.buildingSearches || (new Map() as Map<string | number, BuildingSearchState>);
+        let vehiclesChanged = false;
+        const dispatchedVehicles = (workingSettlement.vehicles || []).map((veh) => {
+          let v = veh;
+          const mountedSquadId = v.assignedSquadId;
+          const isParked = !v.isMoving && !v.targetPos && !v.autoScavengeBuildingId;
+
+          // 1. Full cargo bay -> the squad boarded again; drive home to deposit.
+          if (v.autoDepotReturn && mountedSquadId && isParked) {
+            const dropTarget = findNearestStorageDropoff(
+              workingSettlement,
+              { x: v.position.x, z: v.position.z },
+              mapData.buildings
+            );
+            const distToDrop =
+              mapData && dropTarget.buildingId !== undefined
+                ? Math.hypot(v.position.x - dropTarget.x, v.position.z - dropTarget.z)
+                : 9999;
+            if (distToDrop > 18) {
+              // Not at the depot yet: keep the flag set and drive there.
+              v = orderVehicleRoadTravel(v, { x: dropTarget.x, z: dropTarget.z }, roadGraphRef.current);
+              v = { ...v, autoDepotReturn: true };
+              vehiclesChanged = true;
+              setToastMessage({
+                title: 'VEHICLE RETURNING TO DEPOSIT',
+                desc: `${v.name} cargo bay is full — driving back to ${dropTarget.name.toUpperCase()} to unload before continuing.`,
+                type: 'info',
+              });
+              return v;
+            }
+            // Arrived at the depot: dismount the squad and send it ON FOOT into
+            // the dropoff building so both the squad inventory AND the vehicle
+            // cargo bay actually get deposited (a mounted squad would otherwise
+            // just park and never trigger the in-building unload).
+            const depotSq = combatResult.updatedSquads.find((s) => s.squadId === mountedSquadId);
+            if (depotSq) {
+              const dis = dismountSquadFromVehicle(v, depotSq);
+              v = dis.updatedVehicle;
+              v = { ...v, autoDepotReturn: false };
+              combatResult.updatedSquads[combatResult.updatedSquads.findIndex((s) => s.squadId === mountedSquadId)] = {
+                ...dis.updatedSquad,
+                depositVehicleId: v.id,
+                state: 'moving',
+                manualOrder: false,
+                targetPos: { x: dropTarget.x, z: dropTarget.z },
+                targetBuildingId: dropTarget.buildingId ?? null,
+                targetBuildingName: `Deposit at ${dropTarget.name}`,
+                pathState: undefined,
+              };
+              vehiclesChanged = true;
+              setToastMessage({
+                title: 'SQUAD DEPOSITING CARGO',
+                desc: `${depotSq.name} unloading ${v.name}'s cargo bay and its haul into ${dropTarget.name.toUpperCase()}.`,
+                type: 'info',
+              });
+            }
+            return v;
+          }
+
+          // 2. Mounted squad with a remaining queue -> drive to the next building.
+          if (mountedSquadId && isParked && !v.autoDepotReturn) {
+            const queue = scavengeQueueRef.current[mountedSquadId] || [];
+            const nextBuilding = findNextScavengeTarget(queue, mapData.buildings, searches);
+            if (nextBuilding) {
+              v = orderVehicleRoadTravel(v, nextBuilding.center, roadGraphRef.current);
+              v = {
+                ...v,
+                autoScavengeBuildingId: nextBuilding.id,
+                autoScavengeBuildingName: nextBuilding.name || nextBuilding.type,
+              };
+              vehiclesChanged = true;
+            }
+          }
+          return v;
+        });
+        if (vehiclesChanged) {
+          workingSettlement = { ...workingSettlement, vehicles: dispatchedVehicles };
         }
       }
 
@@ -1271,8 +1502,8 @@ export default function App() {
       combatSquadsRef.current = combatResult.updatedSquads;
       setCombatSquads(combatResult.updatedSquads);
 
-      if (workingSettlement !== settlement) {
-        setSettlement(workingSettlement);
+      if (workingSettlement !== settlement) {          settlementRef.current = workingSettlement;
+          setSettlement(workingSettlement);
       }
 
       // §5.2 ransom: hostile-human Hideout occupants capture a defeated squad
@@ -1427,7 +1658,15 @@ export default function App() {
             workingZombies,
             effectiveDelta,
             Date.now(),
-            mapDataRef.current || undefined
+            mapDataRef.current || undefined,
+            roadGraphRef.current,
+            infSim.newState.freestandingBuildings || [],
+            // Combined obstacle stamp: a fresh grid per map (gridId) and any
+            // wall/gate/tower placement or removal (revision) both change the
+            // stamp, invalidating cached vehicle road routes.
+            pathGridRef.current
+              ? pathGridRef.current.gridId * 1000 + pathGridRef.current.revision
+              : 0
           );
 
           if (vehTick.notifications.length > 0) {
@@ -1526,20 +1765,26 @@ export default function App() {
       setZombies(workingZombies);
 
       // Automatically make contact with survivors when a squad enters a smoke-marked
-      // survivor building. The smoke clue is the mission's contact signal; no extra
-      // button should be required once the squad reaches the building interior.
+      // survivor building. Read the ref, not the interval's render closure: this
+      // loop can otherwise inspect an older hiddenGroups map after a movement tick.
+      const currentHiddenGroups = getHiddenGroupValues(settlementRef.current.hiddenGroups);
       for (const squad of combatResult.updatedSquads) {
         if (!squad.isDeployed || squad.currentHp <= 0) continue;
-        for (const group of Array.from((settlement.hiddenGroups?.values?.() || []) as Iterable<HiddenSurvivorGroup>)) {
+        for (const group of currentHiddenGroups) {
           if (!group.hasSmokeClue || group.isRecruited) continue;
-          if (!isSquadInsideBuilding({ x: squad.x, z: squad.z }, mapData.buildings.find((b) => String(b.id) === String(group.buildingId)) || ({} as BuildingPolygon))) continue;
-          const groupKey = String(group.id);
+          const groupBuilding = mapData.buildings.find((b) => String(b.id) === String(group.buildingId));
+          if (!groupBuilding || !isSquadInsideBuilding({ x: squad.x, z: squad.z }, groupBuilding)) continue;
+          const groupKey = String(group.buildingId);
           if (contactedSurvivorGroupIdsRef.current.has(groupKey)) continue;
           contactedSurvivorGroupIdsRef.current.add(groupKey);
           setSettlement((prev) => {
             const groups = new Map(prev.hiddenGroups);
-            const current = groups.get(group.buildingId) as HiddenSurvivorGroup | undefined;
-            if (current && !current.isDiscovered) groups.set(group.buildingId, { ...current, isDiscovered: true });
+            const currentEntry = (Array.from(groups.entries()) as [string | number, HiddenSurvivorGroup][]).find(
+              ([key, value]) => String(key) === String(group.buildingId) || String(value.buildingId) === String(group.buildingId)
+            );
+            if (currentEntry && !currentEntry[1].isDiscovered) {
+              groups.set(currentEntry[0], { ...currentEntry[1], isDiscovered: true });
+            }
             return { ...prev, hiddenGroups: groups };
           });
           setActiveRecruitmentGroup({ ...group, isDiscovered: true });
@@ -2663,9 +2908,10 @@ export default function App() {
     }
   };
 
-  const handleBuildFreestanding = (typeId: FunctionalBuildingTypeId, pos: Point2D) => {
+  const handleBuildFreestanding = (typeId: FunctionalBuildingTypeId, pos: Point2D, rotationDeg = 0) => {
     try {
-      const res = buildFreestanding(settlement, typeId, pos);
+      const dims = getFreestandingDimensions(typeId);
+      const res = buildFreestanding(settlement, typeId, pos, dims.width, dims.length, 4.5, rotationDeg);
       if (!res.success) {
         throw new Error(res.error || 'Failed freestanding construction.');
       }
@@ -2682,6 +2928,78 @@ export default function App() {
         desc: e.message || 'Failed freestanding construction.',
         type: 'warn',
       });
+    }
+  };
+
+  // Builds either a single point structure (tower/gate) or a whole run of
+  // independent fence segments from a click-drag-release gesture. All segments
+  // are placed in ONE settlement update so several adjacent walls are created
+  // atomically from a single source-of-truth state.
+  const handleBuildFreestandingRun = (
+    typeId: FunctionalBuildingTypeId,
+    placements: Array<{ x: number; z: number; rotationDeg: number; width?: number; length?: number }>
+  ) => {
+    if (!placements.length) return;
+    let next = settlement;
+    let built = 0;
+
+    // Reject placements that overlap open water (rivers, lakes). A wall/tower/
+    // gate dropped on water is cancelled entirely and the ghost would turn red.
+    const waterPolys =
+      mapData?.landuse?.filter((l) => l.type === 'water' && l.polygon?.length >= 3) || [];
+    const footprintOverlapsWater = (px: number, pz: number, rotDeg: number, w?: number, l?: number) => {
+      if (waterPolys.length === 0) return false;
+      const fp = getFreestandingCollisionPolygon({
+        typeId,
+        position: { x: px, z: pz },
+        rotationDeg: rotDeg,
+      } as const);
+      for (const poly of waterPolys) {
+        // Water blocks the structure if the footprint's centre OR any corner
+        // lands inside the water polygon.
+        for (const corner of [{ x: px, z: pz }, ...fp]) {
+          if (isPointInsidePolygon(corner, poly.polygon)) return true;
+        }
+      }
+      return false;
+    };
+
+    for (const p of placements) {
+      if (footprintOverlapsWater(p.x, p.z, p.rotationDeg, p.width, p.length)) {
+        setToastMessage({
+          title: 'Cannot Build on Water',
+          desc: 'That structure can not be placed in water. Choose a dry location.',
+          type: 'warn',
+        });
+        break;
+      }
+      const dims = getFreestandingDimensions(typeId);
+      const res = buildFreestanding(next, typeId, { x: p.x, z: p.z }, p.width ?? dims.width, p.length ?? dims.length, 4.5, p.rotationDeg);
+      if (!res.success) {
+        setToastMessage({
+          title: 'Construction Halted',
+          desc: res.error || 'Insufficient materials to complete placement.',
+          type: 'warn',
+        });
+        break;
+      }
+      next = res.newState;
+      built++;
+    }
+    if (built > 0) {
+      setSettlement(next);
+      settlementRef.current = next;
+      soundService.playBuildingPlaced();
+      const label = FUNCTIONAL_BUILDING_DEFINITIONS[typeId]?.name || 'Structure';
+      setToastMessage({
+        title: 'FREESTANDING STRUCTURE ASSEMBLED',
+        desc:
+          built === 1
+            ? `${label} constructed on open ground.`
+            : `${built} ${label} segments constructed along the designated line.`,
+        type: 'success',
+      });
+      setPendingFreestandingType(null);
     }
   };
 
@@ -3002,9 +3320,14 @@ export default function App() {
       return;
     }
 
-    // 2. Check if squad is currently mounted in a motor vehicle
+    // 2. Check if squad is currently mounted in a motor vehicle. Route the order
+    //    to the vehicle only while the SQUAD still considers itself mounted — a
+    //    just-dismounted squad must move on foot even if the vehicle's link is
+    //    momentarily stale (e.g. its assignedSquadId not yet cleared), otherwise
+    //    a low-fuel vehicle silently swallows the on-foot move order.
     const mountedVeh = settlement.vehicles?.find((v) => v.assignedSquadId === squadId);
-    if (mountedVeh && roadGraphRef.current) {
+    const orderSquad = combatSquadsRef.current.find((s) => s.squadId === squadId);
+    if (mountedVeh && roadGraphRef.current && orderSquad?.mountedVehicleId === mountedVeh.id) {
       let updatedVeh = orderVehicleRoadTravel(mountedVeh, pos, roadGraphRef.current);
       if (targetBuildingId) {
         updatedVeh = {
@@ -3299,8 +3622,47 @@ export default function App() {
 
   const handleDesignateSquadScavenge = (bounds: { minX: number; maxX: number; minZ: number; maxZ: number }) => {
     if (!mapData || !selectedSquadId) return;
+
+    // A building is only queued if its footprint actually intersects the dragged
+    // box (any vertex inside, the box nested inside the footprint, or the box
+    // corner landing inside a large building). Already-searched, fully-empty
+    // buildings are never queued so the squad isn't sent to cleared structures.
+    const searches: Map<string | number, BuildingSearchState> =
+      settlement.buildingSearches || new Map<string | number, BuildingSearchState>();
+    const exhausted = new Set<string>();
+    for (const [id, search] of searches.entries()) {
+      const empty =
+        !!search &&
+        (search.searched === true ||
+          (Array.isArray(search.unlootedItems) && search.unlootedItems.length === 0));
+      if (empty) exhausted.add(String(id));
+    }
+
+    const buildingIntersectsBox = (b: BuildingPolygon): boolean => {
+      const pts = b.polygon && b.polygon.length >= 3 ? b.polygon : null;
+      if (pts) {
+        for (const p of pts) {
+          if (p.x >= bounds.minX && p.x <= bounds.maxX && p.z >= bounds.minZ && p.z <= bounds.maxZ) return true;
+        }
+      }
+      if (b.center && b.center.x >= bounds.minX && b.center.x <= bounds.maxX && b.center.z >= bounds.minZ && b.center.z <= bounds.maxZ) return true;
+      if (pts) {
+        const corners: Point2D[] = [
+          { x: bounds.minX, z: bounds.minZ },
+          { x: bounds.maxX, z: bounds.minZ },
+          { x: bounds.maxX, z: bounds.maxZ },
+          { x: bounds.minX, z: bounds.maxZ },
+        ];
+        for (const c of corners) {
+          if (isPointInsidePolygon(c, pts)) return true;
+        }
+      }
+      return false;
+    };
+
     const ids = mapData.buildings
-      .filter((b) => b.center.x >= bounds.minX && b.center.x <= bounds.maxX && b.center.z >= bounds.minZ && b.center.z <= bounds.maxZ)
+      .filter((b) => buildingIntersectsBox(b))
+      .filter((b) => !exhausted.has(String(b.id)))
       .map((b) => b.id);
     setScavengeQueue((prev) => ({ ...prev, [selectedSquadId]: ids }));
     if (ids.length > 0) {
@@ -3692,11 +4054,11 @@ export default function App() {
 
   const handleStartResearchNode = useCallback((techId: string) => {
     try {
-      const res = unlockResearchNode(settlement, techId);
+      const res = startResearchNode(settlement, techId);
       setSettlement(res.updatedSettlement);
-      addTacticalAlert('TECHNOLOGY RESEARCHED', `Unlocked ${res.node.name}!`, 'success');
+      addTacticalAlert('RESEARCH PROJECT STARTED', `Now researching ${res.node.name}.`, 'info');
     } catch (err: any) {
-      addTacticalAlert('RESEARCH FAILED', err.message || 'Prerequisites not met', 'warn');
+      addTacticalAlert('RESEARCH BLOCKED', err.message || 'Cannot start research', 'warn');
     }
   }, [settlement, addTacticalAlert]);
 
@@ -4002,6 +4364,39 @@ export default function App() {
 
               setSelectedBuilding(bldg);
               setSelectedResourceNode(null);
+
+              // Selecting a smoke-marked structure while a squad is inside it is
+              // also a reliable interaction fallback. This uses string-normalized
+              // building IDs so numeric IDs from bundled maps and string IDs from
+              // saved games resolve to the same survivor group.
+              const selectedSmokeGroup = getHiddenGroupValues(settlementRef.current.hiddenGroups)
+                .find((group) => String(group.buildingId) === String(bldg.id));
+              // Contact is based on any deployed squad physically inside the
+              // smoke building, not on which squad happens to be selected in the HUD.
+              const contactSquad = (combatSquadsRef.current.length ? combatSquadsRef.current : combatSquads)
+                .find((sq) => sq.isDeployed && sq.currentHp > 0 && isSquadInsideBuilding({ x: sq.x, z: sq.z }, bldg));
+              if (
+                selectedSmokeGroup &&
+                selectedSmokeGroup.hasSmokeClue &&
+                !selectedSmokeGroup.isRecruited &&
+                contactSquad
+              ) {
+                setSettlement((prev) => {
+                  const groups = new Map(prev.hiddenGroups);
+                  const entry = (Array.from(groups.entries()) as [string | number, HiddenSurvivorGroup][]).find(
+                    ([key, value]) => String(key) === String(bldg.id) || String(value.buildingId) === String(bldg.id)
+                  );
+                  if (entry) groups.set(entry[0], { ...entry[1], isDiscovered: true });
+                  return { ...prev, hiddenGroups: groups };
+                });
+                contactedSurvivorGroupIdsRef.current.add(String(bldg.id));
+                setActiveRecruitmentGroup({ ...selectedSmokeGroup, isDiscovered: true });
+                setToastMessage({
+                  title: 'SURVIVORS CONTACTED',
+                  desc: `${selectedSmokeGroup.leader.name} responded from ${selectedSmokeGroup.buildingName}.`,
+                  type: 'success',
+                });
+              }
               // §7.2 pick-type-then-click flow: a facility type chosen from the
               // bottom-left Build/Convert dropdown is applied to the next clicked
               // structure (the adapted facility panel then opens on it).
@@ -4017,13 +4412,14 @@ export default function App() {
               }
             }}
             onSelectResourceNode={(node) => { setSelectedResourceNode(node); setSelectedBuilding(null); setActiveSidebarTab(node ? 'inspector' : null); }}
-            onSelectPosition={(pos) => {
+            onSelectPosition={(pos, rotationDeg) => {
               setClickedPosition(pos);
               if (pendingFreestandingType) {
-                handleBuildFreestanding(pendingFreestandingType, pos);
+                handleBuildFreestanding(pendingFreestandingType, pos, rotationDeg);
                 setPendingFreestandingType(null);
               }
             }}
+            onPlaceFreestandingRun={(typeId, placements) => handleBuildFreestandingRun(typeId, placements)}
             onSelectSquad={handleSelectSquad}
             onOrderSquadMove={handleOrderSquadMove}
             onOrderSquadAttack={handleOrderSquadAttack}
@@ -4196,7 +4592,10 @@ export default function App() {
                         String(settlement.hq.buildingId) === String(selectedBuilding.id)
                       }
                       settlement={settlement}
-                      hiddenGroup={settlement.hiddenGroups?.get(selectedBuilding.id) || null}
+                      hiddenGroup={
+                        getHiddenGroupValues(settlement.hiddenGroups)
+                          .find((group) => String(group.buildingId) === String(selectedBuilding.id)) || null
+                      }
                       onClose={() => {
                         setSelectedBuilding(null);
                         setActiveSidebarTab(null);

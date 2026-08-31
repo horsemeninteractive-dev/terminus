@@ -58,7 +58,7 @@ export const SeasonWeatherModal: React.FC<SeasonWeatherModalProps> = ({
  // §6.1 addition: lunar cycle + weather-modulated zombie activity, plus a forecast
  // gated behind the Early Warning communications tech (§10).
  const activityMods = getZombieActivityModifiers(weather.currentWeather, weather.moonPhase);
- const hasForecastTech = isResearchUnlocked(settlement, 'communications_early_warning');
+ const hasForecastTech = isResearchUnlocked(settlement, 'weather_forecast');
  const forecast = hasForecastTech
  ? forecastUpcomingWeather(weather.currentSeason, weather.currentWeather, 4)
  : [];

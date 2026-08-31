@@ -44,6 +44,7 @@ export interface EntityMarker {
   damageRatio?: number; // 0..1 (1 = full health)
   searchProgress?: number; // 0..100
   lootCategory?: 'food' | 'medical' | 'weapons' | 'fuel' | 'materials' | 'assorted';
+  lootCategories?: string[];
   detailMode?: 'detailed' | 'minimal';
   buildingId?: string | number;
 }
@@ -862,7 +863,7 @@ function drawStreetLabelCanvas(marker: EntityMarker): HTMLCanvasElement {
 
   ctx.clearRect(0, 0, 280, 70);
 
-  const streetName = (marker.label || 'STREET').toUpperCase();
+  const streetName = (marker.label || 'STREET').normalize('NFC').toLocaleUpperCase();
   const padX = 14;
   const padY = 12;
   const cardW = 280 - padX * 2;
@@ -969,6 +970,7 @@ function markerSignature(marker: EntityMarker): string {
     marker.lootCategory || '',
     marker.detailMode || '',
     marker.damageRatio !== undefined ? marker.damageRatio.toFixed(2) : '',
+    marker.searchProgress !== undefined ? marker.searchProgress.toFixed(1) : '',
   ].join('|');
 }
 

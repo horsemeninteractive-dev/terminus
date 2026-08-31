@@ -23,7 +23,7 @@ interface GameCanvasProps {
   selectedVehicleId?: string | null;
   onSelectBuilding: (building: BuildingPolygon | null) => void;
   onHoverBuilding: (building: BuildingPolygon | null) => void;
-  onSelectPosition: (pos: Point2D) => void;
+  onSelectPosition: (pos: Point2D, rotationDeg?: number) => void;
   onSelectSquad?: (squadId: string | null) => void;
   onOrderSquadMove?: (squadId: string, pos: Point2D, targetBuildingId?: string | number, targetBuildingName?: string) => void;
   onOrderSquadAttack?: (squadId: string, zombieId: string) => void;
@@ -33,6 +33,7 @@ interface GameCanvasProps {
   onMapRendered?: () => void;
   onLoadProgress?: (progress: number, label?: string) => void;
   onSelectResourceNode?: (node: any) => void;
+  onPlaceFreestandingRun?: (typeId: import('../types/settlement').FunctionalBuildingTypeId, placements: import('../render/WorldScene').FreestandingPlacementPoint[]) => void;
 }
 
 export const GameCanvas: React.FC<GameCanvasProps> = ({
@@ -65,6 +66,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   onMapRendered,
   onLoadProgress,
   onSelectResourceNode,
+  onPlaceFreestandingRun,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<WorldScene | null>(null);
@@ -74,7 +76,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   loadProgressRef.current = onLoadProgress;
   const mapRenderedRef = useRef(onMapRendered);
   mapRenderedRef.current = onMapRendered;
-  const handlersRef = useRef({
+  const handlersRef = useRef<any>({
     onSelectBuilding,
     onHoverBuilding,
     onSelectPosition,
@@ -93,6 +95,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     onOrderSquadAttack,
     onSelectVehicle,
     onMountVehicle,
+    onPlaceFreestandingRun,
   };
 
   useEffect(() => {
@@ -102,13 +105,15 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       container: containerRef.current,
       onSelectBuilding: (value) => handlersRef.current.onSelectBuilding?.(value),
       onHoverBuilding: (value) => handlersRef.current.onHoverBuilding?.(value),
-      onSelectPosition: (value) => handlersRef.current.onSelectPosition?.(value),
+      onSelectPosition: ((value: Point2D, rotationDeg?: number) => handlersRef.current.onSelectPosition?.(value, rotationDeg)) as any,
       onSelectSquad: (value) => handlersRef.current.onSelectSquad?.(value),
       onOrderSquadMove: (id, pos, bldgId, bldgName) =>
         handlersRef.current.onOrderSquadMove?.(id, pos, bldgId, bldgName),
       onOrderSquadAttack: (id, value) => handlersRef.current.onOrderSquadAttack?.(id, value),
       onSelectVehicle: (value) => handlersRef.current.onSelectVehicle?.(value),
       onMountVehicle: (id, value) => handlersRef.current.onMountVehicle?.(id, value),
+      onPlaceFreestandingRun: (typeId, placements) =>
+        handlersRef.current.onPlaceFreestandingRun?.(typeId, placements),
     });
 
     sceneRef.current = scene;

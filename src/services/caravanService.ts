@@ -99,7 +99,7 @@ export function calculateCaravanSpeedAndDuration(
   }
 
   // Technology modifier: Caravan Trade Logistics (§10)
-  const isCaravanLogisticsUnlocked = originSettlement.research?.unlockedNodes?.includes('logistics_caravan_routes');
+  const isCaravanLogisticsUnlocked = originSettlement.research?.unlockedNodes?.includes('long_range_antenna');
   if (isCaravanLogisticsUnlocked) {
     baseSpeedKmh *= 1.3; // +30% speed
     fuelPer100Km *= 0.85; // -15% fuel consumption

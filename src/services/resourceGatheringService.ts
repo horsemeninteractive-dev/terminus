@@ -1,6 +1,7 @@
 import { MapData, Point2D } from '../types/map';
 import { SettlementState } from '../types/settlement';
 import { ResourceWorkOrder } from '../types/resourceGathering';
+import { PathGrid, stepAlongPath } from './pathfindingService';
 
 const dist = (a: Point2D, b: Point2D) => Math.hypot(a.x - b.x, a.z - b.z);
 
@@ -102,7 +103,8 @@ export function tickResourceGathering(
   map: MapData,
   dt: number,
   isNight: boolean = false,
-  alarmActive: boolean = false
+  alarmActive: boolean = false,
+  grid?: PathGrid | null
 ) {
   if (!state.hq || !state.resourceWorkOrders.length) {
     return { newState: state, mapData: map };
@@ -121,10 +123,14 @@ export function tickResourceGathering(
     // At night or during a colony alarm, workers prioritize returning to shelter / HQ
     if (isNight || alarmActive) {
       const shelter = getWorkerShelterLocation(state, o.position, map);
-      const z = dist(o.position, shelter.center);
-      const step = Math.min(z, 6.0 * dt);
-
-      if (z <= 1.0) {
+      const stepRes = stepAlongPath(
+        grid, o.pathState, o.position.x, o.position.z,
+        shelter.center.x, shelter.center.z, 6.0, dt, 1.0
+      );
+      o.position.x = stepRes.x;
+      o.position.z = stepRes.z;
+      o.pathState = stepRes.state;
+      if (stepRes.arrived) {
         // Deposited at shelter/HQ, wait sheltered
         if (o.carried > 0) {
           if (o.resourceType === 'wood') stock.materials.wood += o.carried;
@@ -135,8 +141,6 @@ export function tickResourceGathering(
         o.state = 'returning';
       } else {
         o.state = 'returning';
-        o.position.x += ((shelter.center.x - o.position.x) / z) * step;
-        o.position.z += ((shelter.center.z - o.position.z) / z) * step;
       }
       next.push(o);
       continue;
@@ -144,13 +148,15 @@ export function tickResourceGathering(
 
     // Normal Daytime Gathering Cycle
     if (o.state === 'moving_to_node') {
-      const z = dist(o.position, n.position);
-      const step = Math.min(z, 5.0 * dt);
-      if (z <= 0.8) {
+      const stepRes = stepAlongPath(
+        grid, o.pathState, o.position.x, o.position.z,
+        n.position.x, n.position.z, 5.0, dt, 0.8
+      );
+      o.position.x = stepRes.x;
+      o.position.z = stepRes.z;
+      o.pathState = stepRes.state;
+      if (stepRes.arrived) {
         o.state = 'harvesting';
-      } else {
-        o.position.x += ((n.position.x - o.position.x) / z) * step;
-        o.position.z += ((n.position.z - o.position.z) / z) * step;
       }
     }
 
@@ -166,9 +172,14 @@ export function tickResourceGathering(
 
     if (o.state === 'returning') {
       const shelter = getWorkerShelterLocation(state, o.position, map);
-      const z = dist(o.position, shelter.center);
-      const step = Math.min(z, 5.5 * dt);
-      if (z <= 0.8) {
+      const stepRes = stepAlongPath(
+        grid, o.pathState, o.position.x, o.position.z,
+        shelter.center.x, shelter.center.z, 5.5, dt, 0.8
+      );
+      o.position.x = stepRes.x;
+      o.position.z = stepRes.z;
+      o.pathState = stepRes.state;
+      if (stepRes.arrived) {
         const amount = o.carried;
         if (o.resourceType === 'wood') stock.materials.wood += amount;
         if (o.resourceType === 'metal') stock.materials.metal += amount;
@@ -176,9 +187,6 @@ export function tickResourceGathering(
         o.carried = 0;
         if (n.amount > 0) o.state = 'moving_to_node';
         else continue;
-      } else {
-        o.position.x += ((shelter.center.x - o.position.x) / z) * step;
-        o.position.z += ((shelter.center.z - o.position.z) / z) * step;
       }
     }
 

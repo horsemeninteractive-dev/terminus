@@ -1,4 +1,8 @@
 import { BuildingPolygon, MapData, Point2D } from '../types/map';
+import {
+  getFreestandingCollisionPolygon,
+  isFreestandingGate,
+} from './freestandingFootprint';
 
 /**
  * Grid-based weighted A* pathfinding (§5 movement).
@@ -84,9 +88,40 @@ export interface PathState {
   path: Point2D[];
   index: number;
   goalKey: string;
+  // Grid identity + revision the path was computed against. Any obstacle
+  // change (a wall placed/removed, or a wholly new grid for a different map)
+  // bumps these so stepAlongPath drops stale cached routes immediately.
+  gridId?: number;
+  rev?: number;
+}
+
+/**
+ * Per-call pathing rules. The shared PathGrid holds one cost model for
+ * everyone; these flags let hostile factions treat player-built structures
+ * differently from friendlies without maintaining a second grid.
+ *
+ * - gatesOpen: true (default) = gates are passable openings in a fence line
+ *   (friendly squads/workers/vehicles). false = gates are hard barriers.
+ * - wallsImpassable: false (default) = walls/fences/towers are crossed as an
+ *   astronomically-expensive last resort when no other route exists. true =
+ *   they are never traversed (hostiles simply cannot get through a perimeter).
+ */
+export interface PathOptions {
+  gatesOpen?: boolean;
+  wallsImpassable?: boolean;
 }
 
 export class PathGrid {
+  private static idCounter = 0;
+  private static nextId(): number {
+    return ++PathGrid.idCounter;
+  }
+
+  /** Read-only revision reflecting the latest obstacle change on this grid. */
+  public get revision(): number {
+    return this.obstacleRevision;
+  }
+
   readonly cellSize: number;
   readonly minX: number;
   readonly minZ: number;
@@ -95,8 +130,27 @@ export class PathGrid {
   private cellCosts: Float32Array;
   private isBuildingCell: Uint8Array;
   private rawBuildings: BuildingPolygon[];
+  // Cells currently occupied by player-built freestanding structures (walls,
+  // fences, towers). Tracked so they can be cleared when a structure is removed
+  // (deconstructed) or the obstacle set is refreshed.
+  private freestandingCells: number[] = [];
+  // Gate cells are passable at normal cost but recorded here so hostile
+  // factions (gatesOpen: false) can treat them as hard barriers while
+  // friendlies still walk/drive through.
+  private gateCells: Uint8Array;
+  // Goals that a recent A* search proved unreachable (e.g. a zombie pinned
+  // against a closed perimeter). Bucketed coarsely so a moving target behind a
+  // wall doesn't trigger a full failed grid scan on every tick.
+  private failedGoalCache = new Map<string, number>();
+
+  // Monotonic identity + revision for cached-path invalidation. Every
+  // construction gets a fresh gridId; every obstacle change (freestanding
+  // placement/removal) bumps the revision so cached PathStates are dropped.
+  public readonly gridId: number;
+  private obstacleRevision = 0;
 
   constructor(mapData: MapData, cellSize = DEFAULT_CELL_SIZE) {
+    this.gridId = PathGrid.nextId();
     this.cellSize = cellSize;
     this.rawBuildings = mapData.buildings || [];
     const b = mapData.bounds;
@@ -109,6 +163,7 @@ export class PathGrid {
     const totalCells = this.cols * this.rows;
     this.cellCosts = new Float32Array(totalCells).fill(1.0);
     this.isBuildingCell = new Uint8Array(totalCells);
+    this.gateCells = new Uint8Array(totalCells);
 
     // Rasterize roads as lower-cost traversal (0.75x)
     if (mapData.roads) {
@@ -196,10 +251,111 @@ export class PathGrid {
     }
   }
 
+  /**
+   * Apply player-built freestanding structures (walls, fences, towers, gates)
+   * to the path grid. Walls/fences/towers become hard obstacles; gates are
+   * recorded as passable openings for friendlies (gatesOpen) but hard barriers
+   * for hostiles. Re-rasterises from scratch each call; call whenever the
+   * freestanding list changes (and once after the grid is rebuilt for a map).
+   */
+  public setFreestandingObstacles(
+    freestanding: Array<Pick<import('../types/settlement').AdaptedBuilding, 'typeId' | 'position' | 'rotationDeg'>> | null | undefined
+  ) {
+    // Bump the revision so every cached path computed against the old obstacle
+    // layout is invalidated and re-routed immediately (wall placed/removed).
+    this.obstacleRevision++;
+    // Clear previously applied freestanding cells.
+    for (const id of this.freestandingCells) {
+      this.isBuildingCell[id] = 0;
+      this.cellCosts[id] = 1.0;
+      this.gateCells[id] = 0;
+    }
+    this.freestandingCells = [];
+    // Walls may have been removed or a route may have opened — re-evaluate.
+    this.failedGoalCache.clear();
+    if (!freestanding) return;
+
+    const marked = new Set<number>();
+    for (const free of freestanding) {
+      const poly = getFreestandingCollisionPolygon(free);
+      this.rasterizeObstacle(poly, marked, isFreestandingGate(free.typeId));
+    }
+    this.freestandingCells = Array.from(marked);
+  }
+
+  private rasterizeObstacle(poly: Point2D[], marked: Set<number>, isGate: boolean) {
+    if (!poly || poly.length < 3) return;
+
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (const p of poly) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.z < minZ) minZ = p.z;
+      if (p.z > maxZ) maxZ = p.z;
+    }
+
+    const c0 = Math.floor((minX - this.minX) / this.cellSize);
+    const c1 = Math.floor((maxX - this.minX) / this.cellSize);
+    const r0 = Math.floor((minZ - this.minZ) / this.cellSize);
+    const r1 = Math.floor((maxZ - this.minZ) / this.cellSize);
+
+    const half = this.cellSize / 2;
+    for (let r = r0; r <= r1; r++) {
+      for (let c = c0; c <= c1; c++) {
+        if (!this.isInside(c, r)) continue;
+        const cx = this.minX + (c + 0.5) * this.cellSize;
+        const cz = this.minZ + (r + 0.5) * this.cellSize;
+        const inside =
+          pointInPolygon(cx, cz, poly) ||
+          pointInPolygon(cx - half, cz - half, poly) ||
+          pointInPolygon(cx + half, cz - half, poly) ||
+          pointInPolygon(cx - half, cz + half, poly) ||
+          pointInPolygon(cx + half, cz + half, poly);
+        if (inside) {
+          const id = this.idx(c, r);
+          if (marked.has(id)) continue;
+          marked.add(id);
+          if (isGate) {
+            // Gates stay passable at normal cost for friendlies (they are the
+            // intended way through a fence line); the cell is recorded so
+            // hostile factions can be blocked from it.
+            this.gateCells[id] = 1;
+          } else {
+            this.isBuildingCell[id] = 1;
+            // Walls/fences are hard barriers: astronomically expensive to cross, so
+            // A* only traverses them when no route exists at all (fully enclosed
+            // perimeter with no gate).
+            this.cellCosts[id] = 1e5;
+          }
+        }
+      }
+    }
+  }
+
   public isInsideBuilding(x: number, z: number): boolean {
     const cell = this.worldToCell(x, z);
     if (!cell) return false;
     return this.isBuildingCell[this.idx(cell.col, cell.row)] === 1;
+  }
+
+  /**
+   * True when the given world point sits inside a player-built freestanding
+   * structure cell that blocks this caller. Walls are hard barriers (1e5
+   * cost); ordinary building cells (2.38 cost) deliberately do NOT count, since
+   * units are allowed to path through buildings. Gates count only for callers
+   * with gatesOpen: false. Used to detect stale cached paths that were
+   * computed before a wall was placed and would march an entity straight
+   * through the new construction.
+   */
+  public isFreestandingBlocked(x: number, z: number, opts?: PathOptions): boolean {
+    const cell = this.worldToCell(x, z);
+    if (!cell) return false;
+    const id = this.idx(cell.col, cell.row);
+    if (this.cellCosts[id] >= 1e5) return true;
+    return opts?.gatesOpen === false && this.gateCells[id] === 1;
   }
 
   private worldToCell(x: number, z: number): { col: number; row: number } | null {
@@ -230,12 +386,13 @@ export class PathGrid {
    * (corner-inflated) building mask instead of walking Bresenham cells, so a
    * line can never cut a building corner the cell walk would skip over.
    */
-  hasLineOfSight(x1: number, z1: number, x2: number, z2: number): boolean {
+  hasLineOfSight(x1: number, z1: number, x2: number, z2: number, opts?: PathOptions): boolean {
     const a = this.worldToCell(x1, z1);
     const b = this.worldToCell(x2, z2);
     if (!a || !b) return false;
     if (a.col === b.col && a.row === b.row) {
-      return this.isBuildingCell[this.idx(a.col, a.row)] === 0;
+      const sameId = this.idx(a.col, a.row);
+      return this.isBuildingCell[sameId] === 0 && !(opts?.gatesOpen === false && this.gateCells[sameId] === 1);
     }
 
     const dist = Math.hypot(x2 - x1, z2 - z1);
@@ -246,17 +403,27 @@ export class PathGrid {
       const z = z1 + (z2 - z1) * t;
       const cell = this.worldToCell(x, z);
       if (!cell) continue;
-      if (this.isBuildingCell[this.idx(cell.col, cell.row)] === 1) return false;
+      const id = this.idx(cell.col, cell.row);
+      if (this.isBuildingCell[id] === 1) return false;
+      if (opts?.gatesOpen === false && this.gateCells[id] === 1) return false;
     }
     return true;
   }
 
-  findPath(startX: number, startZ: number, goalX: number, goalZ: number): Point2D[] | null {
+  findPath(startX: number, startZ: number, goalX: number, goalZ: number, opts?: PathOptions): Point2D[] | null {
     const start = this.worldToCell(startX, startZ);
     const goal = this.worldToCell(goalX, goalZ);
     if (!start || !goal) return null;
 
     if (start.col === goal.col && start.row === goal.row) return [];
+
+    // Short-circuit: a recent failed search for a goal in this 20m bucket means
+    // it is (still) unreachable for this caller — skip the expensive full scan.
+    // Keyed by path options too, so a hostile's failed search can never poison
+    // a friendly's identical-bucket search (or vice versa).
+    const bucketKey = `${opts?.gatesOpen === false ? 'g' : 'G'}${opts?.wallsImpassable ? 'w' : 'W'}|${Math.round(goalX / 20)},${Math.round(goalZ / 20)}`;
+    const failExpiry = this.failedGoalCache.get(bucketKey);
+    if (failExpiry && performance.now() < failExpiry) return null;
 
     const size = this.cols * this.rows;
     const gScore = new Float32Array(size).fill(Infinity);
@@ -298,6 +465,11 @@ export class PathGrid {
         const nIdx = this.idx(nc, nr);
         if (closed[nIdx] === 1) continue;
 
+        // Hostiles treat walls (1e5) and closed gates as impassable, never
+        // traversable — a fenced perimeter genuinely keeps them out.
+        if (opts?.wallsImpassable && this.cellCosts[nIdx] >= 1e5) continue;
+        if (opts?.gatesOpen === false && this.gateCells[nIdx] === 1) continue;
+
         const cellWeight = this.cellCosts[nIdx];
         const stepCost = distMult * cellWeight;
         const tentative = gScore[current] + stepCost;
@@ -311,8 +483,10 @@ export class PathGrid {
     }
 
     if (cameFrom[goalIdx] === -1 && startIdx !== goalIdx) {
+      this.failedGoalCache.set(bucketKey, performance.now() + 1500);
       return null;
     }
+    this.failedGoalCache.delete(bucketKey);
 
     const cells: number[] = [];
     let cur = goalIdx;
@@ -326,10 +500,10 @@ export class PathGrid {
     rawWaypoints.push({ x: goalX, z: goalZ });
 
     // Waypoint simplification / smoothing
-    return this.smoothPath(rawWaypoints);
+    return this.smoothPath(rawWaypoints, opts);
   }
 
-  private smoothPath(path: Point2D[]): Point2D[] {
+  private smoothPath(path: Point2D[], opts?: PathOptions): Point2D[] {
     if (path.length <= 2) return path;
     const smoothed: Point2D[] = [path[0]];
     let currentIdx = 0;
@@ -337,7 +511,7 @@ export class PathGrid {
     while (currentIdx < path.length - 1) {
       let furthestIdx = currentIdx + 1;
       for (let next = path.length - 1; next > currentIdx + 1; next--) {
-        if (this.hasLineOfSight(path[currentIdx].x, path[currentIdx].z, path[next].x, path[next].z)) {
+        if (this.hasLineOfSight(path[currentIdx].x, path[currentIdx].z, path[next].x, path[next].z, opts)) {
           furthestIdx = next;
           break;
         }
@@ -367,25 +541,47 @@ export function stepAlongPath(
   goalZ: number,
   baseSpeed: number,
   delta: number,
-  arriveRadius = 1.2
+  arriveRadius = 1.2,
+  opts?: PathOptions
 ): { x: number; z: number; rotation: number; state: PathState; arrived: boolean; isIndoor: boolean } {
   const goalKey = goalKeyFor(goalX, goalZ);
+  // A cached path is reusable only for the SAME goal, the SAME grid, and the
+  // SAME obstacle revision. A new map (different gridId) or any wall/gate placed
+  // or removed (revision bumped) invalidates it so units re-route immediately
+  // instead of walking a stale route into new construction.
+  const gridStale =
+    !!grid &&
+    (state?.gridId !== grid.gridId || state?.rev !== grid.revision);
   let st: PathState =
-    state && state.goalKey === goalKey
+    state && state.goalKey === goalKey && !gridStale
       ? state
-      : { path: [], index: 0, goalKey };
+      : { path: [], index: 0, goalKey, gridId: grid?.gridId, rev: grid?.revision };
+
+  // A wall/fence placed after this route was computed is a hard barrier. If
+  // the entity's current cell is now inside one, the cached path is stale and
+  // would march it straight through the new construction — drop it so the path
+  // is recomputed around the obstacle on this very tick.
+  if (grid && st.path.length > 0 && grid.isFreestandingBlocked(x, z, opts)) {
+    st = { path: [], index: 0, goalKey, gridId: grid.gridId, rev: grid.revision };
+  }
 
   if (st.path.length === 0) {
-    const obstructed = grid ? !grid.hasLineOfSight(x, z, goalX, goalZ) : false;
-    const path = obstructed ? grid?.findPath(x, z, goalX, goalZ) : null;
-    // Never replace a failed long-distance search with a direct segment: that
-    // bypasses buildings and is exactly the regression seen on distant orders.
-    // Keep the destination as a last resort only when no grid exists.
-    st.path = path && path.length > 0
-      ? path
-      : grid
-      ? [{ x, z }]
-      : [{ x: goalX, z: goalZ }];
+    const obstructed = grid ? !grid.hasLineOfSight(x, z, goalX, goalZ, opts) : false;
+    const path = obstructed ? grid?.findPath(x, z, goalX, goalZ, opts) : null;
+    if (path && path.length > 0) {
+      // A* found a real route.
+      st.path = path;
+    } else if (!obstructed) {
+      // Clear line of sight (or no grid): move directly toward the goal via a
+      // two-point segment from the current position. A single-point [{x,z}]
+      // path would be a dead route that never advances, freezing the unit.
+      st.path = [{ x, z }, { x: goalX, z: goalZ }];
+    } else {
+      // Obstructed but the search failed (e.g. goal pinned behind a wall with
+      // no route). Stay put on a dead one-point path rather than phasing
+      // through construction.
+      st.path = [{ x, z }];
+    }
     st.index = 0;
   }
 
