@@ -383,6 +383,8 @@ export interface SettlementState {
   adaptedBuildings: Map<string | number, AdaptedBuilding>;
   freestandingBuildings: AdaptedBuilding[];
   totalStorageCapacity: number;
+  /** Loot units left at scavenged sites because settlement storage was full. */
+  fieldLootUnits?: number;
   totalLivingCapacity: number;
   totalDefenseRating: number;
   // Population Model (§4.1, §4.3, §4.4, §4.6)

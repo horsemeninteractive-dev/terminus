@@ -197,7 +197,10 @@ export function createInitialSettlementState(
     stockpile,
     adaptedBuildings: new Map<string | number, AdaptedBuilding>(),
     freestandingBuildings: [],
-    totalStorageCapacity: 250,
+    // Starting capacity always fits the starting stockpile (with margin), so
+    // the tutorial economy isn't instantly "storage full" while the cap is
+    // still a real ceiling for everything deposited afterwards.
+    totalStorageCapacity: Math.max(250, getStockpileUnits(stockpile) + 100),
     totalLivingCapacity: 0,
     totalDefenseRating: 0,
     namedSurvivors: starterNamedSurvivors,
@@ -308,6 +311,20 @@ export function deductCost(stockpile: SettlementStockpile, cost: ResourceCost): 
       bricks: Math.max(0, stockpile.materials.bricks - cost.bricks),
     },
   };
+}
+
+/**
+ * Total item units currently held across every stockpile category — the unit
+ * that totalStorageCapacity is measured in (IFZ-style finite physical storage).
+ */
+export function getStockpileUnits(stockpile: SettlementStockpile): number {
+  let units = 0;
+  for (const category of Object.values(stockpile)) {
+    for (const value of Object.values(category as Record<string, number>)) {
+      if (typeof value === 'number') units += value;
+    }
+  }
+  return units;
 }
 
 /**
@@ -439,6 +456,17 @@ export function adaptBuilding(
       success: false,
       newState: state,
       error: `Requires research: ${lock.requiredName}`,
+    };
+  }
+
+  // IFZ rule: a real building must be scavenged/cleared before it can be
+  // converted into a functional structure. You cannot adapt untouched loot.
+  const searchState = state.buildingSearches?.get(bldg.id);
+  if (!searchState?.searched) {
+    return {
+      success: false,
+      newState: state,
+      error: 'This building must be scavenged and cleared before it can be adapted.',
     };
   }
 

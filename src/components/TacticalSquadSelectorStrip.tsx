@@ -1,6 +1,6 @@
 import React from 'react';
 import { Footprints, Car, Plus, Crosshair, Shield } from 'lucide-react';
-import { TacticalSquadUnit, WEAPON_CATALOG } from '../types/combat';
+import { TacticalSquadUnit, getWeaponDefinition } from '../types/combat';
 import { soundEngine } from '../services/soundService';
 
 interface TacticalSquadSelectorStripProps {
@@ -27,7 +27,7 @@ export const TacticalSquadSelectorStrip: React.FC<TacticalSquadSelectorStripProp
   const getBestWeapon = (squad: TacticalSquadUnit): string => {
     const weapons = squad.members
       .filter((m) => m.isAlive && m.weaponId)
-      .map((m) => WEAPON_CATALOG[m.weaponId]?.name);
+      .map((m) => getWeaponDefinition(m.weaponId).name);
     if (weapons.length === 0) return 'Unarmed';
     const ranged = weapons.find((w) => !w?.toLowerCase().includes('knife') && !w?.toLowerCase().includes('crowbar'));
     return ranged || weapons[0] || 'Unarmed';

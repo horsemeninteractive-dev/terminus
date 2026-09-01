@@ -37,6 +37,7 @@ import type {
 import type { WorldVehicle } from '../types/vehicle';
 import type { HiddenSurvivorGroup } from '../types/population';
 import type { RadioDirectiveState, RadioTransmission } from '../types/radioDirective';
+import { isValidArmorId, isValidWeaponId } from '../types/combat';
 import type { SeasonType, WeatherType } from '../types/weather';
 import type { ActiveSidebarTab } from '../components/TacticalHeaderStrip';
 import type { GatherResourceType } from '../components/AreaGatherOverlay';
@@ -694,22 +695,26 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
   /** Auto-equip freshly scavenged gear onto the first squad member still using default kit */
   const autoEquipScavengedGear = (weaponId?: WeaponItemId, armorId?: ArmorItemId) => {
     if (!weaponId && !armorId) return;
+    // Untrusted loot/save state: never assign an ID that isn't in the catalog.
+    const validWeapon = isValidWeaponId(weaponId) ? weaponId : undefined;
+    const validArmor = isValidArmorId(armorId) ? armorId : undefined;
+    if (!validWeapon && !validArmor) return;
     setCombatSquads((prev) => {
       let changed = false;
       const next = prev.map((sq) => {
         if (sq.currentHp <= 0) return sq;
         let out = sq;
-        if (weaponId && weaponId !== 'knife') {
+        if (validWeapon && validWeapon !== 'knife') {
           const target = out.members.find((m) => m.isAlive && m.weaponId === 'knife');
           if (target) {
-            out = assignMemberWeapon(out, target.id, weaponId);
+            out = assignMemberWeapon(out, target.id, validWeapon);
             changed = true;
           }
         }
-        if (armorId) {
+        if (validArmor) {
           const target = out.members.find((m) => m.isAlive && !m.armorId);
           if (target) {
-            out = assignMemberArmor(out, target.id, armorId);
+            out = assignMemberArmor(out, target.id, validArmor);
             changed = true;
           }
         }

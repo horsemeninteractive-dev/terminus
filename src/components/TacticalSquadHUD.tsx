@@ -33,14 +33,14 @@ import {
 import { WorldVehicle } from '../types/vehicle';
 import { getVehicleInventoryCapacity } from '../services/vehicleService';
 import {
-  ARMOR_CATALOG,
   ArmorItemId,
   CombatStance,
   SquadMemberUnit,
   TacticalSquadUnit,
-  WEAPON_CATALOG,
   WeaponItemId,
   faceUrlForMember,
+  getArmorDefinition,
+  getWeaponDefinition,
 } from '../types/combat';
 import { soundEngine } from '../services/soundService';
 
@@ -312,8 +312,8 @@ export const TacticalSquadHUD: React.FC<TacticalSquadHUDProps> = ({
           {squad.members.map((member) => {
             const hpPct = member.maxHp > 0 ? (member.currentHp / member.maxHp) * 100 : 0;
             const avatarUrl = faceUrlForMember(member);
-            const weapon = WEAPON_CATALOG[member.weaponId];
-            const armor = member.armorId ? ARMOR_CATALOG[member.armorId] : null;
+            const weapon = getWeaponDefinition(member.weaponId);
+            const armor = member.armorId ? getArmorDefinition(member.armorId) : null;
 
             return (
               <div key={member.id} className="flex flex-col items-center gap-1">

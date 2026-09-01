@@ -11,6 +11,7 @@ export type EntityMarkerKind =
   | 'lair'
   | 'unexplored_building'
   | 'loot_pin'
+  | 'leftover_loot'
   | 'street_label';
 
 export type MarkerFaction = 'friendly' | 'neutral' | 'hostile' | 'unknown';
@@ -45,6 +46,7 @@ export interface EntityMarker {
   searchProgress?: number; // 0..100
   lootCategory?: 'food' | 'medical' | 'weapons' | 'fuel' | 'materials' | 'assorted';
   lootCategories?: string[];
+  leftoverCount?: number; // number of loot stacks left behind in a building
   detailMode?: 'detailed' | 'minimal';
   buildingId?: string | number;
 }
@@ -733,6 +735,13 @@ function drawMinimalLootPinCanvas(marker: EntityMarker): HTMLCanvasElement {
   ctx.stroke();
 
   // Category Icon inside
+  drawCategoryGlyph(ctx, cat, cx, cy);
+
+  return canvas;
+}
+
+/** Draws the white category glyph (medical/food/weapons/fuel/materials/assorted). */
+function drawCategoryGlyph(ctx: CanvasRenderingContext2D, cat: string, cx: number, cy: number): void {
   if (cat === 'medical') {
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(cx - 3.5, cy - 11, 7, 22);
@@ -772,6 +781,80 @@ function drawMinimalLootPinCanvas(marker: EntityMarker): HTMLCanvasElement {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('?', cx, cy);
+  }
+}
+
+/**
+ * Compact crate badge shown above buildings whose search completed with items
+ * left behind (squad ran out of carry slots). Amber-ish border + category glyph
+ * + a corner badge with the number of remaining loot stacks.
+ */
+function drawLeftoverLootCanvas(marker: EntityMarker): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = 72;
+  canvas.height = 72;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return canvas;
+
+  const cat = marker.lootCategory || 'assorted';
+  const cfg = LOOT_PIN_COLORS[cat] || LOOT_PIN_COLORS.assorted;
+  const count = marker.leftoverCount || 0;
+  const cx = 36;
+  const cy = 36;
+
+  ctx.clearRect(0, 0, 72, 72);
+
+  // Rounded-square plate with glow
+  ctx.save();
+  ctx.shadowColor = cfg.border;
+  ctx.shadowBlur = 10;
+  ctx.beginPath();
+  const r = 12;
+  ctx.moveTo(cx - 26 + r, cy - 26);
+  ctx.lineTo(cx + 26 - r, cy - 26);
+  ctx.quadraticCurveTo(cx + 26, cy - 26, cx + 26, cy - 26 + r);
+  ctx.lineTo(cx + 26, cy + 26 - r);
+  ctx.quadraticCurveTo(cx + 26, cy + 26, cx + 26 - r, cy + 26);
+  ctx.lineTo(cx - 26 + r, cy + 26);
+  ctx.quadraticCurveTo(cx - 26, cy + 26, cx - 26, cy + 26 - r);
+  ctx.lineTo(cx - 26, cy - 26 + r);
+  ctx.quadraticCurveTo(cx - 26, cy - 26, cx - 26 + r, cy - 26);
+  ctx.closePath();
+  ctx.fillStyle = cfg.bg;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = cfg.border;
+  ctx.stroke();
+  ctx.restore();
+
+  // Open-top crate box
+  ctx.beginPath();
+  ctx.rect(cx - 17, cy - 12, 34, 24);
+  ctx.fillStyle = cfg.iconBg;
+  ctx.fill();
+  ctx.strokeStyle = cfg.border;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  drawCategoryGlyph(ctx, cat, cx, cy - 2);
+
+  // Stack-count badge, top-right
+  if (count > 0) {
+    const bx = cx + 24;
+    const by = cy - 24;
+    ctx.beginPath();
+    ctx.arc(bx, by, 10, 0, Math.PI * 2);
+    ctx.fillStyle = cfg.accent;
+    ctx.fill();
+    ctx.strokeStyle = '#0b0f14';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = '#0b0f14';
+    ctx.font = 'bold 12px "Courier New", monospace, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(count), bx, by + 0.5);
   }
 
   return canvas;
@@ -937,6 +1020,13 @@ function getMarkerTexture(marker: EntityMarker): THREE.CanvasTexture {
     );
   }
 
+  if (marker.kind === 'leftover_loot') {
+    const cat = marker.lootCategory || 'assorted';
+    const count = marker.leftoverCount || 0;
+    const cacheKey = `leftover_${cat}_${count}`;
+    return getOrCreateSharedTexture(cacheKey, () => drawLeftoverLootCanvas(marker));
+  }
+
   if (marker.kind === 'street_label') {
     return new THREE.CanvasTexture(drawStreetLabelCanvas(marker));
   }
@@ -968,6 +1058,7 @@ function markerSignature(marker: EntityMarker): string {
     marker.bestWeaponType || '',
     marker.activity || '',
     marker.lootCategory || '',
+    marker.leftoverCount || 0,
     marker.detailMode || '',
     marker.damageRatio !== undefined ? marker.damageRatio.toFixed(2) : '',
     marker.searchProgress !== undefined ? marker.searchProgress.toFixed(1) : '',
@@ -1022,7 +1113,11 @@ export class EntityMarkerRenderer {
         : (FACTION_COLORS[marker.faction] || FACTION_COLORS.friendly).accent;
 
       let entry = this.entries.get(marker.key);
-      const isShared = marker.kind === 'loot_pin' || marker.kind === 'zombie' || marker.kind === 'unexplored_building';
+      const isShared =
+        marker.kind === 'loot_pin' ||
+        marker.kind === 'leftover_loot' ||
+        marker.kind === 'zombie' ||
+        marker.kind === 'unexplored_building';
 
       if (!entry) {
         const tex = getMarkerTexture(marker);
@@ -1162,6 +1257,7 @@ export class EntityMarkerRenderer {
 
       const isLootPin = marker.kind === 'loot_pin';
       const isDetailedLoot = isLootPin && marker.detailMode === 'detailed';
+      const isLeftoverLoot = marker.kind === 'leftover_loot';
 
       // Target fixed screen height in CSS pixels across zoom
       let targetPxH = 46;
@@ -1178,6 +1274,11 @@ export class EntityMarkerRenderer {
           targetPxH = 36;
           aspect = PIN_MINIMAL_W / PIN_MINIMAL_H;
         }
+      } else if (isLeftoverLoot) {
+        // Compact crate — slightly smaller than scavenge pins so it doesn't
+        // clutter the roof when it sits alongside normal building markers.
+        targetPxH = 30;
+        aspect = 1.0;
       } else if (marker.kind === 'street_label') {
         targetPxH = 26;
         aspect = 280 / 70;

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CombatVisualFx, DroppedItem, HostileHumanUnit, TacticalSquadUnit, WEAPON_CATALOG, ZombieLair, ZombieUnit } from '../types/combat';
+import { CombatVisualFx, DroppedItem, HostileHumanUnit, TacticalSquadUnit, ZombieLair, ZombieUnit, getWeaponDefinition } from '../types/combat';
 import { BuildingPolygon, MapData, Point2D, ResourceNode, RoadSegment } from '../types/map';
 import { ResourceWorkOrder } from '../types/resourceGathering';
 import { HiddenSurvivorGroup } from '../types/population';
@@ -1185,7 +1185,7 @@ export class WorldScene {
     // 0. Check if an Entity Marker label/badge was clicked
     const markerHit = this.markerRenderer.raycastMarker(this.raycaster);
     if (markerHit) {
-      if (markerHit.kind === 'loot_pin') {
+      if (markerHit.kind === 'loot_pin' || markerHit.kind === 'leftover_loot') {
         const bldg = this.buildingRenderer.getBuildingById(markerHit.id) || this.currentMapData?.buildings.find((b) => String(b.id) === String(markerHit.id)) || null;
         if (bldg) {
           this.buildingRenderer.setSelected(bldg.id);
@@ -1313,8 +1313,8 @@ export class WorldScene {
     }
     if (!targetSquadId) return;
 
-    // 1.5 Check if clicked on a loot pin marker
-    const lootHit = markerHit?.kind === 'loot_pin' ? markerHit.id : null;
+    // 1.5 Check if clicked on a loot pin / leftover crate marker
+    const lootHit = markerHit?.kind === 'loot_pin' || markerHit?.kind === 'leftover_loot' ? markerHit.id : null;
     if (lootHit && this.onOrderSquadMove) {
       const bldg = this.buildingRenderer.getBuildingById(lootHit) || this.currentMapData?.buildings.find((b) => String(b.id) === String(lootHit));
       if (bldg) {
@@ -1682,7 +1682,7 @@ export class WorldScene {
       const alive = squad.members.filter((m) => m.isAlive).length;
       const bestWeaponObj = squad.members
         .filter((m) => m.isAlive)
-        .sort((a, b) => (WEAPON_CATALOG[b.weaponId]?.tier ?? 0) - (WEAPON_CATALOG[a.weaponId]?.tier ?? 0))[0];
+        .sort((a, b) => getWeaponDefinition(b.weaponId).tier - getWeaponDefinition(a.weaponId).tier)[0];
       const bestWeaponId = bestWeaponObj?.weaponId || '';
       
       let weaponType: import('./EntityMarkerRenderer').MarkerWeaponType = 'unarmed';
@@ -1719,7 +1719,7 @@ export class WorldScene {
         memberCount: alive,
         maxMembers: squad.members.length,
         bestWeaponType: weaponType,
-        bestWeaponName: bestWeaponId ? WEAPON_CATALOG[bestWeaponId]?.name : undefined,
+        bestWeaponName: bestWeaponId ? getWeaponDefinition(bestWeaponId).name : undefined,
         activity,
         damageRatio,
         searchProgress: squad.searchProgress,
@@ -1972,6 +1972,41 @@ export class WorldScene {
           label: bldg.name || bldg.type || 'Structure',
           lootCategory: cat,
           lootCategories: searchState?.unlootedItems?.map((item) => item.label) || [cat],
+          buildingId: bldg.id,
+          detailMode: detail,
+        });
+      }
+    }
+
+    // 10b. Leftover loot crates — buildings whose search COMPLETED (100%) but
+    // left items behind because the squad ran out of carry slots. Always shown
+    // (not just in scavenge view) so the player can spot uncollected loot and
+    // send someone back. Hidden inside unexplored fog like the loot pins.
+    if (mapData?.buildings) {
+      for (const bldg of mapData.buildings) {
+        const searchState =
+          buildingSearches?.get(bldg.id) || buildingSearches?.get(String(bldg.id));
+        if (!searchState) continue;
+        if (searchState.searched === true) continue;
+        const unlooted = Array.isArray(searchState.unlootedItems) ? searchState.unlootedItems : [];
+        if (unlooted.length === 0) continue;
+        // Progress < 100 means items are still being discovered, not left behind.
+        if ((searchState.searchProgress ?? 0) < 100) continue;
+        if (classify(bldg.center.x, bldg.center.z) === 'unexplored') continue;
+
+        const topY = this.getBuildingTopY(bldg.id);
+        markers.push({
+          key: `leftover_${bldg.id}`,
+          kind: 'leftover_loot',
+          faction: 'unknown',
+          x: bldg.center.x,
+          z: bldg.center.z,
+          y: topY + 4.2,
+          anchorY: topY,
+          label: `${unlooted.length} loot stack${unlooted.length === 1 ? '' : 's'} left`, // tooltip text
+          lootCategory: getBuildingLootCategory(bldg),
+          lootCategories: unlooted.map((item) => item.label),
+          leftoverCount: unlooted.length,
           buildingId: bldg.id,
           detailMode: detail,
         });

@@ -30,7 +30,7 @@ import {
 import { gameSettingsService } from '../services/gameSettingsService';
 import { saveService } from '../services/saveService';
 import { soundService, ToastMessage } from '../services/soundService';
-import { findNextScavengeTarget, getHiddenGroupValues } from '../lib/scavengeQueueHelpers';
+import { findNextScavengeTarget, getHiddenGroupValues, isBuildingExhausted } from '../lib/scavengeQueueHelpers';
 import type { BuildingPolygon, LocationPreset, MapData, SettlementPlacement } from '../types/map';
 import type {
   ArmorItemId,
@@ -406,16 +406,31 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
                 soundService.playCombatActionSFX('assault_order');
               }
 
-              // If structure fully cleared
+              // If structure search completed (100% progress)
               if (scavResult.isCompleted) {
-                setToastMessage({
-                  title: 'STRUCTURE CLEARED',
-                  desc: `${targetBldg.name || 'Structure'} has been fully scavenged and secured.`,
-                  type: 'success',
-                });
-                const remainingQueue = (scavengeQueue[sq.squadId] || []).filter(
-                  (id) => String(id) !== String(targetBldg.id)
-                );
+                const searchesNow =
+                  workingSettlement.buildingSearches || (new Map() as Map<string | number, BuildingSearchState>);
+                const stillHasLoot = !isBuildingExhausted(targetBldg.id, searchesNow);
+                if (!stillHasLoot) {
+                  setToastMessage({
+                    title: 'STRUCTURE CLEARED',
+                    desc: `${targetBldg.name || 'Structure'} has been fully scavenged and secured.`,
+                    type: 'success',
+                  });
+                }
+                // A building completed with loot left behind STAYS in the queue
+                // (and is re-inserted at the front if a single right-click order
+                // never queued it), so the squad revisits it right after
+                // depositing. Only fully cleared buildings are dropped.
+                const curQueue = scavengeQueue[sq.squadId] || [];
+                let remainingQueue: Array<string | number>;
+                if (stillHasLoot) {
+                  remainingQueue = curQueue.some((id) => String(id) === String(targetBldg.id))
+                    ? curQueue
+                    : [targetBldg.id, ...curQueue];
+                } else {
+                  remainingQueue = curQueue.filter((id) => String(id) !== String(targetBldg.id));
+                }
                 setScavengeQueue((prev) => ({ ...prev, [sq.squadId]: remainingQueue }));
                 const finishedSquad = combatResult.updatedSquads[i];
                 const finishedInventory = workingSettlement.squadInventories?.[sq.squadId];
@@ -484,9 +499,10 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
             let depositedAny = false;
             if (inv?.items?.length) {
               const res = unloadSquadAtDropoff(workingSettlement, sq.squadId, { x: sq.x, z: sq.z }, dropoff, 10);
-              if (res.unloaded.length > 0) {
+              if (res.unloaded.length > 0 || (res.newState.fieldLootUnits || 0) > (workingSettlement.fieldLootUnits || 0)) {
+                const overflowUnits = (res.newState.fieldLootUnits || 0) - (workingSettlement.fieldLootUnits || 0);
                 workingSettlement = res.newState;
-                depositedAny = true;
+                depositedAny = res.unloaded.length > 0;
                 const summary = res.unloaded.map((u) => `${formatLootLabel(u.label)} ×${u.quantity}`).join(', ');
                 setToastMessage({
                   title: `SUPPLIES SECURED AT ${dropoff.name.toUpperCase()}`,
@@ -494,15 +510,23 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
                   type: 'success',
                 });
                 soundService.playBuildingPlaced();
+                if (overflowUnits > 0) {
+                  setToastMessage({
+                    title: 'STOCKPILE FULL — LOOT LEFT IN FIELD',
+                    desc: `${sq.name} could not unload ${overflowUnits} resource unit${overflowUnits === 1 ? '' : 's'}; recover it from the scavenged site later.`,
+                    type: 'warn',
+                  });
+                }
               }
             }
 
             // A mounted squad also empties its vehicle's cargo bay at the dropoff.
             if (mountedVeh && vehCargo > 0) {
               const vehRes = unloadVehicleAtDropoff(workingSettlement, mountedVeh, dropoff, 10);
-              if (vehRes.unloaded.length > 0) {
+              if (vehRes.unloaded.length > 0 || (vehRes.newState.fieldLootUnits || 0) > (workingSettlement.fieldLootUnits || 0)) {
+                const overflowUnits = (vehRes.newState.fieldLootUnits || 0) - (workingSettlement.fieldLootUnits || 0);
                 workingSettlement = vehRes.newState;
-                depositedAny = true;
+                depositedAny = vehRes.unloaded.length > 0;
                 const summary = vehRes.unloaded.map((u) => `${formatLootLabel(u.label)} ×${u.quantity}`).join(', ');
                 setToastMessage({
                   title: `VEHICLE CARGO DEPOSITED AT ${dropoff.name.toUpperCase()}`,
@@ -510,6 +534,13 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
                   type: 'success',
                 });
                 soundService.playBuildingPlaced();
+                if (overflowUnits > 0) {
+                  setToastMessage({
+                    title: 'STOCKPILE FULL — LOOT LEFT IN FIELD',
+                    desc: `${mountedVeh.name} could not unload ${overflowUnits} resource unit${overflowUnits === 1 ? '' : 's'}; recover it from the scavenged site later.`,
+                    type: 'warn',
+                  });
+                }
               }
             }
 

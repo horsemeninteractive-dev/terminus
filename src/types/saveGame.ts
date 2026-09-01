@@ -199,7 +199,11 @@ export interface SaveGameMeta {
   hasHQ: boolean;
 }
 
+export const CURRENT_SAVE_VERSION = 2;
+
 export interface SaveGameData {
+  /** Increment when the serialized payload shape changes. */
+  saveVersion: number;
   meta: SaveGameMeta;
   scenario: GameScenarioSettings;
   // Serialized game state
@@ -216,6 +220,7 @@ export interface SaveGameData {
     tutorialStep?: string;
     hasCompletedFirstScavenge: boolean;
     combatSquads?: any[];
+    scavengeQueue?: Record<string, Array<string | number>>;
     zombies?: any[];
     worldVehicles?: any[];
     dangerLevel?: number;

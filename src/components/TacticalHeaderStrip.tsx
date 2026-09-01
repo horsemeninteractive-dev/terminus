@@ -18,7 +18,7 @@ import {
   Sun,
   Wheat,
 } from 'lucide-react';
-import { GameClockState, NoiseEvent, WEAPON_CATALOG, WEAPON_IDS, WeaponItemId } from '../types/combat';
+import { GameClockState, NoiseEvent, WEAPON_IDS, WeaponItemId, getWeaponDefinition } from '../types/combat';
 import { SettlementState } from '../types/settlement';
 import { WEATHER_CONDITIONS } from '../services/weatherService';
 import { WeatherType } from '../types/weather';
@@ -130,6 +130,7 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
   const {
     stockpile,
     totalStorageCapacity,
+    fieldLootUnits = 0,
     totalLivingCapacity,
     totalDefenseRating,
     hq,
@@ -178,7 +179,7 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
     }
   }
   const weaponItems = WEAPON_IDS.map((id) => ({
-    label: WEAPON_CATALOG[id].name,
+    label: getWeaponDefinition(id).name,
     value: weaponCounts[id] || 0,
   }));
   const totalWeapons = weaponItems.reduce((acc, it) => acc + it.value, 0);
@@ -207,6 +208,8 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
     { label: 'Bricks', value: stockpile.materials?.bricks || 0 },
   ];
   const totalMaterials = materialItems.reduce((acc, it) => acc + it.value, 0);
+  const stockpileUnits = totalFood + totalAmmo + totalMeds + totalLiquids + totalMaterials;
+  const storageFull = totalStorageCapacity > 0 && stockpileUnits >= totalStorageCapacity;
 
   // Time & Clock Formats
   const { day, hour, minute, speed, phase, isNight } = clock;
@@ -464,6 +467,23 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
   // Render Stockpile Resources
   const renderStockpileResources = (compact: boolean = false) => (
     <div className="flex items-center gap-2 sm:gap-2.5 px-1 sm:px-3 text-[10px] sm:text-xs font-mono shrink-0">
+      {/* Storage capacity / field loot overflow */}
+      <div className="relative group">
+        <div
+          className={`flex items-center gap-1 cursor-default ${fieldLootUnits > 0 ? 'text-amber-300' : storageFull ? 'text-red-400' : 'text-slate-200'}`}
+          title={fieldLootUnits > 0 ? `${fieldLootUnits} loot units left in the field because storage is full` : `Storage: ${stockpileUnits}/${totalStorageCapacity}`}
+        >
+          <span className="font-bold">STO {stockpileUnits}/{totalStorageCapacity}</span>
+          {fieldLootUnits > 0 && <span className="font-black animate-pulse">· FIELD +{fieldLootUnits}</span>}
+        </div>
+        {fieldLootUnits > 0 && (
+          <div className="hidden group-hover:block absolute top-full right-0 mt-1.5 z-50 w-56 bg-[#0B0F17]/98 border border-amber-500/60 shadow-[0_12px_32px_rgba(0,0,0,0.95)] backdrop-blur-md clip-tactical-bracket p-2.5">
+            <div className="text-[10px] font-bold uppercase text-amber-300">Loot left in the field</div>
+            <div className="mt-1 text-[10px] font-mono text-slate-300">Storage capacity reached. {fieldLootUnits} resource units remain at scavenged sites for a later recovery run.</div>
+          </div>
+        )}
+      </div>
+
       {/* Food / Grain */}
       <div className="relative group">
         <div className="flex items-center gap-1 text-slate-200 cursor-default" title={`Stockpiled Food: ${Math.floor(totalFood)}`}>

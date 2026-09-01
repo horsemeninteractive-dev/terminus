@@ -239,6 +239,33 @@ export const ARMOR_CATALOG: Record<ArmorItemId, ArmorItemDef> = {
 
 export const ARMOR_IDS: ArmorItemId[] = Object.keys(ARMOR_CATALOG) as ArmorItemId[];
 
+/**
+ * Resolves a weapon definition from untrusted state (save files, loot drops,
+ * legacy data). Always returns a valid entry — unknown/bad IDs fall back to the
+ * default Combat Knife instead of crashing combat with a `undefined` deref.
+ */
+export function getWeaponDefinition(id?: string | null): WeaponItemDef {
+  return WEAPON_CATALOG[id as WeaponItemId] ?? WEAPON_CATALOG.knife;
+}
+
+/**
+ * Resolves an armor definition from untrusted state. Unknown/bad IDs fall back
+ * to the lowest-tier Padded Jacket rather than crashing.
+ */
+export function getArmorDefinition(id?: string | null): ArmorItemDef {
+  return ARMOR_CATALOG[id as ArmorItemId] ?? ARMOR_CATALOG.padded_jacket;
+}
+
+/** True only when the id names a real weapon in the catalog. */
+export function isValidWeaponId(id?: string | null): id is WeaponItemId {
+  return !!id && id in WEAPON_CATALOG;
+}
+
+/** True only when the id names a real armor in the catalog. */
+export function isValidArmorId(id?: string | null): id is ArmorItemId {
+  return !!id && id in ARMOR_CATALOG;
+}
+
 // ==========================================
 // Squad member face portraits (§4.3)
 // A shared catalog of survivor face shots. Each member is assigned one at

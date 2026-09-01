@@ -3,7 +3,6 @@ import { StatTier } from '../types/population';
 import { DeathCause, SurvivorInfection } from '../types/infection';
 import { createSurvivorInfection, rollBiteChance } from './infectionService';
 import {
-  ARMOR_CATALOG,
   ArmorItemId,
   BuildingInfestation,
   CombatVisualFx,
@@ -14,10 +13,11 @@ import {
   SquadMemberUnit,
   TacticalSquadUnit,
   TimeOfDayPhase,
-  WEAPON_CATALOG,
   WeaponItemId,
   ZombieUnit,
   ZombieVariant,
+  getArmorDefinition,
+  getWeaponDefinition,
   pickSurvivorFaceUrl,
 } from '../types/combat';
 import { AdaptedBuilding, SettlementState } from '../types/settlement';
@@ -288,7 +288,7 @@ export function recomputeSquadStats(squad: TacticalSquadUnit): TacticalSquadUnit
   let fireRate = 2.2;
   for (const m of squad.members) {
     if (!m.isAlive) continue;
-    const w = WEAPON_CATALOG[m.weaponId];
+    const w = getWeaponDefinition(m.weaponId);
     damage += m.isLeader ? w.damage * tierMult : w.damage;
     range = Math.max(range, w.range);
     if (m.isLeader) fireRate = Math.min(fireRate, w.fireRate);
@@ -653,8 +653,8 @@ export function tickCombatSimulation(
     // Determine squad weapon capabilities:
     // Check if squad has ranged weapons (pistol, shotgun, hunting_rifle, assault_rifle)
     const aliveMembers = squad.members.filter((m) => m.isAlive);
-    const rangedMembers = aliveMembers.filter((m) => WEAPON_CATALOG[m.weaponId].ammoPerVolley > 0);
-    const squadAmmoPerVolley = rangedMembers.reduce((sum, m) => sum + WEAPON_CATALOG[m.weaponId].ammoPerVolley, 0);
+    const rangedMembers = aliveMembers.filter((m) => getWeaponDefinition(m.weaponId).ammoPerVolley > 0);
+    const squadAmmoPerVolley = rangedMembers.reduce((sum, m) => sum + getWeaponDefinition(m.weaponId).ammoPerVolley, 0);
     const hasSufficientAmmo = squadAmmoPerVolley === 0 || ammoAvailable >= squadAmmoPerVolley;
 
     // Base effective attack range:
@@ -846,7 +846,7 @@ export function tickCombatSimulation(
             newVisualFx.push(ringFx);
           } else {
             // Melee strike
-            const meleeBase = aliveMembers.reduce((sum, m) => sum + Math.max(10, WEAPON_CATALOG[m.weaponId].damage), 0) * moraleCombatMult;
+            const meleeBase = aliveMembers.reduce((sum, m) => sum + Math.max(10, getWeaponDefinition(m.weaponId).damage), 0) * moraleCombatMult;
             damageDealt = Math.max(1, Math.round(
               meleeBase * (0.85 + Math.random() * 0.3) * (isCrit ? 2.0 : 1.0)
             ));
@@ -1069,7 +1069,7 @@ export function tickCombatSimulation(
             const victim = aliveMembers[Math.floor(Math.random() * aliveMembers.length)];
             let appliedDamage = zombie.baseDamage;
             if (victim && victim.armorId) {
-              const armor = ARMOR_CATALOG[victim.armorId];
+              const armor = getArmorDefinition(victim.armorId);
               appliedDamage = Math.max(1, Math.round(zombie.baseDamage * (1 - armor.damageReduction)));
             }
 
@@ -1315,7 +1315,7 @@ export function tickCombatSimulation(
             if (victim && victim.armorId) {
               appliedDamage = Math.max(
                 1,
-                Math.round(human.damage * (1 - ARMOR_CATALOG[victim.armorId].damageReduction))
+                Math.round(human.damage * (1 - getArmorDefinition(victim.armorId).damageReduction))
               );
             }
 
@@ -1433,14 +1433,14 @@ export function tickCombatSimulation(
         const target =
           alive.find((m) => m.weaponId === 'knife') ||
           alive.find(
-            (m) => WEAPON_CATALOG[m.weaponId].tier < WEAPON_CATALOG[remainingItem.weaponId as WeaponItemId].tier
+            (m) => getWeaponDefinition(m.weaponId).tier < getWeaponDefinition(remainingItem.weaponId).tier
           );
         if (target) {
           target.weaponId = remainingItem.weaponId;
           recomputeSquadStats(sq);
           settlementNotifications.push({
             title: 'EQUIPMENT RECOVERED',
-            desc: `${target.name} of ${sq.name} recovered ${WEAPON_CATALOG[remainingItem.weaponId].name} from the field.`,
+            desc: `${target.name} of ${sq.name} recovered ${getWeaponDefinition(remainingItem.weaponId).name} from the field.`,
             type: 'info',
           });
           remainingItem.weaponId = null;
@@ -1453,7 +1453,7 @@ export function tickCombatSimulation(
           target.armorId = remainingItem.armorId;
           settlementNotifications.push({
             title: 'ARMOR RECOVERED',
-            desc: `${target.name} of ${sq.name} recovered ${ARMOR_CATALOG[remainingItem.armorId].name} from the field.`,
+            desc: `${target.name} of ${sq.name} recovered ${getArmorDefinition(remainingItem.armorId).name} from the field.`,
             type: 'info',
           });
           remainingItem.armorId = null;

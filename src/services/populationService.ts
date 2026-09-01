@@ -1474,9 +1474,27 @@ export function tickSettlementSimulation(
       if (!p) return 0;
       return (state.stockpile[p[0]] as any)[p[1]] ?? 0;
     };
+    // Total item units currently held — the same unit totalStorageCapacity uses.
+    // Defined locally to avoid a circular import with settlementService.
+    const stockpileUnits = (): number => {
+      let units = 0;
+      for (const category of Object.values(state.stockpile)) {
+        for (const value of Object.values(category as Record<string, number>)) {
+          if (typeof value === 'number') units += value;
+        }
+      }
+      return units;
+    };
     const addRes = (res: string, amount: number) => {
       const p = RESOURCE_PATHS[res];
       if (!p) return;
+      if (amount > 0) {
+        // Finite physical storage: production gains stop at the capacity
+        // ceiling. Inputs/consumption (negative amounts) always apply.
+        const free = Math.max(0, state.totalStorageCapacity - stockpileUnits());
+        amount = Math.min(amount, free);
+        if (amount <= 0) return;
+      }
       (state.stockpile[p[0]] as any)[p[1]] = Math.max(
         0,
         ((state.stockpile[p[0]] as any)[p[1]] ?? 0) + amount

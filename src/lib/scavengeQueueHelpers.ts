@@ -15,7 +15,7 @@ export function getHiddenGroupValues(value: unknown): HiddenSurvivorGroup[] {
 }
 
 /** True when a building has been fully cleared (searched and nothing left to take). */
-function isBuildingExhausted(id: string | number, searches: Map<string | number, BuildingSearchState>): boolean {
+export function isBuildingExhausted(id: string | number, searches: Map<string | number, BuildingSearchState>): boolean {
   const search = searches.get(id) ?? searches.get(String(id));
   if (!search) return false;
   return search.searched === true || (Array.isArray(search.unlootedItems) && search.unlootedItems.length === 0);

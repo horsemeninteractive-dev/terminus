@@ -1,4 +1,4 @@
-import { SaveGameData, SaveGameMeta } from '../types/saveGame';
+import { CURRENT_SAVE_VERSION, SaveGameData, SaveGameMeta } from '../types/saveGame';
 import { SettlementState } from '../types/settlement';
 import { SettlementRecord } from '../types/caravan';
 
@@ -94,6 +94,35 @@ export function deserializeSettlementsDict(data: Record<string, any>): Record<st
   return result;
 }
 
+function migrateSaveData(raw: any): SaveGameData {
+  if (!raw || typeof raw !== 'object' || !raw.meta || !raw.statePayload) {
+    throw new Error('Invalid save game format');
+  }
+
+  const version = typeof raw.saveVersion === 'number' ? raw.saveVersion : 1;
+  if (version > CURRENT_SAVE_VERSION) {
+    throw new Error(`Save requires a newer game version (save v${version}, supported v${CURRENT_SAVE_VERSION}).`);
+  }
+
+  let migrated = { ...raw, statePayload: { ...raw.statePayload } };
+  // v1 saves predate persisted scavenge queues. Treat them as empty rather than
+  // making the rest of the load path branch on optional legacy data.
+  if (version < 2) {
+    migrated.statePayload.scavengeQueue = migrated.statePayload.scavengeQueue || {};
+  }
+
+  return {
+    ...migrated,
+    saveVersion: CURRENT_SAVE_VERSION,
+    statePayload: {
+      ...migrated.statePayload,
+      caravans: migrated.statePayload.caravans || [],
+      settlements: migrated.statePayload.settlements || {},
+      hasCompletedFirstScavenge: migrated.statePayload.hasCompletedFirstScavenge ?? true,
+    },
+  } as SaveGameData;
+}
+
 export class SaveGameService {
   /**
    * Get list of all save games metadata
@@ -144,6 +173,7 @@ export class SaveGameService {
       tutorialStep?: string;
       hasCompletedFirstScavenge?: boolean;
       combatSquads?: any[];
+      scavengeQueue?: Record<string, Array<string | number>>;
       zombies?: any[];
       worldVehicles?: any[];
       dangerLevel?: number;
@@ -199,6 +229,7 @@ export class SaveGameService {
     };
 
     const fullSaveData: SaveGameData = {
+      saveVersion: CURRENT_SAVE_VERSION,
       meta,
       scenario: payload.scenarioSettings || {
         difficulty: 'normal',
@@ -209,8 +240,8 @@ export class SaveGameService {
         startingPopulation: 8,
         tutorialEnabled: true,
       },
-      statePayload: {
-        settlements: serializeSettlementsDict(payload.settlements),
+  statePayload: {
+    settlements: serializeSettlementsDict(payload.settlements),
         activeSettlementId: payload.activeSettlementId,
         settlement: serializeSettlementState(payload.settlement),
         gameClock: payload.gameClock,
@@ -222,6 +253,7 @@ export class SaveGameService {
         tutorialStep: payload.tutorialStep,
         hasCompletedFirstScavenge: payload.hasCompletedFirstScavenge ?? true,
         combatSquads: payload.combatSquads,
+        scavengeQueue: payload.scavengeQueue,
         zombies: payload.zombies,
         worldVehicles: payload.worldVehicles,
         dangerLevel: payload.dangerLevel,
@@ -256,7 +288,7 @@ export class SaveGameService {
     try {
       const raw = localStorage.getItem(`${SAVE_STORAGE_KEY_PREFIX}${saveId}`);
       if (!raw) return null;
-      const parsed: SaveGameData = JSON.parse(raw);
+      const parsed = migrateSaveData(JSON.parse(raw));
 
       // Rehydrate statePayload
       if (parsed.statePayload) {
@@ -302,8 +334,7 @@ export class SaveGameService {
    */
   public importSaveJson(jsonStr: string): SaveGameMeta | null {
     try {
-      const data: SaveGameData = JSON.parse(jsonStr);
-      if (!data.meta || !data.statePayload) throw new Error('Invalid save game format');
+      const data = migrateSaveData(JSON.parse(jsonStr));
 
       const id = `import_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
       data.meta.id = id;

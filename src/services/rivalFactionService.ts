@@ -1,9 +1,9 @@
 import {
   HostileHumanUnit,
   TacticalSquadUnit,
-  WEAPON_CATALOG,
   ZombieLair,
   ZombieUnit,
+  getWeaponDefinition,
 } from '../types/combat';
 import { BuildingPolygon, Point2D } from '../types/map';
 import {
@@ -147,7 +147,7 @@ export function spawnHideoutDefenders(hideout: RivalHideout): HostileHumanUnit[]
     const angle = (i / count) * Math.PI * 2 + Math.random() * 0.6;
     const dist = 6 + Math.random() * 9;
     const weaponId = def.weaponPool[Math.floor(Math.random() * def.weaponPool.length)];
-    const weapon = WEAPON_CATALOG[weaponId];
+    const weapon = getWeaponDefinition(weaponId);
 
     units.push({
       id: `rival_${hideout.id}_${i}_${Math.random().toString(36).slice(2, 6)}`,

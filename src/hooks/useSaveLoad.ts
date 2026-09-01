@@ -31,12 +31,14 @@ export interface SaveLoadRuntime {
   caravans: TradeCaravan[];
   radioDirectiveState: RadioDirectiveState;
   combatSquads: TacticalSquadUnit[];
+  scavengeQueue: Record<string, Array<string | number>>;
   zombies: ZombieUnit[];
   dangerLevel: number;
   timeOfDay: TimeOfDay;
   viewMode: 'start_screen' | 'intro' | 'main_menu' | 'globe' | 'world';
   showSatelliteOverlay: boolean;
   satelliteQuality: SatelliteQuality;
+  setScavengeQueue: Dispatch<SetStateAction<Record<string, Array<string | number>>>>;
   selectedBuilding: BuildingPolygon | null;
   selectedSquadId: string | null;
   selectedVehicleId: string | null;
@@ -99,6 +101,7 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
     caravans,
     radioDirectiveState,
     combatSquads,
+    scavengeQueue,
     zombies,
     dangerLevel,
     timeOfDay,
@@ -149,6 +152,7 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
     setSelectedBuilding,
     setSelectedSquadId,
     setSelectedVehicleId,
+    setScavengeQueue,
     setDescentProgress,
     setDescentAltitudeKm,
     setIsDescentActive,
@@ -256,6 +260,7 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
           radioState: radioDirectiveState,
           hasCompletedFirstScavenge: true,
           combatSquads,
+          scavengeQueue,
           zombies,
           worldVehicles: settlement.vehicles || [],
           dangerLevel,
@@ -289,6 +294,7 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
     caravans,
     radioDirectiveState,
     combatSquads,
+    scavengeQueue,
     zombies,
     dangerLevel,
     timeOfDay,
@@ -326,6 +332,8 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
         if (payload.satelliteQuality === 'performance' || payload.satelliteQuality === 'balanced' || payload.satelliteQuality === 'detail') {
           setSatelliteQuality(payload.satelliteQuality);
         }
+
+        setScavengeQueue(payload.scavengeQueue || {});
 
         if (payload.combatSquads && payload.combatSquads.length > 0) {
           setCombatSquads(payload.combatSquads);

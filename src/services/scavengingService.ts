@@ -1,5 +1,6 @@
 import { BuildingCategory, BuildingPolygon, Point2D } from '../types/map';
-import { SettlementState } from '../types/settlement';
+import { SettlementState, SettlementStockpile } from '../types/settlement';
+import { getStockpileUnits } from './settlementService';
 import { SquadInventory, SquadLootItem } from '../types/population';
 import { BuildingSearchState } from '../types/scavenging';
 import { ArmorItemId, TacticalSquadUnit, WeaponItemId } from '../types/combat';
@@ -116,7 +117,7 @@ export function generateLootForBuilding(b: BuildingPolygon): SquadLootItem[] {
         items.push(i('weapon', isShotgun ? 'Shotgun' : 'Pistol', isShotgun ? 'shotgun' : 'pistol', 3.2));
       }
       if (Math.random() < 0.5) {
-        items.push(i('armor', 'Tactical Vest', 'tactical_vest', 4.0));
+        items.push(i('armor', 'Riot Vest', 'riot_vest', 4.0));
       }
       break;
     case 'gas_station':
@@ -126,7 +127,7 @@ export function generateLootForBuilding(b: BuildingPolygon): SquadLootItem[] {
     case 'warehouse':
     case 'industrial':
       items.push(q('metal', r(6, 16), 1.5), q('wood', r(5, 14), 1.2), q('gasoline', r(4, 12), 0.5));
-      if (Math.random() < 0.35) items.push(i('weapon', 'Machete', 'machete', 2.0));
+      if (Math.random() < 0.35) items.push(i('weapon', 'Fire Axe', 'axe', 2.0));
       if (Math.random() < 0.25) items.push(q('bricks', r(4, 10), 2.0));
       break;
     case 'school':
@@ -256,11 +257,14 @@ export function findNearestStorageDropoff(
     }
   }
 
-  // Check freestanding storage depots (canonical Warehouse or legacy alias)
+  // Check freestanding storage depots (canonical Warehouse or legacy alias).
+  // Only COMPLETED depots qualify — a blueprint / under-construction depot
+  // isn't a usable dropoff yet.
   if (settlement.freestandingBuildings) {
     for (const bldg of settlement.freestandingBuildings) {
       if (
         (bldg.typeId === 'storage_depot' || bldg.typeId === 'warehouse') &&
+        bldg.constructionStatus === 'completed' &&
         bldg.position
       ) {
         const dist = Math.hypot(pos.x - bldg.position.x, pos.z - bldg.position.z);
@@ -437,14 +441,20 @@ export function tickBuildingScavengeProgress(
     inventoryFull = true;
   }
 
-  const isCompleted = progress >= 100 && search.unlootedItems!.length === 0;
+  // The search completes once progress reaches 100% — even if the squad's
+  // carry capacity forced some loot to be left behind. Leftovers stay in the
+  // building so a later run can collect them (searched stays false until the
+  // building is fully cleared, keeping it eligible for the scavenge queue),
+  // and the squad returns with its partial haul instead of being stuck in the
+  // searching state forever.
+  const isCompleted = progress >= 100;
 
   search.elapsedDurationSec = elapsed;
   search.totalDurationSec = totalDuration;
   search.searchProgress = progress;
   search.lootedItems = looted;
   search.observed = true;
-  if (isCompleted) {
+  if (isCompleted && (search.unlootedItems?.length ?? 0) === 0) {
     search.searched = true;
   }
   m.set(building.id, search);
@@ -619,6 +629,55 @@ function addLootToArmory(armory: { weapons: WeaponItemId[]; armor: ArmorItemId[]
   }
 }
 
+/** Loot labels that land in the finite stockpile (everything else is armory). */
+const STOCKPILE_LOOT_LABELS = new Set([
+  'canned_goods',
+  'dried_rations',
+  'bottled_water',
+  'first_aid_kits',
+  'sterile_bandages',
+  'antibiotics',
+  'painkillers',
+  'gasoline',
+  'diesel',
+  'ammunition',
+  'wood',
+  'metal',
+  'bricks',
+]);
+
+/** Stockpile units an item consumes (0 for weapons/armor, which go to the armory). */
+function lootStockpileUnits(l: SquadLootItem): number {
+  return STOCKPILE_LOOT_LABELS.has(l.label) ? (l.quantity ?? 1) : 0;
+}
+
+/**
+ * Adds loot to the stockpile while respecting totalStorageCapacity. Anything
+ * that doesn't fit is returned as overflow (never silently lost) so the caller
+ * can keep it in the squad's backpack / vehicle bay. Armory-only loot always
+ * deposits — it doesn't consume stockpile units.
+ */
+function depositLootWithinCapacity(
+  stock: SettlementStockpile,
+  items: SquadLootItem[],
+  capacity: number
+): { stockpile: SettlementStockpile; deposited: SquadLootItem[]; overflow: SquadLootItem[] } {
+  let usedUnits = getStockpileUnits(stock);
+  const deposited: SquadLootItem[] = [];
+  const overflow: SquadLootItem[] = [];
+  for (const l of items) {
+    const units = lootStockpileUnits(l);
+    if (usedUnits + units > capacity) {
+      overflow.push(l);
+      continue;
+    }
+    addLootToStockpile(stock, l);
+    usedUnits += units;
+    deposited.push(l);
+  }
+  return { stockpile: stock, deposited, overflow };
+}
+
 /**
  * Unloads squad inventory when arrived at a storage dropoff building or HQ fortress.
  */
@@ -641,27 +700,31 @@ export function unloadSquadAtDropoff(
   const stock = structuredClone(state.stockpile);
   const items = inv.items;
 
-  for (const l of items) {
-    addLootToStockpile(stock, l);
-  }
+  // Finite stockpile: deposit only what fits under totalStorageCapacity.
+  // Overflow stays in the squad's backpack instead of vanishing.
+  const capacity = state.totalStorageCapacity ?? Infinity;
+  const { stockpile: stockAfter, deposited, overflow } = depositLootWithinCapacity(stock, items, capacity);
 
   const armory = {
     weapons: [...(state.armory?.weapons || [])],
     armor: [...(state.armory?.armor || [])],
   };
-  addLootToArmory(armory, items);
+  addLootToArmory(armory, deposited);
+
+  const overflowUnits = overflow.reduce((sum, item) => sum + lootStockpileUnits(item), 0);
 
   return {
     newState: {
       ...state,
-      stockpile: stock,
+      stockpile: stockAfter,
       armory,
+      fieldLootUnits: (state.fieldLootUnits || 0) + overflowUnits,
       squadInventories: {
         ...(state.squadInventories || {}),
-        [squadId]: createEmptySquadInventory(inv.capacity),
+        [squadId]: { ...createEmptySquadInventory(inv.capacity), items: overflow },
       },
     },
-    unloaded: items,
+    unloaded: deposited,
   };
 }
 
@@ -685,24 +748,29 @@ export function unloadVehicleAtDropoff(
   }
 
   const stock = structuredClone(state.stockpile);
-  for (const l of bay) {
-    addLootToStockpile(stock, l);
-  }
+
+  // Finite stockpile: deposit only what fits under totalStorageCapacity.
+  // Overflow stays in the vehicle's cargo bay instead of vanishing.
+  const capacity = state.totalStorageCapacity ?? Infinity;
+  const { stockpile: stockAfter, deposited, overflow } = depositLootWithinCapacity(stock, bay, capacity);
 
   const armory = {
     weapons: [...(state.armory?.weapons || [])],
     armor: [...(state.armory?.armor || [])],
   };
-  addLootToArmory(armory, bay);
+  addLootToArmory(armory, deposited);
+
+  const overflowUnits = overflow.reduce((sum, item) => sum + lootStockpileUnits(item), 0);
 
   return {
     newState: {
       ...state,
-      stockpile: stock,
+      stockpile: stockAfter,
       armory,
-      vehicles: (state.vehicles || []).map((v) => (v.id === vehicle.id ? { ...v, inventory: [] } : v)),
+      fieldLootUnits: (state.fieldLootUnits || 0) + overflowUnits,
+      vehicles: (state.vehicles || []).map((v) => (v.id === vehicle.id ? { ...v, inventory: overflow } : v)),
     },
-    unloaded: bay,
+    unloaded: deposited,
   };
 }
 
