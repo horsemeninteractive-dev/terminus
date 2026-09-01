@@ -151,6 +151,10 @@ export interface ColonyBannerConfig {
   pattern?: BannerPatternId;
 }
 
+// Satellite imagery render tier. Affects canvas density, tile budget and the
+// source zoom tiers fetched by satelliteService; persisted per save game.
+export type SatelliteQuality = 'performance' | 'balanced' | 'detail';
+
 export interface GameScenarioSettings {
   difficulty: GameDifficulty;
   colonyName: string;
@@ -216,6 +220,8 @@ export interface SaveGameData {
     worldVehicles?: any[];
     dangerLevel?: number;
     timeOfDay?: string;
+    satelliteOverlay?: boolean;
+    satelliteQuality?: SatelliteQuality;
   };
 }
 

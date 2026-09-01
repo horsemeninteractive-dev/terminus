@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
  AlertTriangle,
  ArrowRight,
@@ -31,7 +31,7 @@ import {
 import { DOWNLOADED_PRESETS, LOCATION_PRESETS } from '../data/sampleMapData';
 import { ZONE_CONFIGS } from '../data/zoneConfigs';
 import { GlobeScene } from '../render/GlobeScene';
-import { LocationValidationResult, validateLocation } from '../services/locationValidator';
+import { countryCodeForName, GeoSearchResult, LocationValidationResult, searchLocations, validateLocation } from '../services/locationValidator';
 import { GeoPoint, LocationPreset, MapData, Point2D, SettlementPlacement, ZoneGridSize } from '../types/map';
 import { SettlementRecord, TradeCaravan } from '../types/caravan';
 import { ColonyBannerConfig, GameScenarioSettings } from '../types/saveGame';
@@ -62,6 +62,35 @@ interface GlobeViewProps {
 
 type MapSelectionPhase = 'GLOBE' | 'STREET_VIEW';
 
+// Persist the player's last chosen location so a new game pre-fills the globe and
+// search box with it instead of resetting to the default curated map every time.
+const LAST_LOCATION_KEY = 'terminus_last_location_v1';
+
+function loadLastLocation(): { lat: number; lon: number; query: string } | null {
+  try {
+    const raw = localStorage.getItem(LAST_LOCATION_KEY);
+    if (!raw) return null;
+    const p = JSON.parse(raw);
+    if (
+      typeof p?.lat === 'number' &&
+      typeof p?.lon === 'number' &&
+      !isNaN(p.lat) &&
+      !isNaN(p.lon) &&
+      Math.abs(p.lat) <= 90 &&
+      Math.abs(p.lon) <= 180
+    ) {
+      return { lat: p.lat, lon: p.lon, query: typeof p.query === 'string' ? p.query : '' };
+    }
+  } catch {}
+  return null;
+}
+
+function saveLastLocation(lat: number, lon: number, query: string) {
+  try {
+    localStorage.setItem(LAST_LOCATION_KEY, JSON.stringify({ lat, lon, query }));
+  } catch {}
+}
+
 export const GlobeView: React.FC<GlobeViewProps> = ({
  onConfirmSettlement,
  onBeginDescent,
@@ -82,9 +111,13 @@ export const GlobeView: React.FC<GlobeViewProps> = ({
  // to the world so the game does NOT re-fetch the same map a second time.
  const preloadedMapDataRef = useRef<MapData | null>(null);
 
- // Selected coordinates & validation
- const [selectedLocation, setSelectedLocation] = useState<GeoPoint>(initialLocation);
- const [selectedPreset, setSelectedPreset] = useState<LocationPreset>(() => {
+ // Selected coordinates & validation. Hydrate from the persisted last location so
+ // returning players land where they left off; otherwise fall back to the prop.
+ const persistedLocation = useRef(loadLastLocation()).current;
+ const [selectedLocation, setSelectedLocation] = useState<GeoPoint>(
+   persistedLocation ? { lat: persistedLocation.lat, lon: persistedLocation.lon } : initialLocation
+ );
+ const [selectedPreset, setSelectedPreset] = useState<LocationPreset | null>(() => {
  return (
  LOCATION_PRESETS.find((p) => p.id === 'evesham') || LOCATION_PRESETS[0]
  );
@@ -92,8 +125,12 @@ export const GlobeView: React.FC<GlobeViewProps> = ({
  const [validation, setValidation] = useState<LocationValidationResult | null>(null);
  const [isValidating, setIsValidating] = useState<boolean>(false);
 
- // Search filter query in Left Sidebar (Screenshot 972)
- const [searchQuery, setSearchQuery] = useState<string>('');
+ // Search filter query in Left Sidebar (Screenshot 972). Pre-fill from the last
+ // chosen location so the search box reflects where the player left off.
+ const [searchQuery, setSearchQuery] = useState<string>(persistedLocation?.query || '');
+ const [geoResults, setGeoResults] = useState<GeoSearchResult[] | null>(null);
+ const [geoLoading, setGeoLoading] = useState<boolean>(false);
+ const [geoError, setGeoError] = useState<string | null>(null);
 
  // Zone Size & Placement configuration
  const [zoneSize, setZoneSize] = useState<ZoneGridSize>('3x3');
@@ -233,9 +270,24 @@ export const GlobeView: React.FC<GlobeViewProps> = ({
  setZoneName(`Terminus Zone of ${preset.name.split(',')[0].trim()}`);
  globeSceneRef.current?.setTargetLocation(preset.lat, preset.lon, true, true);
  runValidation(pt);
+ saveLastLocation(preset.lat, preset.lon, preset.name.split(',')[0].trim());
  };
 
- // Handle search input (search preset list or parse direct lat, lon coordinates)
+ // Select a live-geocoded search result (clears the curated preset selection)
+ const handleSelectGeo = (result: GeoSearchResult) => {
+ const pt: GeoPoint = { lat: result.lat, lon: result.lon };
+ setSelectedPreset(null);
+ setSelectedLocation(pt);
+ setPlacementOffset({ x: 0, z: 0 });
+ setZoneName(`Terminus Zone of ${(result.city || result.name || 'Sector').split(',')[0].trim()}`);
+ globeSceneRef.current?.setTargetLocation(result.lat, result.lon, true, true);
+ runValidation(pt);
+ setGeoResults(null);
+ setGeoError(null);
+ saveLastLocation(result.lat, result.lon, (result.city || result.name || '').split(',')[0].trim());
+ };
+
+ // Handle search input: live-geocode via Nominatim, or parse direct lat,lon coords
  const handleSearchSubmit = (e: React.FormEvent) => {
  e.preventDefault();
  const query = searchQuery.trim();
@@ -248,26 +300,72 @@ export const GlobeView: React.FC<GlobeViewProps> = ({
  const lon = parseFloat(coordParts[1]);
  if (!isNaN(lat) && !isNaN(lon) && lat >= -85 && lat <= 85 && lon >= -180 && lon <= 180) {
  const pt: GeoPoint = { lat, lon };
+ setSelectedPreset(null);
  setSelectedLocation(pt);
  globeSceneRef.current?.setTargetLocation(lat, lon, true, true);
  runValidation(pt);
+ saveLastLocation(lat, lon, `${lat.toFixed(3)}, ${lon.toFixed(3)}`);
  return;
  }
  }
 
- // Otherwise find closest preset
- const match = LOCATION_PRESETS.find(
- (p) =>
- p.name.toLowerCase().includes(query.toLowerCase()) ||
- p.country.toLowerCase().includes(query.toLowerCase())
- );
- if (match) {
- handleSelectPreset(match);
- }
+ // Otherwise geocode the free-text query; select the top hit if any.
+ searchLocations(query)
+   .then((results) => {
+     if (results.length > 0) {
+       handleSelectGeo(results[0]);
+     }
+   })
+   .catch(() => {
+     // fall through to preset matching (offline)
+     const match = LOCATION_PRESETS.find(
+       (p) =>
+         p.name.toLowerCase().includes(query.toLowerCase()) ||
+         p.country.toLowerCase().includes(query.toLowerCase())
+     );
+     if (match) {
+       handleSelectPreset(match);
+     }
+   });
  };
+
+ // Debounced live geocoding while typing in the search box
+ useEffect(() => {
+   const q = searchQuery.trim();
+   if (q.length < 3) {
+     setGeoResults(null);
+     setGeoLoading(false);
+     setGeoError(null);
+     return;
+   }
+   setGeoLoading(true);
+   setGeoError(null);
+   const controller = new AbortController();
+   const timer = window.setTimeout(async () => {
+     try {
+       const results = await searchLocations(q, controller.signal);
+       if (controller.signal.aborted) return;
+       setGeoResults(results);
+     } catch {
+       if (!controller.signal.aborted) setGeoError('OFFLINE - CANNOT SEARCH');
+     } finally {
+       if (!controller.signal.aborted) setGeoLoading(false);
+     }
+   }, 350);
+   return () => {
+     window.clearTimeout(timer);
+     controller.abort();
+   };
+ }, [searchQuery]);
 
  // Transition from Step 1 (Globe View) to Step 2 (Street View & Manual Grid Placement)
  const handleProceedToStreetView = () => {
+ // Save whatever is currently chosen as the last location for next time.
+ saveLastLocation(
+   selectedLocation.lat,
+   selectedLocation.lon,
+   (activeCityName || '').split(',')[0].trim()
+ );
  if (globeSceneRef.current) {
  // Smoothly zoom in to the chosen city on the 3D globe first
  globeSceneRef.current.zoomToCity(selectedLocation.lat, selectedLocation.lon, () => {
@@ -346,6 +444,26 @@ export const GlobeView: React.FC<GlobeViewProps> = ({
  p.country.toLowerCase().includes(searchQuery.toLowerCase())
  );
 
+ // Group live geocoded results by country so many hits scan as discrete clusters
+ const groupedGeo = useMemo(() => {
+   const groups: {
+     key: string;
+     code?: string;
+     country: string;
+     items: GeoSearchResult[];
+   }[] = [];
+   for (const r of geoResults || []) {
+     const key = (r.countryCode || r.country || '').trim() || 'OTHER';
+     let g = groups.find((x) => x.key === key);
+     if (!g) {
+       g = { key, code: r.countryCode, country: r.country || 'Other Region', items: [] };
+       groups.push(g);
+     }
+     g.items.push(r);
+   }
+   return groups;
+ }, [geoResults]);
+
  return (
  <div className="relative w-screen h-screen bg-[#06080C] overflow-hidden select-none font-tactical text-[#E8E8E8]">
  {/* 1. Step 2: Street-Level Tactical Vector Map & Manual Grid Placement (Screenshot 973) */}
@@ -382,7 +500,7 @@ export const GlobeView: React.FC<GlobeViewProps> = ({
  {/* City Tag Label */}
  <div className="flex flex-col items-center">
  <div className="bg-[#0E1013]/95 border-2 border-[#10B981] text-[#10B981] text-xs font-display font-black px-3.5 py-1 uppercase tracking-widest clip-tactical-bracket surface-bevel">
- {selectedPreset?.name?.toUpperCase() || `${selectedLocation.lat.toFixed(2)}°, ${selectedLocation.lon.toFixed(2)}°`}
+ {activeCityName?.toUpperCase() || `${selectedLocation.lat.toFixed(2)}°, ${selectedLocation.lon.toFixed(2)}°`}
  </div>
  {/* Pointer Stem & Pulsing Core */}
  <div className="w-0.5 h-4 bg-[#10B981]" />
@@ -420,6 +538,63 @@ export const GlobeView: React.FC<GlobeViewProps> = ({
 
  {/* Scrollable Presets Section */}
  <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+ {/* LIVE GEOCODED SEARCH RESULTS (query >= 3 chars) */}
+ {geoResults !== null && (
+   <div className="space-y-1.5">
+     <div className="text-[11px] font-heading font-black text-[#10B981] uppercase tracking-wider flex items-center justify-between">
+       <span>{geoLoading ? 'SEARCHING…' : geoResults.length > 0 ? 'SEARCH RESULTS:' : 'NO MATCHES - TRY ANOTHER NAME'}</span>
+     </div>
+     {geoResults.length > 0 && (
+       <div className="space-y-2.5">
+         {groupedGeo.map((group) => (
+           <div key={group.key} className="space-y-1">
+             <div className="flex items-center gap-1.5 text-[10px] font-heading font-black text-[#5A6270] uppercase tracking-wider">
+               {group.code && (
+                 <span
+                   aria-hidden
+                   className="shrink-0 w-5 h-3.5 grid place-items-center text-[7px] font-black clip-card-chip border border-[#262F3D] bg-[#0E1116] text-[#8C9BAE]"
+                 >
+                   {group.code.toUpperCase()}
+                 </span>
+               )}
+               <span>{group.country}</span>
+               <span className="flex-1 h-px bg-[#262F3D]" />
+             </div>
+             {group.items.map((res) => {
+               const isSelected =
+                 Math.abs(res.lat - selectedLocation.lat) < 0.02 &&
+                 Math.abs(res.lon - selectedLocation.lon) < 0.02;
+               return (
+                 <button
+                   key={res.placeId}
+                   onClick={() => handleSelectGeo(res)}
+                   className={`w-full text-left px-3 py-2 text-xs font-heading font-bold uppercase flex flex-col items-start transition-colors clip-card-chip border ${
+                     isSelected
+                       ? 'bg-[#10B981] text-black border-[#10B981]'
+                       : 'bg-[#14171C]/90 text-[#C2C9D1] border-[#262F3D] hover:bg-[#1A2634] hover:text-white'
+                   }`}
+                 >
+                   <span className="truncate w-full flex items-center gap-2">
+                     <span className="truncate">{res.name || res.displayName}</span>
+                   </span>
+                   <span className={`text-[9px] font-mono truncate w-full ${isSelected ? 'text-black/70' : 'text-[#5A6270]'}`}>
+                     {res.displayName}
+                   </span>
+                 </button>
+               );
+             })}
+           </div>
+         ))}
+       </div>
+     )}
+   </div>
+ )}
+ {geoError && (
+   <div className="text-[10px] font-mono text-[#B31217]">
+     {geoError}
+   </div>
+ )}
+
  {/* RECOMMENDED Section */}
  <div className="space-y-1.5">
  <div className="text-[11px] font-heading font-black text-[#8C9BAE] uppercase tracking-wider">
@@ -442,7 +617,21 @@ export const GlobeView: React.FC<GlobeViewProps> = ({
  : 'bg-[#14171C]/90 text-[#C2C9D1] border-[#262F3D] hover:bg-[#1A2634] hover:text-white'
  }`}
  >
+ <span className="truncate flex items-center gap-2">
+ {countryCodeForName(preset.country) && (
+   <span
+     aria-hidden
+     className={`shrink-0 w-7 h-5 grid place-items-center text-[9px] font-black clip-card-chip border ${
+       isSelected
+         ? 'bg-black text-[#10B981] border-[#10B981]'
+         : 'bg-[#0E1116] text-[#8C9BAE] border-[#262F3D]'
+     }`}
+   >
+     {countryCodeForName(preset.country)!.toUpperCase()}
+   </span>
+ )}
  <span className="truncate">{preset.name}</span>
+ </span>
  {preset.isNew && (
  <span
  className={`text-[9px] font-black px-1.5 py-0.2 ${
@@ -481,7 +670,21 @@ export const GlobeView: React.FC<GlobeViewProps> = ({
  : 'bg-[#14171C]/90 text-[#C2C9D1] border-[#262F3D] hover:bg-[#1A2634] hover:text-white'
  }`}
  >
+ <span className="truncate flex items-center gap-2">
+ {countryCodeForName(dl.country) && (
+   <span
+     aria-hidden
+     className={`shrink-0 w-7 h-5 grid place-items-center text-[9px] font-black clip-card-chip border ${
+       isSelected
+         ? 'bg-black text-[#10B981] border-[#10B981]'
+         : 'bg-[#0E1116] text-[#8C9BAE] border-[#262F3D]'
+     }`}
+   >
+     {countryCodeForName(dl.country)!.toUpperCase()}
+   </span>
+ )}
  <span className="truncate">{dl.name}</span>
+ </span>
  </button>
  );
  })}

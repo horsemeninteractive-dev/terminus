@@ -546,7 +546,7 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
   return (
     <header
       id="tactical-header-strip"
-      className="fixed top-0 left-0 right-0 z-[45] isolate text-[#E8E8E8] select-none pointer-events-none"
+      className="fixed top-0 left-0 right-0 z-[48] isolate text-[#E8E8E8] select-none pointer-events-none"
     >
       {/* Outer Header Wrapper:
           - Desktop: 3-tier stepped height (Banner: 56px > 4-Buttons: 44px > Remainder: 36px)

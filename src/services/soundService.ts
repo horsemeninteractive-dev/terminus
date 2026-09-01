@@ -25,6 +25,16 @@ const STORAGE_KEY = 'survivor_sound_settings_v1';
 
 export type RadioVoiceCharacter = 'vance' | 'operator' | 'system';
 
+export type ToastKind = 'info' | 'success' | 'warn' | 'danger';
+
+/** A UI notification payload. `notify()` plays the matching chime AND broadcasts
+ * this to subscribers so the on-screen toast and its audio cue stay in sync. */
+export interface ToastMessage {
+  title: string;
+  desc: string;
+  type: ToastKind;
+}
+
 const DEFAULT_RADIO_VOICE_ASSIGNMENTS: Record<RadioVoiceCharacter, string> = {
   vance: '',
   operator: '',
@@ -88,6 +98,7 @@ class SoundEngine {
   private radioGain: GainNode | null = null;
 
   private settings: SoundSettings = loadSavedSettings();
+  private notificationListeners = new Set<(msg: ToastMessage) => void>();
   private isInitialized = false;
   private isInGame = false;
 
@@ -1528,7 +1539,7 @@ class SoundEngine {
   /**
    * Toast Notification SFX (by category)
    */
-  public playToastSound(type: 'info' | 'success' | 'warn' | 'danger') {
+  public playToastSound(type: ToastKind) {
     if (!this.canPlaySound('ui_toast', 100)) return;
     this.init();
     if (!this.ctx || !this.sfxGain) return;
@@ -1610,6 +1621,51 @@ class SoundEngine {
         });
       }
     } catch (e) {}
+  }
+
+  // Dedupe window for identical notifications (ms). Several game systems push
+  // their events from inside a React state updater; React StrictMode (dev)
+  // double-invokes updaters, so the SAME event can reach notify() twice within
+  // milliseconds — previously producing doubled toasts AND doubled chimes (e.g.
+  // LAIR ESCALATION pairs). Identical events more than DEDUPE_WINDOW_MS apart are
+  // legitimate repeats (a lair re-escalates every 120s) and still fire.
+  private static readonly DEDUPE_WINDOW_MS = 1200;
+  private readonly lastNotifyAt = new Map<string, number>();
+
+  /**
+   * Queue a UI notification: plays the matching chime AND broadcast the message
+   * to subscribers. The notification tray subscribes to this event bus, so the
+   * on-screen toast and its audio cue are driven by the single source and can
+   * never fall out of sync. Even when SFX/mute gates silence the chime, the
+   * message is still broadcast so the UI toast still appears.
+   */
+  public notify(msg: ToastMessage) {
+    const key = `${msg.type}|${msg.title}|${msg.desc}`;
+    const now = Date.now();
+    const last = this.lastNotifyAt.get(key);
+    if (last !== undefined && now - last < SoundEngine.DEDUPE_WINDOW_MS) {
+      return; // duplicate of an event already announced this instant — skip
+    }
+    if (this.lastNotifyAt.size > 128) {
+      for (const [k, t] of this.lastNotifyAt) {
+        if (now - t > 10000) this.lastNotifyAt.delete(k);
+      }
+    }
+    this.lastNotifyAt.set(key, now);
+    this.playToastSound(msg.type);
+    this.notificationListeners.forEach((cb) => {
+      try {
+        cb(msg);
+      } catch {}
+    });
+  }
+
+  /** Subscribe to UI notification events. Returns an unsubscribe function. */
+  public onNotification(cb: (msg: ToastMessage) => void): () => void {
+    this.notificationListeners.add(cb);
+    return () => {
+      this.notificationListeners.delete(cb);
+    };
   }
 
   /**

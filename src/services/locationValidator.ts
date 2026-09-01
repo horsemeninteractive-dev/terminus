@@ -1,5 +1,51 @@
 import { GeoPoint } from '../types/map';
 
+// ---- Nominatim throttling (respect ~1 request/second usage policy) ----
+// A tiny global rate-limiter: reserves a time slot before each request starts so
+// the app never fires geocoding/validation fetches faster than the policy allows,
+// even while a player rapidly edits the search box.
+const NOMINATIM_MIN_INTERVAL_MS = 1000;
+let nextRequestAt = 0;
+
+function waitUntil(nowMs: number, signal?: AbortSignal): Promise<void> {
+  const delay = nowMs - Date.now();
+  if (delay <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, delay);
+    const onAbort = () => {
+      cleanup();
+      const err = new Error('Aborted');
+      err.name = 'AbortError';
+      reject(err);
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
+    };
+    if (signal) {
+      if (signal.aborted) {
+        cleanup();
+        const err = new Error('Aborted');
+        err.name = 'AbortError';
+        reject(err);
+        return;
+      }
+      signal.addEventListener('abort', onAbort);
+    }
+  });
+}
+
+async function rateLimited<T>(run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  const start = Math.max(Date.now(), nextRequestAt);
+  // Reserve this request's slot up front, so concurrent/rapid calls stay spaced out.
+  nextRequestAt = start + NOMINATIM_MIN_INTERVAL_MS;
+  await waitUntil(start, signal);
+  return run();
+}
+
 export interface LocationValidationResult {
   isValid: boolean;
   name: string;
@@ -15,6 +61,109 @@ export interface LocationValidationResult {
 
 // Memory cache for validation results
 const validationCache = new Map<string, LocationValidationResult>();
+
+/** A single live-geocoded search result (from Nominatim /search). */
+export interface GeoSearchResult {
+  placeId: number;
+  /** Short human label, e.g. "Worcester" */
+  name: string;
+  /** Full address string from the geocoder */
+  displayName: string;
+  country: string;
+  /** ISO-3166 alpha-2 country code (lowercase) for flag rendering, when known */
+  countryCode?: string;
+  city: string;
+  lat: number;
+  lon: number;
+}
+
+// Map a country name to its ISO-3166 alpha-2 code so curated/downloaded presets
+// (which only store a human-readable country) can show the same country-code chip
+// the live geocoder provides. Falls back to undefined when unknown.
+const COUNTRY_CODE_BY_NAME: Record<string, string> = {
+  'united kingdom': 'gb', 'england': 'gb', 'scotland': 'gb', 'wales': 'gb', 'northern ireland': 'gb',
+  'united states': 'us', 'usa': 'us', 'canada': 'ca', 'mexico': 'mx',
+  'france': 'fr', 'germany': 'de', 'italy': 'it', 'spain': 'es', 'portugal': 'pt',
+  'netherlands': 'nl', 'belgium': 'be', 'luxembourg': 'lu', 'switzerland': 'ch', 'austria': 'at',
+  'poland': 'pl', 'czech republic': 'cz', 'czechia': 'cz', 'slovakia': 'sk', 'hungary': 'hu',
+  'russia': 'ru', 'ukraine': 'ua', 'romania': 'ro', 'bulgaria': 'bg', 'greece': 'gr', 'croatia': 'hr',
+  'serbia': 'rs', 'slovenia': 'si', 'ireland': 'ie', 'denmark': 'dk', 'sweden': 'se', 'norway': 'no',
+  'finland': 'fi', 'iceland': 'is', 'turkey': 'tr', 'japan': 'jp', 'china': 'cn', 'south korea': 'kr',
+  'north korea': 'kp', 'india': 'in', 'indonesia': 'id', 'vietnam': 'vn', 'thailand': 'th',
+  'malaysia': 'my', 'singapore': 'sg', 'philippines': 'ph', 'australia': 'au', 'new zealand': 'nz',
+  'brazil': 'br', 'argentina': 'ar', 'chile': 'cl', 'colombia': 'co', 'peru': 'pe',
+  'egypt': 'eg', 'south africa': 'za', 'nigeria': 'ng', 'morocco': 'ma', 'algeria': 'dz', 'kenya': 'ke',
+  'israel': 'il', 'saudi arabia': 'sa', 'united arab emirates': 'ae', 'qatar': 'qa',
+  'georgia': 'ge', 'armenia': 'am', 'azerbaijan': 'az',
+};
+
+export function countryCodeForName(country: string): string | undefined {
+  if (!country) return undefined;
+  return COUNTRY_CODE_BY_NAME[country.trim().toLowerCase()];
+}
+
+// Memory cache for geocoding queries (keyed by lowercased query)
+const geocodeCache = new Map<string, GeoSearchResult[]>();
+
+/**
+ * Forward-geocode a free-text query ("worcester", "New York", "Berlin") using
+ * Nominatim and return a small list of ranked matches. Returns [] on network
+ * failure or rate-limiting so the caller can fall back to preset matching.
+ */
+export async function searchLocations(query: string, signal?: AbortSignal): Promise<GeoSearchResult[]> {
+  const q = query.trim();
+  if (!q) return [];
+  const key = q.toLowerCase();
+  if (geocodeCache.has(key)) return geocodeCache.get(key)!;      const url = `https://nominatim.openstreetmap.org/search?format=json&limit=8&addressdetails=1&q=${encodeURIComponent(q)}`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort('timeout'), 8000);
+      const onParentAbort = () => controller.abort('user_abort');
+      if (signal) signal.addEventListener('abort', onParentAbort);
+
+      let res: Response;
+      try {
+        res = await rateLimited(
+          () =>
+            fetch(url, {
+              signal: controller.signal,
+              headers: {
+                Accept: 'application/json',
+                'User-Agent': 'TerminusSurvivalGame/1.0',
+              },
+            }),
+          controller.signal
+        );
+      } finally {
+        clearTimeout(timeoutId);
+        if (signal) signal.removeEventListener('abort', onParentAbort);
+      }
+
+  if (!res.ok) return [];
+  const data = await res.json();
+  if (!Array.isArray(data)) return [];
+
+  const results: GeoSearchResult[] = data
+    .map((r: any) => {
+      const addr = r.address || {};
+      const city =
+        addr.city || addr.town || addr.village || addr.municipality || addr.suburb || r.name || '';
+      const country = addr.country || '';
+      return {
+        placeId: r.place_id,
+        name: city || r.name || '',
+        displayName: r.display_name || r.name || city || '',
+        country,
+        countryCode: addr.country_code || undefined,
+        city,
+        lat: parseFloat(r.lat),
+        lon: parseFloat(r.lon),
+      };
+    })
+    .filter((r) => !isNaN(r.lat) && !isNaN(r.lon));
+
+  geocodeCache.set(key, results);
+  return results;
+}
 
 /**
  * Basic geometric check for ocean vs major landmasses to provide instant feedback
@@ -88,13 +237,17 @@ export async function validateLocation(
     if (signal) signal.addEventListener('abort', onParentAbort);
     let res: Response;
     try {
-      res = await fetch(url, {
-        signal: controller.signal,
-        headers: {
-          'Accept': 'application/json',
-          'User-Agent': 'TerminusSurvivalGame/1.0',
-        },
-      });
+      res = await rateLimited(
+        () =>
+          fetch(url, {
+            signal: controller.signal,
+            headers: {
+              'Accept': 'application/json',
+              'User-Agent': 'TerminusSurvivalGame/1.0',
+            },
+          }),
+        controller.signal
+      );
     } finally {
       clearTimeout(timeoutId);
       if (signal) signal.removeEventListener('abort', onParentAbort);

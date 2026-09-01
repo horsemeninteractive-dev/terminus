@@ -469,7 +469,7 @@ export const RESEARCH_TREE_NODES: Record<string, ResearchNode> = {
     name: 'Vaccine',
     description: 'A vaccine for the current variant of the virus. Each dose can prevent citizens from falling ill. Requires a Hospital and annual research to maintain.',
     costRP: 14, baseTimeSec: 4200,
-    prerequisites: ['early_diagnosis'], unlockedBuildingTypeId: 'hospital',
+    prerequisites: ['early_diagnosis'],
     categoryTag: 'Virology',
     effects: [{ stat: 'Prevention', value: 'Active', description: 'Vaccines prevent citizens from falling ill.' }],
   },

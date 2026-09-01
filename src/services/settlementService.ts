@@ -26,7 +26,10 @@ import {
 import { GameScenarioSettings } from '../types/saveGame';
 import { DEFAULT_BANNER_CONFIG } from '../data/bannerCatalog';
 import { WorldVehicle } from '../types/vehicle';
-import { createInitialResearchState } from './researchService';
+import {
+  createInitialResearchState,
+  getBuildingLockStatus,
+} from './researchService';
 import { createInitialMoraleState } from './moraleService';
 import { createInitialWeatherState } from './weatherService';
 
@@ -335,6 +338,9 @@ export function recalculateSettlementStats(
   let storageCap = 250; // Base baseline storage
   let livingCap = 0;
   let defenseRating = 0;
+  // HQ provides the first 2 deployable squad slots; each built Squad Quarters
+  // adds another from its building definition.
+  let squadCapacity = 2;
 
   if (hq) {
     storageCap += Math.round(hq.footprintAreaM2 * 0.5);
@@ -347,16 +353,28 @@ export function recalculateSettlementStats(
 
   const allBuildings = [...Array.from(adaptedBuildings.values()), ...freestanding];
 
+  const STORAGE_TYPES: FunctionalBuildingTypeId[] = ['warehouse', 'storage_depot', 'food_pantry'];
+  const LIVING_TYPES: FunctionalBuildingTypeId[] = [
+    'shelter',
+    'shelter_bunkhouse',
+    'house',
+    'squad_quarters',
+  ];
+  const SQUAD_CAPACITY_TYPES: FunctionalBuildingTypeId[] = ['squad_quarters'];
+
   for (const bldg of allBuildings) {
     defenseRating += bldg.defenseRating;
-    if (bldg.typeId === 'storage_depot') {
+    if (STORAGE_TYPES.includes(bldg.typeId)) {
       storageCap += bldg.maxCapacity;
-    } else if (bldg.typeId === 'shelter_bunkhouse') {
+    } else if (LIVING_TYPES.includes(bldg.typeId)) {
       livingCap += bldg.maxCapacity;
+    }
+    if (SQUAD_CAPACITY_TYPES.includes(bldg.typeId)) {
+      squadCapacity += FUNCTIONAL_BUILDING_DEFINITIONS[bldg.typeId]?.squadCapacity || 1;
     }
   }
 
-  return { storageCap, livingCap, defenseRating };
+  return { storageCap, livingCap, defenseRating, squadCapacity };
 }
 
 /**
@@ -380,7 +398,7 @@ export function establishSettlementHQ(
 
   const adaptedBuildings = new Map(state.adaptedBuildings);
 
-  const { storageCap, livingCap, defenseRating } = recalculateSettlementStats(
+  const { storageCap, livingCap, defenseRating, squadCapacity } = recalculateSettlementStats(
     hqStats,
     adaptedBuildings,
     state.freestandingBuildings
@@ -394,6 +412,7 @@ export function establishSettlementHQ(
     totalStorageCapacity: storageCap,
     totalLivingCapacity: livingCap,
     totalDefenseRating: defenseRating,
+    squadCapacity,
   };
 
   return recalculateLaborDistribution(intermediateState);
@@ -410,6 +429,17 @@ export function adaptBuilding(
   const def = FUNCTIONAL_BUILDING_DEFINITIONS[typeId];
   if (!def) {
     return { success: false, newState: state, error: 'Unknown functional building type' };
+  }
+
+  // Research gate: the reference design gates adaptation by the building's tech
+  // requirement (e.g. House requires Advanced Woodworks).
+  const lock = getBuildingLockStatus(state, def.researchRequirement);
+  if (!lock.unlocked) {
+    return {
+      success: false,
+      newState: state,
+      error: `Requires research: ${lock.requiredName}`,
+    };
   }
 
   const cost = getAdaptedCost(typeId, bldg.type);
@@ -474,7 +504,7 @@ export function adaptBuilding(
     constructionOrder,
   ];
 
-  const { storageCap, livingCap, defenseRating } = recalculateSettlementStats(
+  const { storageCap, livingCap, defenseRating, squadCapacity } = recalculateSettlementStats(
     state.hq,
     newAdaptedMap,
     state.freestandingBuildings
@@ -487,6 +517,7 @@ export function adaptBuilding(
     totalStorageCapacity: storageCap,
     totalLivingCapacity: livingCap,
     totalDefenseRating: defenseRating,
+    squadCapacity,
   };
 
   return {
@@ -510,6 +541,16 @@ export function buildFreestanding(
   const def = FUNCTIONAL_BUILDING_DEFINITIONS[typeId];
   if (!def) {
     return { success: false, newState: state, error: 'Unknown functional building type' };
+  }
+
+  // Research gate (applies to e.g. Fortified Wall / Gate / Tower).
+  const lock = getBuildingLockStatus(state, def.researchRequirement);
+  if (!lock.unlocked) {
+    return {
+      success: false,
+      newState: state,
+      error: `Requires research: ${lock.requiredName}`,
+    };
   }
 
   const cost = def.freestandingCost;
@@ -593,7 +634,7 @@ export function buildFreestanding(
     constructionOrder,
   ];
 
-  const { storageCap, livingCap, defenseRating } = recalculateSettlementStats(
+  const { storageCap, livingCap, defenseRating, squadCapacity } = recalculateSettlementStats(
     state.hq,
     state.adaptedBuildings,
     newFreestandingList
@@ -606,6 +647,7 @@ export function buildFreestanding(
     totalStorageCapacity: storageCap,
     totalLivingCapacity: livingCap,
     totalDefenseRating: defenseRating,
+    squadCapacity,
   };
 
   return {

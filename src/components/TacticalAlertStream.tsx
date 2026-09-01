@@ -20,7 +20,7 @@ export const TacticalAlertStream: React.FC<TacticalAlertStreamProps> = ({ alerts
 
  return (
  <div
- id="tactical-alert-stream"      className="fixed bottom-24 left-4 z-50 flex flex-col gap-1.5 pointer-events-auto w-72 select-none"
+ id="tactical-alert-stream"      className="flex flex-col gap-1.5 pointer-events-auto w-72 select-none"
  >
  {alerts.slice(0, 5).map((alert) => {
  const isDanger = alert.type === 'danger';

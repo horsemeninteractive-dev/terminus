@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { sampleElevation } from '../services/elevationService';
+import { getFreestandingDimensions } from '../services/freestandingFootprint';
 import { BuildingCategory, BuildingPolygon, ElevationGrid } from '../types/map';
 import { AdaptedBuilding, FunctionalCategory } from '../types/settlement';
+import { getBuildingTextureSet, getFreestandingMaterialTexture, buildingVariantForId } from './buildingTextures';
 
 /** Yields to the browser so the loading overlay can animate between heavy chunks. */
 const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
@@ -89,6 +91,160 @@ function extractGroupGeometry(geom: THREE.BufferGeometry, start: number, count: 
   return out;
 }
 
+/** Shoelace polygon area (signed; magnitude used). */
+function polygonArea(pts: { x: number; z: number }[]): number {
+  let a = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const q = pts[(i + 1) % pts.length];
+    a += p.x * q.z - q.x * p.z;
+  }
+  return Math.abs(a) / 2;
+}
+
+/** True when every interior angle of the ring is (near-)convex. */
+function isConvexPolygon(pts: { x: number; z: number }[]): boolean {
+  const n = pts.length;
+  if (n < 3) return false;
+  let sign = 0;
+  for (let i = 0; i < n; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % n];
+    const c = pts[(i + 2) % n];
+    const cross = (b.x - a.x) * (c.z - b.z) - (b.z - a.z) * (c.x - b.x);
+    if (Math.abs(cross) < 1e-6) continue; // collinear
+    const s = Math.sign(cross);
+    if (sign === 0) sign = s;
+    else if (s !== sign) return false;
+  }
+  return true;
+}
+
+/**
+ * Dominant (longest) axis of a footprint via PCA — the ridge direction a
+ * pitched roof should run along. Returns { ax, az, nx, nz } unit vectors
+ * (axis + perpendicular cross-section direction) and the centroid.
+ */
+function dominantFootprintAxis(pts: { x: number; z: number }[]) {
+  const n = pts.length;
+  let cx = 0, cz = 0;
+  for (const p of pts) { cx += p.x; cz += p.z; }
+  cx /= n; cz /= n;
+  let xx = 0, xz = 0, zz = 0;
+  for (const p of pts) {
+    const dx = p.x - cx, dz = p.z - cz;
+    xx += dx * dx; xz += dx * dz; zz += dz * dz;
+  }
+  const trace = xx + zz;
+  const det = xx * zz - xz * xz;
+  const disc = Math.sqrt(Math.max(0, trace * trace / 4 - det));
+  const l1 = trace / 2 + disc; // largest eigenvalue
+  let ax = l1 - zz, az = xz;
+  const alen = Math.hypot(ax, az);
+  if (alen < 1e-6) { ax = 1; az = 0; }
+  else { ax /= alen; az /= alen; }
+  const nx = -az, nz = ax;
+  return { cx, cz, ax, az, nx, nz };
+}
+
+/**
+ * Builds an indexed hip roof over a convex footprint. Every wall edge gets a
+ * sloped face rising to a ridge that runs along the footprint's dominant axis
+ * (PCA), so the roof is one continuous non-self-intersecting surface for convex
+ * polygons. Geometry is in local metres (y measured above the building base,
+ * matching the ExtrudeGeometry); callers translate by baseY. Also returns the
+ * ridge + hip lines used for the crisp illustrated silhouette.
+ */
+function buildPitchedRoof(
+  pts: { x: number; z: number }[],
+  wallTopLocalY: number,
+  height: number
+): { geom: THREE.BufferGeometry; ridgeGeom: THREE.BufferGeometry } | null {
+  const n = pts.length;
+  if (n < 4) return null;
+  const { cx, cz, ax, az, nx, nz } = dominantFootprintAxis(pts);
+
+  let tMin = Infinity, tMax = -Infinity, maxD = 0;
+  for (const p of pts) {
+    const dx = p.x - cx, dz = p.z - cz;
+    const t = dx * ax + dz * az;
+    const d = dx * nx + dz * nz;
+    if (t < tMin) tMin = t;
+    if (t > tMax) tMax = t;
+    maxD = Math.max(maxD, Math.abs(d));
+  }
+  if (maxD < 1 || tMax - tMin < 2) return null; // sliver footprint
+
+  // ~35° pitch, clamped to a believable band (small sheds stay low-key).
+  const ridgeH = Math.min(5.5, Math.max(1.4, maxD * 0.7));
+  // Lift the roof clear of the flat cap underneath to avoid z-fighting.
+  const y0 = wallTopLocalY + 0.06;
+  const hAt = (d: number) => y0 + ridgeH * (1 - Math.abs(d) / maxD);
+
+  // Emit NON-indexed triangles: this three version's ExtrudeGeometry caps are
+  // non-indexed, and mergeGeometries rejects mixed index/non-index inputs, so
+  // the pitched roof must match the caps it merges with in the LOD build.
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const p = pts[i];
+    const q = pts[(i + 1) % n];
+    const dp = (p.x - cx) * nx + (p.z - cz) * nz;
+    const dq = (q.x - cx) * nx + (q.z - cz) * nz;
+    const tp = (p.x - cx) * ax + (p.z - cz) * az;
+    const tq = (q.x - cx) * ax + (q.z - cz) * az;
+    const yp = hAt(dp), yq = hAt(dq);
+    positions.push(p.x, y0, p.z,  q.x, y0, q.z,  q.x, yq, q.z);
+    uvs.push(tp / 8, Math.abs(dp) / 8,  tq / 8, Math.abs(dq) / 8,  tq / 8, Math.abs(dq) / 8);
+    positions.push(p.x, y0, p.z,  q.x, yq, q.z,  p.x, yp, p.z);
+    uvs.push(tp / 8, Math.abs(dp) / 8,  tq / 8, Math.abs(dq) / 8,  tp / 8, Math.abs(dp) / 8);
+  }
+
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geom.computeVertexNormals();
+
+  // Ridge + hip lines (non-indexed line segments).
+  const ridgeTopY = y0 + ridgeH;
+  const linePts: number[] = [
+    cx + ax * tMin, ridgeTopY, cz + az * tMin,
+    cx + ax * tMax, ridgeTopY, cz + az * tMax,
+  ];
+  for (const p of pts) {
+    const d = (p.x - cx) * nx + (p.z - cz) * nz;
+    linePts.push(p.x, y0, p.z,  p.x, hAt(d), p.z);
+  }
+  const ridgeGeom = new THREE.BufferGeometry();
+  ridgeGeom.setAttribute('position', new THREE.Float32BufferAttribute(linePts, 3));
+  return { geom, ridgeGeom };
+}
+
+/**
+ * Remaps the cap (group 0) UVs of an extruded building from the world-aligned
+ * default to the footprint's dominant-axis frame, so the roof texture's tile
+ * rows run parallel to the walls instead of at arbitrary world angles.
+ * (t, |d|) is a linear planar mapping, so flat caps never distort.
+ */
+function remapRoofUvs(geom: THREE.BufferGeometry, pts: { x: number; z: number }[]) {
+  const g0 = geom.groups[0];
+  if (!g0 || pts.length < 3) return;
+  const { cx, cz, ax, az, nx, nz } = dominantFootprintAxis(pts);
+  const pos = geom.attributes.position as THREE.BufferAttribute | undefined;
+  const uv = geom.attributes.uv as THREE.BufferAttribute | undefined;
+  const index = geom.index;
+  if (!pos || !uv) return;
+  for (let i = g0.start; i < g0.start + g0.count; i++) {
+    const vi = index ? index.getX(i) : i;
+    const x = pos.getX(vi), z = pos.getZ(vi); // local x/z == world x/z after the -90° rotate
+    const dx = x - cx, dz = z - cz;
+    const t = dx * ax + dz * az;
+    const d = dx * nx + dz * nz;
+    uv.setXY(vi, t / 8, Math.abs(d) / 8);
+  }
+  uv.needsUpdate = true;
+}
+
 export class BuildingRenderer {
   public group = new THREE.Group();
   public edgeGroup = new THREE.Group();
@@ -133,24 +289,44 @@ export class BuildingRenderer {
     edgeBaseY: number;
     edgeMatKey?: string;
     edgeMat?: THREE.Material;
+    roofGeom?: THREE.BufferGeometry; // pitched roof surface (local coords, indexed)
+    cellKey: string;
+    buildingId: string | number;
   }[] = [];
-  private lodSignature = '';
+  /** Per-cell merged-LOD state: signature of each cell's contributing buildings
+   *  and the meshes created for it, so adaptation/demolition only rebuilds the
+   *  cell(s) that actually changed instead of re-merging the whole city. */
+  private lodCellSignatures = new Map<string, string>();
+  private lodCellMeshes = new Map<string, THREE.Object3D[]>();
   private lodBuilt = false;
   private lodMode: 'detailed' | 'distant' = 'detailed';
+
+  /**
+   * Spatial LOD cell size (metres). The distant-view merge groups buildings by
+   * a ~300m grid cell + shared material instead of one city-wide merge, so each
+   * cell mesh has real bounds and frustum-culls properly, and a state change in
+   * one neighbourhood only re-merges that cell.
+   */
+  private static readonly LOD_CELL_SIZE = 300;
+
+  /** Shared edge materials per state, so repeated cell rebuilds re-merge cleanly. */
+  private edgeMaterialCache = new Map<string, THREE.LineBasicMaterial>();
+
+  private nightGlowFactor = 0;
   private hoveredBuildingId: string | number | null = null;
   private selectedBuildingId: string | number | null = null;
   private demolishCandidateIds: Set<string | number> = new Set();
-  private demolishWallMaterial = new THREE.MeshLambertMaterial({
-    color: 0xb91c1c,
-    emissive: 0x7f1d1d,
-  });
-  private demolishRoofMaterial = new THREE.MeshLambertMaterial({
-    color: 0xef4444,
-    emissive: 0x991b1b,
-  });
+
+  /**
+   * Radius (metres) around a completed Generator Station that powers nearby
+   * colony buildings — only powered, operational buildings show lit windows at
+   * night. The world ended; abandoned buildings stay dark.
+   */
+  private static readonly GENERATOR_POWER_RADIUS = 60;
 
   private currentHqId: string | number | null = null;
   private adaptedMap = new Map<string | number, AdaptedBuilding>();
+  private freestandingBuildings: AdaptedBuilding[] = [];
 
   // Shared Materials
   private materialsCache = new Map<string, THREE.MeshLambertMaterial[]>();
@@ -160,6 +336,56 @@ export class BuildingRenderer {
     transparent: true,
     opacity: 0.65,
   });
+
+  /**
+   * Positions of completed generator stations (adapted or freestanding). These
+   * define the power grid for night-time window lighting.
+   */
+  private generatorPositions(): { x: number; z: number }[] {
+    const out: { x: number; z: number }[] = [];
+    for (const [, a] of this.adaptedMap) {
+      if (a.typeId === 'generator_station' && a.constructionStatus === 'completed') {
+        out.push(a.position);
+      }
+    }
+    for (const f of this.freestandingBuildings) {
+      if (f.typeId === 'generator_station' && f.constructionStatus === 'completed') {
+        out.push(f.position);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * True when a building is an operational colony building (HQ or completed
+   * adaptation) within range of a completed generator station. Plain abandoned
+   * OSM buildings are never powered, so their windows never light up.
+   */
+  private isBuildingPowered(bldg: BuildingPolygon): boolean {
+    const adapted = this.adaptedMap.get(bldg.id);
+    if (!adapted) return false;
+    const st = adapted.constructionStatus;
+    if (st === 'in_progress' || st === 'planned') return false;
+    for (const g of this.generatorPositions()) {
+      if (Math.hypot(bldg.center.x - g.x, bldg.center.z - g.z) <= BuildingRenderer.GENERATOR_POWER_RADIUS) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Clone a building's textured material pair with a colour tint that
+   * multiplies the facade instead of replacing it (hover / select / demolish).
+   */
+  private cloneWithTint(base: THREE.MeshLambertMaterial[], wallTint: number, roofTint: number): THREE.MeshLambertMaterial[] {
+    const wall = base[1].clone();
+    wall.color.setHex(wallTint);
+    const roof = base[0].clone();
+    roof.color.setHex(roofTint);
+    return [roof, wall];
+  }
+
 
   constructor() {
     this.group.name = 'BuildingsGroup';
@@ -174,117 +400,59 @@ export class BuildingRenderer {
     isOccupied = false,
     adaptedCategory?: FunctionalCategory,
     isHQ = false,
-    constructionStatus?: 'planned' | 'in_progress' | 'completed' | 'paused' | 'deconstructing'
+    constructionStatus?: 'planned' | 'in_progress' | 'completed' | 'paused' | 'deconstructing',
+    variant = 0,
+    powered = false
   ): THREE.MeshLambertMaterial[] {
-    const key = `${type}_${isOccupied}_${adaptedCategory || 'none'}_${isHQ}_${constructionStatus || 'none'}`;
+    const key = `${type}_${isOccupied}_${adaptedCategory || 'none'}_${isHQ}_${constructionStatus || 'none'}_v${variant}_p${powered ? 1 : 0}`;
     if (this.materialsCache.has(key)) {
       return this.materialsCache.get(key)!;
     }
 
-    if (isHQ) {
-      // Headquarters: clear tactical green faces (wall and roof)
-      const hqWall = new THREE.MeshLambertMaterial({
-        color: 0x1e5e34,
-        emissive: 0x092412,
-      });
-      const hqRoof = new THREE.MeshLambertMaterial({
-        color: 0x2e7d47,
-        emissive: 0x113b1f,
-      });
-      const mats = [hqWall, hqRoof];
-      this.materialsCache.set(key, mats);
-      return mats;
+    // Every building wears its procedural facade + roof texture; gameplay
+    // states (HQ, adapted, under construction, occupied) are communicated by a
+    // colour tint that MULTIPLIES the texture instead of replacing it, so the
+    // windows/brick/shopfront detail stays visible. UVs come from
+    // WorldUVGenerator (world meters), so the shared textures tile at the same
+    // real-world scale on every building — no per-building materials, keeping
+    // the LOD merge intact. Window glow is emissive-map driven and only appears
+    // at night on powered buildings (userData.powered).
+    const tex = getBuildingTextureSet(type, variant);
+
+    // Gameplay states tint the WALLS only — roofs always keep their natural
+    // roofing material colour so the city reads as roofs, not coloured blocks.
+    let wallTint = 0xffffff; // default city building: un-tinted facade
+    if (isHQ || (adaptedCategory && constructionStatus !== 'in_progress' && constructionStatus !== 'planned' && constructionStatus !== 'paused')) {
+      // Operational colony building (HQ or completed adaptation): green tint
+      wallTint = 0x9fd8b0;
+    } else if (adaptedCategory) {
+      // Under construction / blueprint: blue tint
+      wallTint = 0x9db9ff;
+    } else if (isOccupied) {
+      // Zombie-occupied ruins: darker, sicklier green
+      wallTint = 0x7fae8d;
     }
+    const roofTint = 0xffffff;
 
-    if (adaptedCategory) {
-      // Under construction / not finished yet: blueprint BLUE
-      if (constructionStatus === 'in_progress' || constructionStatus === 'planned' || constructionStatus === 'paused') {
-        const inProgWall = new THREE.MeshLambertMaterial({
-          color: 0x2563eb,
-          emissive: 0x0f2b5c,
-        });
-        const inProgRoof = new THREE.MeshLambertMaterial({
-          color: 0x1d4ed8,
-          emissive: 0x0a1e42,
-        });
-        const mats = [inProgWall, inProgRoof];
-        this.materialsCache.set(key, mats);
-        return mats;
-      }
-
-      // Construction completed / operational: operational GREEN
-      const completedWall = new THREE.MeshLambertMaterial({
-        color: 0x23683f,
-        emissive: 0x0d2816,
-      });
-      const completedRoof = new THREE.MeshLambertMaterial({
-        color: 0x2e7d47,
-        emissive: 0x12361e,
-      });
-      const mats = [completedWall, completedRoof];
-      this.materialsCache.set(key, mats);
-      return mats;
-    }
-
-    let wallColor = 0x5a534c;
-    let roofColor = 0x48423c;
-
-    switch (type) {
-      case 'supermarket':
-        wallColor = 0x785638;
-        roofColor = 0x8a623f;
-        break;
-      case 'pharmacy':
-      case 'hospital':
-        wallColor = 0x3d6b5e;
-        roofColor = 0x2e5248;
-        break;
-      case 'police':
-        wallColor = 0x384d6b;
-        roofColor = 0x2b3d57;
-        break;
-      case 'gas_station':
-        wallColor = 0x73483b;
-        roofColor = 0x8a5445;
-        break;
-      case 'commercial':
-      case 'restaurant':
-        wallColor = 0x5c5047;
-        roofColor = 0x473e37;
-        break;
-      case 'industrial':
-      case 'warehouse':
-        wallColor = 0x4c4c4f;
-        roofColor = 0x3c3c3e;
-        break;
-      case 'civic':
-      case 'school':
-        wallColor = 0x6e6357;
-        roofColor = 0x595045;
-        break;
-      case 'residential':
-      default:
-        wallColor = 0x524b45;
-        roofColor = 0x403a35;
-        break;
-    }
-
-    if (isOccupied) {
-      wallColor = 0x245431;
-      roofColor = 0x1b3d24;
-    }
-
+    // Powered operational buildings light their windows at night; everything
+    // else stays dark even when the emissive map is present.
+    const glowIntensity = (powered ? this.nightGlowFactor : 0) * 0.95;
     const wallMat = new THREE.MeshLambertMaterial({
-      color: wallColor,
-      emissive: isOccupied ? 0x091c0e : 0x000000,
+      map: tex.wall,
+      color: wallTint,
+      emissive: 0x000000,
+      emissiveMap: tex.glow,
+      emissiveIntensity: glowIntensity,
     });
-
+    wallMat.userData.powered = powered;
     const roofMat = new THREE.MeshLambertMaterial({
-      color: roofColor,
-      emissive: isOccupied ? 0x091c0e : 0x000000,
+      map: tex.roof,
+      color: roofTint,
     });
+    roofMat.userData.powered = powered;
 
-    const mats = [wallMat, roofMat];
+    // ExtrudeGeometry group 0 = caps (roof), group 1 = side walls.
+    const mats = [roofMat, wallMat];
     this.materialsCache.set(key, mats);
     return mats;
   }
@@ -302,6 +470,7 @@ export class BuildingRenderer {
     this.clear();
     this.currentHqId = hqBuildingId;
     this.adaptedMap = adaptedBuildings;
+    this.freestandingBuildings = freestandingBuildings;
 
     for (const bldg of buildings) {
       this.buildOneBuilding(bldg, showEdges, elevation, exaggeration, hqBuildingId, adaptedBuildings, demolishedBuildingIds);
@@ -334,6 +503,7 @@ export class BuildingRenderer {
     this.clear();
     this.currentHqId = hqBuildingId;
     this.adaptedMap = adaptedBuildings;
+    this.freestandingBuildings = freestandingBuildings;
 
     const CHUNK = 1200;
     const total = buildings.length;
@@ -353,73 +523,169 @@ export class BuildingRenderer {
     }
   }
 
-  /**
-   * Merges every building wall into a couple of meshes per shared-material group
-   * (one for the cap faces, one for the side faces, preserving the two-group
-   * ExtrudeGeometry layout) and every edge line into one LineSegments per shared
-   * edge material. Runs once after the progressive detailed build, and again only
-   * when HQ / adapted / demolished / freestanding state changes (rare events).
-   */
-  public buildLod() {
-    while (this.lodGroup.children.length > 0) {
-      const c = this.lodGroup.children[0] as THREE.Mesh;
-      if (c.geometry) c.geometry.dispose();
-      this.lodGroup.remove(c);
-    }
+  private cellKeyFor(x: number, z: number): string {
+    const s = BuildingRenderer.LOD_CELL_SIZE;
+    return `${Math.floor(x / s)}_${Math.floor(z / s)}`;
+  }
 
-    // 1. Walls grouped by shared material set
-    const wallGroups = new Map<string, (typeof this.lodSources)[number][]>();
+  private getEdgeMaterial(kind: 'hq' | 'adapted' | 'adapting'): THREE.LineBasicMaterial {
+    const cached = this.edgeMaterialCache.get(kind);
+    if (cached) return cached;
+    const mat = new THREE.LineBasicMaterial({
+      color: kind === 'adapting' ? 0xf59e0b : 0x22c55e,
+      linewidth: 2,
+    });
+    this.edgeMaterialCache.set(kind, mat);
+    return mat;
+  }
+
+  private edgeMatFor(isHQ: boolean, adapted?: AdaptedBuilding): THREE.LineBasicMaterial {
+    if (isHQ) return this.getEdgeMaterial('hq');
+    if (adapted) {
+      const st = adapted.constructionStatus;
+      return this.getEdgeMaterial(st === 'in_progress' || st === 'planned' ? 'adapting' : 'adapted');
+    }
+    return this.sharedEdgeMaterial;
+  }
+
+  /** Groups the LOD sources by their ~300m grid cell. */
+  private sourcesByCell(): Map<string, (typeof this.lodSources)[number][]> {
+    const byCell = new Map<string, (typeof this.lodSources)[number][]>();
     for (const src of this.lodSources) {
+      const list = byCell.get(src.cellKey) || [];
+      list.push(src);
+      byCell.set(src.cellKey, list);
+    }
+    return byCell;
+  }
+
+  /**
+   * Re-derives a source's current wall + edge materials from live settlement
+   * state (HQ / adapted / demolished / powered), so a cell rebuild reflects
+   * the latest colours instead of the build-time snapshot.
+   */
+  private refreshSourceState(src: (typeof this.lodSources)[number], demolished: Set<string | number>) {
+    if (demolished.has(src.buildingId)) return;
+    const bldg = this.buildingData.get(src.buildingId);
+    if (!bldg) return;
+    const isHQ = this.currentHqId !== null && String(bldg.id) === String(this.currentHqId);
+    const adapted = this.adaptedMap.get(bldg.id);
+    const mats = this.getBuildingMaterials(
+      bldg.type,
+      bldg.isOccupied,
+      adapted?.category,
+      isHQ,
+      adapted?.constructionStatus,
+      buildingVariantForId(bldg.id),
+      this.isBuildingPowered(bldg)
+    );
+    src.wallMats = mats;
+    src.wallMatKey = mats.map((m) => m.uuid).join('|');
+    if (src.edgeGeom) {
+      src.edgeMat = this.edgeMatFor(isHQ, adapted);
+      src.edgeMatKey = src.edgeMat.uuid;
+    }
+  }
+
+  /**
+   * Deterministic per-cell signature of the CURRENT building/material state.
+   * Refreshes each source from live settlement state first (a side effect that
+   * keeps sources in sync), so an adaptation/demolition shows up in the string.
+   */
+  private cellSignature(cellKey: string, byCell: Map<string, (typeof this.lodSources)[number][]>, demolished: Set<string | number>): string {
+    const sources = byCell.get(cellKey) || [];
+    const parts: string[] = [];
+    for (const src of sources) {
+      if (demolished.has(src.buildingId)) continue;
+      this.refreshSourceState(src, demolished);
+      parts.push(`${src.buildingId}:${src.wallMatKey}:${src.edgeMatKey || '-'}`);
+    }
+    return parts.sort().join('|');
+  }
+
+  /** Removes + disposes every mesh previously created for one cell. */
+  private clearCellMeshes(cellKey: string) {
+    const old = this.lodCellMeshes.get(cellKey);
+    if (!old) return;
+    for (const m of old) {
+      this.lodGroup.remove(m);
+      const mesh = m as THREE.Mesh;
+      if (mesh.geometry) mesh.geometry.dispose();
+    }
+    this.lodCellMeshes.delete(cellKey);
+  }
+
+  /**
+   * Merges one cell's buildings into meshes grouped by shared material (one
+   * mesh for cap faces, one for side faces — preserving the two-group
+   * ExtrudeGeometry layout) plus one LineSegments per shared edge material.
+   * Each mesh spans only its ~300m cell, so frustum culling is effective.
+   */
+  private rebuildCell(cellKey: string, byCell: Map<string, (typeof this.lodSources)[number][]>, demolished: Set<string | number>) {
+    this.clearCellMeshes(cellKey);
+    const sources = (byCell.get(cellKey) || []).filter((s) => !demolished.has(s.buildingId));
+    if (sources.length === 0) return;
+
+    for (const src of sources) this.refreshSourceState(src, demolished);
+    const created: THREE.Object3D[] = [];
+
+    // 1. Walls grouped by cell + shared material set
+    const wallGroups = new Map<string, (typeof this.lodSources)[number][]>();
+    for (const src of sources) {
       const list = wallGroups.get(src.wallMatKey) || [];
       list.push(src);
       wallGroups.set(src.wallMatKey, list);
     }
-
-    for (const [, sources] of wallGroups) {
+    for (const [, group] of wallGroups) {
       const caps: THREE.BufferGeometry[] = [];
       const sides: THREE.BufferGeometry[] = [];
-      for (const src of sources) {
+      for (const src of group) {
         const g0 = src.geom.groups[0];
         const g1 = src.geom.groups[1];
         if (g0) caps.push(extractGroupGeometry(src.geom, g0.start, g0.count).translate(0, src.baseY, 0));
         if (g1) sides.push(extractGroupGeometry(src.geom, g1.start, g1.count).translate(0, src.baseY, 0));
+        // Pitched roofs ride in the caps merge (same shared roof material).
+        if (src.roofGeom) caps.push(src.roofGeom.clone().translate(0, src.baseY, 0));
       }
       if (caps.length > 0) {
         const merged = mergeGeometries(caps, false);
         caps.forEach((g) => g.dispose());
         if (merged) {
-          const mesh = new THREE.Mesh(merged, sources[0].wallMats[0]);
+          const mesh = new THREE.Mesh(merged, group[0].wallMats[0]);
           mesh.castShadow = true;
           mesh.receiveShadow = true;
           mesh.frustumCulled = true;
+          mesh.name = `lod-cell-${cellKey}-caps`;
           this.lodGroup.add(mesh);
+          created.push(mesh);
         }
       }
       if (sides.length > 0) {
         const merged = mergeGeometries(sides, false);
         sides.forEach((g) => g.dispose());
         if (merged) {
-          const mesh = new THREE.Mesh(merged, sources[0].wallMats[1]);
+          const mesh = new THREE.Mesh(merged, group[0].wallMats[1]);
           mesh.castShadow = true;
           mesh.receiveShadow = true;
           mesh.frustumCulled = true;
+          mesh.name = `lod-cell-${cellKey}-sides`;
           this.lodGroup.add(mesh);
+          created.push(mesh);
         }
       }
     }
 
-    // 2. Edges grouped by shared edge material (most share the single outline material)
+    // 2. Edges grouped by shared edge material within the cell
     const edgeGroups = new Map<string, (typeof this.lodSources)[number][]>();
-    for (const src of this.lodSources) {
+    for (const src of sources) {
       if (!src.edgeGeom || !src.edgeMatKey) continue;
       const list = edgeGroups.get(src.edgeMatKey) || [];
       list.push(src);
       edgeGroups.set(src.edgeMatKey, list);
     }
-
-    for (const [, sources] of edgeGroups) {
+    for (const [, group] of edgeGroups) {
       const geoms: THREE.BufferGeometry[] = [];
-      for (const src of sources) {
+      for (const src of group) {
         if (!src.edgeGeom) continue;
         // EdgesGeometry is already non-indexed; only convert if it somehow has an index
         const base = src.edgeGeom.index ? src.edgeGeom.toNonIndexed() : src.edgeGeom;
@@ -427,13 +693,31 @@ export class BuildingRenderer {
       }
       const merged = mergeGeometries(geoms, false);
       geoms.forEach((g) => g.dispose());
-      if (!merged || !sources[0].edgeMat) continue;
-
-      const line = new THREE.LineSegments(merged, sources[0].edgeMat);
+      if (!merged || !group[0].edgeMat) continue;
+      const line = new THREE.LineSegments(merged, group[0].edgeMat);
       line.frustumCulled = true;
+      line.name = `lod-cell-${cellKey}-edges`;
       this.lodGroup.add(line);
+      created.push(line);
     }
 
+    if (created.length > 0) this.lodCellMeshes.set(cellKey, created);
+  }
+
+  /**
+   * Merges the full city LOD by ~300m cell + shared material. Runs once after
+   * the progressive detailed build.
+   */
+  public buildLod() {
+    for (const cellKey of Array.from(this.lodCellMeshes.keys())) this.clearCellMeshes(cellKey);
+    this.lodCellSignatures.clear();
+
+    const byCell = this.sourcesByCell();
+    const demolished = new Set<string | number>();
+    for (const cellKey of byCell.keys()) {
+      this.rebuildCell(cellKey, byCell, demolished);
+      this.lodCellSignatures.set(cellKey, this.cellSignature(cellKey, byCell, demolished));
+    }
     this.lodBuilt = true;
   }
 
@@ -448,28 +732,11 @@ export class BuildingRenderer {
     this.lodGroup.visible = mode === 'distant';
   }
 
-  private computeLodSignature(
-    hqBuildingId: string | number | null,
-    adaptedBuildings: Map<string | number, AdaptedBuilding>,
-    freestandingBuildings: AdaptedBuilding[],
-    demolishedBuildingIds: Map<string | number, true>
-  ): string {
-    const adaptedList = Array.from(adaptedBuildings.entries())
-      .map(([id, a]) => `${id}:${a.category}:${a.constructionStatus}`)
-      .sort()
-      .join('|');
-    const demolishedList = Array.from(demolishedBuildingIds.keys())
-      .map(String)
-      .sort()
-      .join('|');
-    const freeList = freestandingBuildings
-      .map((f) => `${f.buildingId}:${f.typeId}:${f.constructionStatus}`)
-      .sort()
-      .join('|');
-    return `${hqBuildingId}|${adaptedList}|${demolishedList}|${freeList}`;
-  }
-
-  /** Rebuilds the merged LOD only when settlement state that affects it changed. */
+  /**
+   * Rebuilds only the LOD cells whose buildings changed (HQ / adapted /
+   * demolished / powered-by-generator), leaving every other cell's meshes
+   * untouched. Much cheaper than re-merging the whole city on each change.
+   */
   public refreshLodIfNeeded(
     hqBuildingId: string | number | null,
     adaptedBuildings: Map<string | number, AdaptedBuilding>,
@@ -477,10 +744,29 @@ export class BuildingRenderer {
     demolishedBuildingIds: Map<string | number, true>
   ) {
     if (!this.lodBuilt || this.lodSources.length === 0) return;
-    const sig = this.computeLodSignature(hqBuildingId, adaptedBuildings, freestandingBuildings, demolishedBuildingIds);
-    if (sig !== this.lodSignature) {
-      this.lodSignature = sig;
-      this.buildLod();
+    this.currentHqId = hqBuildingId;
+    this.adaptedMap = adaptedBuildings;
+    this.freestandingBuildings = freestandingBuildings;
+
+    const byCell = this.sourcesByCell();
+    const demolished = new Set<string | number>(demolishedBuildingIds.keys());
+    const seen = new Set<string>();
+
+    for (const [cellKey, sources] of byCell) {
+      seen.add(cellKey);
+      const sig = this.cellSignature(cellKey, byCell, demolished);
+      if (sig !== (this.lodCellSignatures.get(cellKey) || '')) {
+        this.rebuildCell(cellKey, byCell, demolished);
+        this.lodCellSignatures.set(cellKey, sig);
+      }
+    }
+
+    // Cells that no longer contain any buildings lose their meshes.
+    for (const cellKey of Array.from(this.lodCellSignatures.keys())) {
+      if (!seen.has(cellKey)) {
+        this.clearCellMeshes(cellKey);
+        this.lodCellSignatures.delete(cellKey);
+      }
     }
   }
 
@@ -582,6 +868,9 @@ export class BuildingRenderer {
         // Rotate geometry so extrusion is along +Y (upwards)
         geom.rotateX(-Math.PI / 2);
         geom.computeVertexNormals();
+        // Roof cap UVs follow the footprint's dominant axis so the roof texture
+        // runs parallel to the walls instead of at arbitrary world angles.
+        remapRoofUvs(geom, pts);
 
         const isHQ = hqBuildingId !== null && String(bldg.id) === String(hqBuildingId);
         const adapted = adaptedBuildings.get(bldg.id);
@@ -595,7 +884,9 @@ export class BuildingRenderer {
           isOccupiedOrInUse,
           adapted?.category,
           isHQ,
-          adapted?.constructionStatus
+          adapted?.constructionStatus,
+          buildingVariantForId(bldg.id),
+          this.isBuildingPowered(bldg)
         );
 
         const mesh = new THREE.Mesh(geom, materials);
@@ -610,6 +901,26 @@ export class BuildingRenderer {
         this.buildingMeshes.set(bldg.id, mesh);
         this.buildingData.set(bldg.id, bldg);
 
+        // Pitched hip roof for small, convex footprints — tall blocks, big
+        // halls and complex shapes keep flat roofs (realistic and cheaper).
+        const footprintArea = polygonArea(pts);
+        const roofLocal =
+          (bldg.height || 4) < 16 &&
+          pts.length <= 40 &&
+          footprintArea >= 25 &&
+          footprintArea <= 4000 &&
+          isConvexPolygon(pts)
+            ? buildPitchedRoof(pts, totalExtrudeHeight, bldg.height || 4)
+            : null;
+        if (roofLocal) {
+          const roofMesh = new THREE.Mesh(roofLocal.geom, materials[0]);
+          roofMesh.castShadow = true;
+          roofMesh.receiveShadow = true;
+          roofMesh.position.y = baseY;
+          roofMesh.userData = { buildingId: bldg.id, type: 'roof', baseElevation: avgTerrainY, isHQ, isAdapted: !!adapted };
+          this.group.add(roofMesh);
+        }
+
         const wallMatKey = materials.map((m) => m.uuid).join('|');
         const lodSource: (typeof this.lodSources)[number] = {
           geom,
@@ -617,6 +928,9 @@ export class BuildingRenderer {
           wallMatKey,
           wallMats: materials,
           edgeBaseY: baseY,
+          roofGeom: roofLocal?.geom,
+          cellKey: this.cellKeyFor(bldg.center.x, bldg.center.z),
+          buildingId: bldg.id,
         };
         this.lodSources.push(lodSource);
 
@@ -637,7 +951,12 @@ export class BuildingRenderer {
 
         // Edges for crisp illustrated / tactical silhouette
         if (showEdges && bldg.height < 45) {
-          const edgeGeom = new THREE.EdgesGeometry(geom, 25);
+          let edgeGeom: THREE.BufferGeometry = new THREE.EdgesGeometry(geom, 25);
+          // Pitched roofs add ridge + hip lines to the silhouette.
+          if (roofLocal) {
+            const merged = mergeGeometries([edgeGeom, roofLocal.ridgeGeom], false);
+            if (merged) edgeGeom = merged;
+          }
           const isUnderConstruction = adapted && (adapted.constructionStatus === 'in_progress' || adapted.constructionStatus === 'planned' || (adapted.constructionStatus as string) === 'paused');
           const edgeMat = isHQ
             ? new THREE.LineBasicMaterial({ color: 0x22c55e, linewidth: 2 })
@@ -680,6 +999,11 @@ export class BuildingRenderer {
         typeId === 'barbed_wire';
       const isGate = typeId === 'wooden_gate' || typeId === 'metal_gate' || typeId === 'fortified_gate';
       const isTower = typeId === 'wooden_tower' || typeId === 'metal_tower' || typeId === 'fortified_tower' || typeId === 'floodlight_tower';
+      const isField =
+        typeId === 'field' ||
+        typeId === 'vast_field' ||
+        typeId === 'greenhouse' ||
+        typeId === 'greenhouse_hydro';
 
       let width = 8;
       let length = 8;
@@ -704,6 +1028,15 @@ export class BuildingRenderer {
         width = 5.2;
         length = 5.2;
         height = typeId === 'fortified_tower' ? 9.5 : 8.0;
+      } else if (isField) {
+        // Flat rectangular plot (IFZ): the stored width/length carry the exact
+        // placed footprint; fall back to the canonical plot sizes for legacy saves.
+        const storedW = (free as any).width;
+        const storedL = (free as any).length;
+        const fDims = getFreestandingDimensions(typeId);
+        width = typeof storedW === 'number' ? storedW : fDims.width;
+        length = typeof storedL === 'number' ? storedL : fDims.length;
+        height = typeId === 'greenhouse' || typeId === 'greenhouse_hydro' ? 2.8 : 0.7;
       }
 
       const halfW = width / 2;
@@ -768,6 +1101,18 @@ export class BuildingRenderer {
         roofColor = 0x10b981;
         emissiveColor = 0x064e3b;
         beaconColor = 0x10b981;
+      } else if (isField) {
+        if (typeId === 'greenhouse' || typeId === 'greenhouse_hydro') {
+          wallColor = 0x2a5f5f;
+          roofColor = 0x7dd3fc;
+          emissiveColor = 0x0f2a2a;
+          beaconColor = 0x38bdf8;
+        } else {
+          wallColor = 0x3f6212;
+          roofColor = 0x4d7c0f;
+          emissiveColor = 0x14240a;
+          beaconColor = 0x84cc16;
+        }
       } else if (isTower) {
         wallColor = typeId === 'wooden_tower' ? 0x78350f : 0x1e293b;
         roofColor = 0xca8a04;
@@ -775,12 +1120,30 @@ export class BuildingRenderer {
         beaconColor = 0xfacc15;
       }
 
-      const wallMat = new THREE.MeshLambertMaterial({
+      // Procedural surface texture for walls / towers / gates so they read as
+      // materials (wood planks, brick, corrugated metal) rather than flat boxes.
+      // repeat is in 0..1 box-UV space — tile every ~2m so 10m walls show 5 tiles.
+      let matKind: 'wood' | 'brick' | 'metal' | 'concrete' | null = null;
+      if (!isUnderConstruction && !isField) {
+        if (typeId === 'wooden_palisade' || typeId === 'wooden_gate' || typeId === 'wooden_tower') matKind = 'wood';
+        else if (typeId === 'brick_wall') matKind = 'brick';
+        else if (typeId === 'fortified_wall' || typeId === 'fortified_gate' || typeId === 'fortified_tower') matKind = 'concrete';
+        else matKind = 'metal';
+      }
+      const wallMatOpts: THREE.MeshLambertMaterialParameters = {
         color: wallColor,
         emissive: emissiveColor,
         transparent: isUnderConstruction,
         opacity: isUnderConstruction ? 0.75 : 1.0,
-      });
+      };
+      if (matKind) {
+        // The BoxGeometry UVs are 0..1 per face; scale by the real dimensions so
+        // the surface tiles every ~2m on the visible sides and roof.
+        const tex = getFreestandingMaterialTexture(matKind);
+        tex.repeat.set(Math.max(1, width / 2), Math.max(1, height / 2));
+        wallMatOpts.map = tex;
+      }
+      const wallMat = new THREE.MeshLambertMaterial(wallMatOpts);
       const roofMat = new THREE.MeshLambertMaterial({
         color: roofColor,
         emissive: emissiveColor,
@@ -1361,6 +1724,7 @@ export class BuildingRenderer {
     const oldHqId = this.currentHqId;
     this.currentHqId = hqBuildingId;
     this.adaptedMap = adaptedBuildings;
+    this.freestandingBuildings = freestandingBuildings;
 
     // 1. Reset material for previous HQ if changed
     if (oldHqId !== null && String(oldHqId) !== String(hqBuildingId)) {
@@ -1373,7 +1737,9 @@ export class BuildingRenderer {
           oldBldg.isOccupied,
           oldAdapted?.category,
           false,
-          oldAdapted?.constructionStatus
+          oldAdapted?.constructionStatus,
+          buildingVariantForId(oldBldg.id),
+          this.isBuildingPowered(oldBldg)
         );
       }
     }
@@ -1389,7 +1755,9 @@ export class BuildingRenderer {
           newBldg.isOccupied,
           newAdapted?.category,
           true,
-          newAdapted?.constructionStatus
+          newAdapted?.constructionStatus,
+          buildingVariantForId(newBldg.id),
+          this.isBuildingPowered(newBldg)
         );
       }
     }
@@ -1405,7 +1773,9 @@ export class BuildingRenderer {
           bldg.isOccupied,
           adapted.category,
           false,
-          adapted.constructionStatus
+          adapted.constructionStatus,
+          buildingVariantForId(bldg.id),
+          this.isBuildingPowered(bldg)
         );
       }
     }
@@ -1504,25 +1874,21 @@ export class BuildingRenderer {
       if (prevMesh && bldg) {
         const isHQ = this.currentHqId !== null && String(bldg.id) === String(this.currentHqId);
         const adapted = this.adaptedMap.get(bldg.id);
-        prevMesh.material = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus);
+        prevMesh.material = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg));
       }
     }
 
     this.hoveredBuildingId = buildingId;
 
-    // Apply hover highlight
+    // Apply hover highlight — warm tint multiplied over the facade texture
     if (buildingId && buildingId !== this.selectedBuildingId) {
       const mesh = this.buildingMeshes.get(buildingId);
-      if (mesh) {
-        const hoverWall = new THREE.MeshLambertMaterial({
-          color: 0x8a7b68,
-          emissive: 0x241d14,
-        });
-        const hoverRoof = new THREE.MeshLambertMaterial({
-          color: 0x6e604f,
-          emissive: 0x1f1911,
-        });
-        mesh.material = [hoverWall, hoverRoof];
+      const bldg = this.buildingData.get(buildingId);
+      if (mesh && bldg) {
+        const isHQ = this.currentHqId !== null && String(bldg.id) === String(this.currentHqId);
+        const adapted = this.adaptedMap.get(bldg.id);
+        const base = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg));
+        mesh.material = this.cloneWithTint(base, 0xffeec9, 0xffeec9);
       }
     }
   }
@@ -1537,25 +1903,21 @@ export class BuildingRenderer {
       if (prevMesh && bldg) {
         const isHQ = this.currentHqId !== null && String(bldg.id) === String(this.currentHqId);
         const adapted = this.adaptedMap.get(bldg.id);
-        prevMesh.material = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus);
+        prevMesh.material = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg));
       }
     }
 
     this.selectedBuildingId = buildingId;
 
-    // Apply selected highlight
+    // Apply selected highlight — gold tint multiplied over the facade texture
     if (buildingId) {
       const mesh = this.buildingMeshes.get(buildingId);
-      if (mesh) {
-        const selWall = new THREE.MeshLambertMaterial({
-          color: 0xb58a43,
-          emissive: 0x473212,
-        });
-        const selRoof = new THREE.MeshLambertMaterial({
-          color: 0x8c6527,
-          emissive: 0x33230a,
-        });
-        mesh.material = [selWall, selRoof];
+      const bldg = this.buildingData.get(buildingId);
+      if (mesh && bldg) {
+        const isHQ = this.currentHqId !== null && String(bldg.id) === String(this.currentHqId);
+        const adapted = this.adaptedMap.get(bldg.id);
+        const base = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg));
+        mesh.material = this.cloneWithTint(base, 0xffd27a, 0xffd27a);
       }
     }
   }
@@ -1570,7 +1932,7 @@ export class BuildingRenderer {
         if (mesh && bldg) {
           const isHQ = this.currentHqId !== null && String(bldg.id) === String(this.currentHqId);
           const adapted = this.adaptedMap.get(bldg.id);
-          mesh.material = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus);
+          mesh.material = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg));
         }
       }
       this.demolishCandidateIds.clear();
@@ -1581,14 +1943,37 @@ export class BuildingRenderer {
     for (const id of buildingIds) {
       this.demolishCandidateIds.add(id);
       const mesh = this.buildingMeshes.get(id);
-      if (mesh) {
-        mesh.material = [this.demolishWallMaterial, this.demolishRoofMaterial];
+      const bldg = this.buildingData.get(id);
+      if (mesh && bldg) {
+        const isHQ = this.currentHqId !== null && String(bldg.id) === String(this.currentHqId);
+        const adapted = this.adaptedMap.get(bldg.id);
+        const base = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg));
+        mesh.material = this.cloneWithTint(base, 0xff9d92, 0xff9d92);
       }
     }
   }
 
   public getBuildingById(id: string | number): BuildingPolygon | undefined {
     return this.buildingData.get(id);
+  }
+
+  /**
+   * Drives the window-glow emissive on textured facades from the day/night
+   * cycle. factor 0 = full daylight (no glow), 1 = deep night (windows lit).
+   * Only materials carrying an emissiveMap (procedural facades) are touched.
+   */
+  public setNightGlow(factor: number) {
+    if (Math.abs(factor - this.nightGlowFactor) < 0.005) return;
+    this.nightGlowFactor = factor;
+    for (const mats of this.materialsCache.values()) {
+      for (const m of mats) {
+        if (m.emissiveMap) {
+          // Only powered colony buildings light their windows; abandoned
+          // buildings stay dark at any hour.
+          m.emissiveIntensity = (m.userData?.powered ? factor : 0) * 0.95;
+        }
+      }
+    }
   }
 
   public setEdgesVisible(visible: boolean) {
@@ -1616,7 +2001,8 @@ export class BuildingRenderer {
 
     // Clear LOD sources + merged LOD meshes
     this.lodSources = [];
-    this.lodSignature = '';
+    this.lodCellSignatures.clear();
+    this.lodCellMeshes.clear();
     this.lodBuilt = false;
     while (this.lodGroup.children.length > 0) {
       const c = this.lodGroup.children[0] as THREE.Mesh;
@@ -1652,8 +2038,6 @@ export class BuildingRenderer {
   public dispose() {
     this.clear();
     this.sharedEdgeMaterial.dispose();
-    this.demolishWallMaterial.dispose();
-    this.demolishRoofMaterial.dispose();
     this.materialsCache.forEach((mats) => {
       mats.forEach((m) => m.dispose());
     });

@@ -1,0 +1,880 @@
+import React from 'react';
+import { Layers } from 'lucide-react';
+import { GameCanvas } from './GameCanvas';
+import { TacticalHeaderStrip } from './TacticalHeaderStrip';
+import { AudioSettingsModal } from './AudioSettingsModal';
+import { TacticalSquadSelectorStrip } from './TacticalSquadSelectorStrip';
+import { SquadManagementModal } from './SquadManagementModal';
+import { TacticalSquadHUD } from './TacticalSquadHUD';
+import { BuildingAdaptationDrawer } from './BuildingAdaptationDrawer';
+import { VehicleTacticalDrawer } from './VehicleTacticalDrawer';
+import { AreaGatherOverlay } from './AreaGatherOverlay';
+import { NotificationTray } from './NotificationTray';
+import { TacticalActionBar } from './TacticalActionBar';
+import { TacticalMinimapWidget } from './TacticalMinimapWidget';
+import { HQSelectionCard } from './HQSelectionCard';
+import { RecruitmentEncounterModal } from './RecruitmentEncounterModal';
+import { RansomEventModal } from './RansomEventModal';
+import { ColonyOverrunModal } from './ColonyOverrunModal';
+import { GameOverExtinctModal } from './GameOverExtinctModal';
+import type { ActiveSidebarTab } from './TacticalHeaderStrip';
+import type { TacticalAlert } from './TacticalAlertStream';
+import type { ToastItem } from './NotificationTray';
+import type { GatherResourceType } from './AreaGatherOverlay';
+import type { AppViewMode } from '../App';
+import { soundService, ToastMessage } from '../services/soundService';
+import { FUNCTIONAL_BUILDING_DEFINITIONS } from '../data/functionalBuildings';
+import { getHiddenGroupValues } from '../lib/scavengeQueueHelpers';
+import { isSquadInsideBuilding } from '../services/scavengingService';
+import { calculateGlobalNetworkStats } from '../services/caravanService';
+import { updateWorkerJobLimit, updateWorkerJobPriority, setWorkerJobToZero, setWorkerJobToMax } from '../services/populationService';
+import type { WorldScene, FreestandingPlacementPoint } from '../render/WorldScene';
+import type { GameClockState, NoiseEvent, TacticalSquadUnit, ZombieUnit, WeaponItemId, ArmorItemId } from '../types/combat';
+import type { BuildingPolygon, MapData, Point2D, ResourceNode } from '../types/map';
+import type { SettlementState, FunctionalBuildingTypeId } from '../types/settlement';
+import type { HiddenSurvivorGroup } from '../types/population';
+import type { RadioDirectiveState, RadioTransmission } from '../types/radioDirective';
+import type { SettlementRecord, TradeCaravan } from '../types/caravan';
+import type { WorldVehicle } from '../types/vehicle';
+type WorldScenePlacement = FreestandingPlacementPoint;
+
+export interface TacticalWorldSceneProps {
+  activeGatherType: GatherResourceType | null;
+  activeRansomHideoutId: string | number | null;
+  activeRecruitmentGroup: HiddenSurvivorGroup | null;
+  activeSidebarTab: ActiveSidebarTab | null;
+  alerts: TacticalAlert[];
+  caravans: TradeCaravan[];
+  combatSquads: TacticalSquadUnit[];
+  combatSquadsRef: React.MutableRefObject<TacticalSquadUnit[]>;
+  contactedSurvivorGroupIdsRef: React.MutableRefObject<Set<string>>;
+  dangerLevel: number;
+  disableElevation: boolean;
+  elevationExaggeration: number;
+  gameClock: GameClockState;
+  handleAdaptBuilding: (bldg: BuildingPolygon, typeId: FunctionalBuildingTypeId) => void;
+  handleAppointHead: (buildingId: string | number, survivorId: string) => void;
+  handleAssignArmor: (squadId: string, memberId: string, armorId: ArmorItemId | null) => void;
+  handleAssignWeapon: (squadId: string, memberId: string, weaponId: WeaponItemId | null) => void;
+  handleBuildFreestanding: (typeId: FunctionalBuildingTypeId, pos: Point2D, rotationDeg?: number) => void;
+  handleBuildFreestandingRun: (typeId: FunctionalBuildingTypeId, placements: WorldScenePlacement[]) => void;
+  handleChangeSquadStance: (squadId: string, stance: 'aggressive' | 'defensive' | 'hold_fire') => void;
+  handleConfirmHQ: (bldg: BuildingPolygon) => void;
+  handleCreateSquad: (name: string, leaderId: string, memberCount: number) => void;
+  handleDesignateGatherArea: (type: GatherResourceType, bounds: { minX: number; maxX: number; minZ: number; maxZ: number }) => void;
+  handleDesignateSquadScavenge: (bounds: { minX: number; maxX: number; minZ: number; maxZ: number }) => void;
+  handleDisbandSquad: (squadId: string) => void;
+  handleDismissAlert: (id: string) => void;
+  handleDismountVehicle: (vehicleId: string) => void;
+  handleFocusBuilding: (building: BuildingPolygon) => void;
+  handleLoadProgress: (progress: number, label?: string) => void;
+  handleMinimapPanTo: (pos: Point2D) => void;
+  handleModifySquadGeneralMembers: (squadId: string, memberCount: number) => void;
+  handleMountVehicle: (squadId: string, vehicleId: string) => void;
+  handleOrderDeconstruction: (buildingId: string | number) => void;
+  handleOrderSquadAttack: (squadId: string, zombieId: string) => void;
+  handleOrderSquadMove: (squadId: string, pos: Point2D, targetBuildingId?: string | number, targetBuildingName?: string) => void;
+  handleOrderSquadRecall: (squadId: string) => void;
+  handleOrderVehicleExtraction: (vehicle: WorldVehicle) => void;
+  handlePayRansom: (hideoutId: string | number) => void;
+  handleRecruitGroup: (buildingId: string | number, persuasionLeaderId?: string) => void;
+  handleRefuseRescue: (hideoutId: string | number) => void;
+  handleRepairBuilding: (buildingId: string | number) => void;
+  handleRestartGame: () => void;
+  handleSearchBuilding: (building: BuildingPolygon, squadIdOverride?: string) => void;
+  handleSelectExistingSettlement: (id: string) => void;
+  handleSelectSquad: (squadId: string | null) => void;
+  handleSelectVehicle: (vehicleId: string | null) => void;
+  handleSetClockSpeed: (speed: 0 | 1 | 2 | 4) => void;
+  handleStartSquadScavengeArea: (squadId: string) => void;
+  handleUpdateCombatSquads: (updated: TacticalSquadUnit[]) => void;
+  handleVacateSurvivorRole: (buildingId: string | number) => void;
+  isAudioModalOpen: boolean;
+  isExpeditionViewActive: boolean;
+  isExtinct: boolean;
+  isHQSelectionUnlocked: boolean;
+  isHideUi: boolean;
+  isInitialCommsPending: boolean;
+  isQuestListOpen: boolean;
+  isScavengeViewActive: boolean;
+  isSquadModalOpen: boolean;
+  labelDetailMode: 'detailed' | 'minimal';
+  mapData: MapData | null;
+  noiseEvents: NoiseEvent[];
+  overrunSettlement: SettlementRecord | null;
+  pendingAdaptType: FunctionalBuildingTypeId | null;
+  pendingFreestandingType: FunctionalBuildingTypeId | null;
+  radioDirectiveState: RadioDirectiveState | null;
+  scavengeFilterType: string | null;
+  sceneRef: React.MutableRefObject<WorldScene | null>;
+  selectedBuilding: BuildingPolygon | null;
+  selectedSquadId: string | null;
+  selectedVehicleId: string | null;
+  setActiveGatherType: React.Dispatch<React.SetStateAction<GatherResourceType | null>>;
+  setActiveRadioTransmission: React.Dispatch<React.SetStateAction<RadioTransmission | null>>;
+  setActiveRansomHideoutId: React.Dispatch<React.SetStateAction<string | number | null>>;
+  setActiveRecruitmentGroup: React.Dispatch<React.SetStateAction<HiddenSurvivorGroup | null>>;
+  setActiveSidebarTab: React.Dispatch<React.SetStateAction<ActiveSidebarTab | null>>;
+  setClickedPosition: React.Dispatch<React.SetStateAction<Point2D | null>>;
+  setHoveredBuilding: React.Dispatch<React.SetStateAction<BuildingPolygon | null>>;
+  setIsAudioModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsExpeditionViewActive: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsFreestandingModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsHideUi: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsMoraleModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsPauseMenuOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsPopulationModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsQuestListOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsRadioModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsResearchModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsScavengeViewActive: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsSceneRendered: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsSquadModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsVehicleModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsWeatherModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  setLabelDetailMode: React.Dispatch<React.SetStateAction<'detailed' | 'minimal'>>;
+  setOverrunSettlement: React.Dispatch<React.SetStateAction<SettlementRecord | null>>;
+  setPendingAdaptType: React.Dispatch<React.SetStateAction<FunctionalBuildingTypeId | null>>;
+  setPendingFreestandingType: React.Dispatch<React.SetStateAction<FunctionalBuildingTypeId | null>>;
+  setScavengeFilterType: React.Dispatch<React.SetStateAction<string | null>>;
+  setSelectedBuilding: React.Dispatch<React.SetStateAction<BuildingPolygon | null>>;
+  setSelectedResourceNode: React.Dispatch<React.SetStateAction<ResourceNode | null>>;
+  setSelectedSquadId: React.Dispatch<React.SetStateAction<string | null>>;
+  setSelectedVehicleId: React.Dispatch<React.SetStateAction<string | null>>;
+  setSettlement: any;
+  setShowBuildingEdges: React.Dispatch<React.SetStateAction<boolean>>;
+  setShowLanduse: React.Dispatch<React.SetStateAction<boolean>>;
+  setShowSatelliteOverlay: React.Dispatch<React.SetStateAction<boolean>>;
+  setSatelliteQuality: React.Dispatch<React.SetStateAction<import('../types/saveGame').SatelliteQuality>>;
+  setShowStreetLabels: React.Dispatch<React.SetStateAction<boolean>>;
+  setToastMessage: (msg: ToastMessage | null) => void;
+  setToasts: React.Dispatch<React.SetStateAction<ToastItem[]>>;
+  setViewMode: (m: AppViewMode) => void;
+  settlement: SettlementState;
+  settlementRef: React.MutableRefObject<SettlementState>;
+  settlements: Record<string, SettlementRecord>;
+  showBricks: boolean;
+  showBuildingEdges: boolean;
+  showBuildings: boolean;
+  showLanduse: boolean;
+  showMetal: boolean;
+  showRoads: boolean;
+  showSatelliteOverlay: boolean;
+  satelliteQuality: import('../types/saveGame').SatelliteQuality;
+  showStreetLabels: boolean;
+  showTerrainWireframe: boolean;
+  showWood: boolean;
+  toasts: ToastItem[];
+  viewMode: AppViewMode;
+  zombies: ZombieUnit[];
+}
+
+export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => {
+  const {
+    activeGatherType,
+    activeRansomHideoutId,
+    activeRecruitmentGroup,
+    activeSidebarTab,
+    alerts,
+    caravans,
+    combatSquads,
+    combatSquadsRef,
+    contactedSurvivorGroupIdsRef,
+    dangerLevel,
+    disableElevation,
+    elevationExaggeration,
+    gameClock,
+    handleAdaptBuilding,
+    handleAppointHead,
+    handleAssignArmor,
+    handleAssignWeapon,
+    handleBuildFreestanding,
+    handleBuildFreestandingRun,
+    handleChangeSquadStance,
+    handleConfirmHQ,
+    handleCreateSquad,
+    handleDesignateGatherArea,
+    handleDesignateSquadScavenge,
+    handleDisbandSquad,
+    handleDismissAlert,
+    handleDismountVehicle,
+    handleFocusBuilding,
+    handleLoadProgress,
+    handleMinimapPanTo,
+    handleModifySquadGeneralMembers,
+    handleMountVehicle,
+    handleOrderDeconstruction,
+    handleOrderSquadAttack,
+    handleOrderSquadMove,
+    handleOrderSquadRecall,
+    handleOrderVehicleExtraction,
+    handlePayRansom,
+    handleRecruitGroup,
+    handleRefuseRescue,
+    handleRepairBuilding,
+    handleRestartGame,
+    handleSearchBuilding,
+    handleSelectExistingSettlement,
+    handleSelectSquad,
+    handleSelectVehicle,
+    handleSetClockSpeed,
+    handleStartSquadScavengeArea,
+    handleUpdateCombatSquads,
+    handleVacateSurvivorRole,
+    isAudioModalOpen,
+    isExpeditionViewActive,
+    isExtinct,
+    isHQSelectionUnlocked,
+    isHideUi,
+    isInitialCommsPending,
+    isQuestListOpen,
+    isScavengeViewActive,
+    isSquadModalOpen,
+    labelDetailMode,
+    mapData,
+    noiseEvents,
+    overrunSettlement,
+    pendingAdaptType,
+    pendingFreestandingType,
+    radioDirectiveState,
+    scavengeFilterType,
+    sceneRef,
+    selectedBuilding,
+    selectedSquadId,
+    selectedVehicleId,
+    setActiveGatherType,
+    setActiveRadioTransmission,
+    setActiveRansomHideoutId,
+    setActiveRecruitmentGroup,
+    setActiveSidebarTab,
+    setClickedPosition,
+    setHoveredBuilding,
+    setIsAudioModalOpen,
+    setIsExpeditionViewActive,
+    setIsFreestandingModalOpen,
+    setIsHideUi,
+    setIsMoraleModalOpen,
+    setIsPauseMenuOpen,
+    setIsPopulationModalOpen,
+    setIsQuestListOpen,
+    setIsRadioModalOpen,
+    setIsResearchModalOpen,
+    setIsScavengeViewActive,
+    setIsSceneRendered,
+    setIsSquadModalOpen,
+    setIsVehicleModalOpen,
+    setIsWeatherModalOpen,
+    setLabelDetailMode,
+    setOverrunSettlement,
+    setPendingAdaptType,
+    setPendingFreestandingType,
+    setScavengeFilterType,
+    setSelectedBuilding,
+    setSelectedResourceNode,
+    setSelectedSquadId,
+    setSelectedVehicleId,
+    setSettlement,
+    setShowBuildingEdges,
+    setShowLanduse,
+    setShowSatelliteOverlay,
+    setSatelliteQuality,
+    setShowStreetLabels,
+    setToastMessage,
+    setToasts,
+    setViewMode,
+    settlement,
+    settlementRef,
+    settlements,
+    showBricks,
+    showBuildingEdges,
+    showBuildings,
+    showLanduse,
+    showMetal,
+    showRoads,
+    showSatelliteOverlay,
+    satelliteQuality,
+    showStreetLabels,
+    showTerrainWireframe,
+    showWood,
+    toasts,
+    viewMode,
+    zombies,
+  } = props;
+  return (
+    <>
+              <GameCanvas
+                mapData={mapData}
+                settlement={settlement}
+                clockHour={gameClock.hour}
+                elevationExaggeration={elevationExaggeration}
+                disableElevation={disableElevation}
+                showTerrainWireframe={showTerrainWireframe}
+                showBuildingEdges={showBuildingEdges}
+                showBuildings={showBuildings}
+                showRoads={showRoads}
+                showWood={showWood}
+                showMetal={showMetal}
+                showBricks={showBricks}
+                showLanduse={showLanduse}
+                showSatelliteOverlay={showSatelliteOverlay}
+                selectedSquadId={selectedSquadId}
+                selectedVehicleId={selectedVehicleId}
+                pendingFreestandingType={pendingFreestandingType}
+                onSelectBuilding={(bldg) => {
+                  if (!settlement.hq && !isHQSelectionUnlocked) {
+                    setToastMessage({
+                      title: 'INCOMING TRANSMISSION PENDING',
+                      desc: 'Press PUSH TO TALK to receive your operational mandate before designating an HQ.',
+                      type: 'info',
+                    });
+                    const unread =
+                      radioDirectiveState?.currentIncomingTransmission ||
+                      radioDirectiveState?.transmissionLog?.find((t) => !t.isRead) ||
+                      radioDirectiveState?.transmissionLog?.[0] ||
+                      null;
+                    setActiveRadioTransmission(unread);
+                    setIsRadioModalOpen(true);
+                    return;
+                  }
+    
+                  setSelectedBuilding(bldg);
+                  setSelectedResourceNode(null);
+    
+                  // Selecting a smoke-marked structure while a squad is inside it is
+                  // also a reliable interaction fallback. This uses string-normalized
+                  // building IDs so numeric IDs from bundled maps and string IDs from
+                  // saved games resolve to the same survivor group.
+                  const selectedSmokeGroup = getHiddenGroupValues(settlementRef.current.hiddenGroups)
+                    .find((group) => String(group.buildingId) === String(bldg.id));
+                  // Contact is based on any deployed squad physically inside the
+                  // smoke building, not on which squad happens to be selected in the HUD.
+                  const contactSquad = (combatSquadsRef.current.length ? combatSquadsRef.current : combatSquads)
+                    .find((sq) => sq.isDeployed && sq.currentHp > 0 && isSquadInsideBuilding({ x: sq.x, z: sq.z }, bldg));
+                  if (
+                    selectedSmokeGroup &&
+                    selectedSmokeGroup.hasSmokeClue &&
+                    !selectedSmokeGroup.isRecruited &&
+                    contactSquad
+                  ) {
+                    setSettlement((prev) => {
+                      const groups = new Map(prev.hiddenGroups);
+                      const entry = (Array.from(groups.entries()) as [string | number, HiddenSurvivorGroup][]).find(
+                        ([key, value]) => String(key) === String(bldg.id) || String(value.buildingId) === String(bldg.id)
+                      );
+                      if (entry) groups.set(entry[0], { ...entry[1], isDiscovered: true });
+                      return { ...prev, hiddenGroups: groups };
+                    });
+                    contactedSurvivorGroupIdsRef.current.add(String(bldg.id));
+                    setActiveRecruitmentGroup({ ...selectedSmokeGroup, isDiscovered: true });
+                    setToastMessage({
+                      title: 'SURVIVORS CONTACTED',
+                      desc: `${selectedSmokeGroup.leader.name} responded from ${selectedSmokeGroup.buildingName}.`,
+                      type: 'success',
+                    });
+                  }
+                  // §7.2 pick-type-then-click flow: a facility type chosen from the
+                  // bottom-left Build/Convert dropdown is applied to the next clicked
+                  // structure (the adapted facility panel then opens on it).
+                  if (pendingAdaptType) {
+                    const typeId = pendingAdaptType;
+                    setPendingAdaptType(null);
+                    handleAdaptBuilding(bldg, typeId);
+                  }
+                }}
+                onHoverBuilding={(bldg) => {
+                  if (isHQSelectionUnlocked || settlement.hq) {
+                    setHoveredBuilding(bldg);
+                  }
+                }}
+                onSelectResourceNode={(node) => { setSelectedResourceNode(node); setSelectedBuilding(null); setActiveSidebarTab(node ? 'inspector' : null); }}
+                onSelectPosition={(pos, rotationDeg) => {
+                  setClickedPosition(pos);
+                  if (pendingFreestandingType) {
+                    handleBuildFreestanding(pendingFreestandingType, pos, rotationDeg);
+                    setPendingFreestandingType(null);
+                  }
+                }}
+                onPlaceFreestandingRun={(typeId, placements) => handleBuildFreestandingRun(typeId, placements)}
+                onSelectSquad={handleSelectSquad}
+                onOrderSquadMove={handleOrderSquadMove}
+                onOrderSquadAttack={handleOrderSquadAttack}
+                onSelectVehicle={handleSelectVehicle}
+                onMountVehicle={handleMountVehicle}
+                onSceneReady={(s) => {
+                  sceneRef.current = s;
+                }}
+                onMapRendered={() => {
+                  // The 3D map has been built and drawn — safe to reveal the world.
+                  setIsSceneRendered(true);
+                }}
+                onLoadProgress={handleLoadProgress}
+              />
+    
+              {/* Restore Tactical UI Button when HUD is toggled off */}
+              {isHideUi && (
+                <div className="fixed bottom-4 right-4 z-50 pointer-events-auto">
+                  <button
+                    id="btn-restore-tactical-ui"
+                    onClick={() => {
+                      soundService.playClick();
+                      setIsHideUi(false);
+                    }}
+                    title="Restore Tactical HUD"
+                    className="px-3.5 py-2.5 bg-[#07090C]/95 border-2 border-[#1E293B] hover:border-[#10B981] text-[#10B981] hover:text-white shadow-2xl flex items-center gap-2 backdrop-blur-md transition-all active:scale-95 touch-manipulation clip-tactical-bracket"
+                  >
+                    <Layers className="w-5 h-5" />
+                    <span className="font-mono text-xs font-bold uppercase tracking-wider">Restore HUD</span>
+                  </button>
+                </div>
+              )}
+    
+              {!isHideUi && (
+                <>
+                  {/* Tactical Diegetic Header Strip (Torn Bottom Edge, Compact Readouts, Speed, Tabs) */}
+                  <TacticalHeaderStrip
+                    settlement={settlement}
+                    clock={gameClock}
+                    activeNoiseEvents={noiseEvents}
+                    zombieCount={zombies.filter((z) => z.state !== 'dead').length}
+                    onSetSpeed={handleSetClockSpeed}
+                    activeSidebar={activeSidebarTab}
+                    onToggleSidebar={(tab) => setActiveSidebarTab(tab)}
+                    onOpenGlobe={() => setViewMode('globe')}
+                    questTrackerVisible={isQuestListOpen}
+                    onToggleQuestTracker={() => setIsQuestListOpen((v) => !v)}
+                    hasHQ={!!settlement.hq}
+                    onOpenAudioSettings={() => setIsAudioModalOpen(true)}
+                    onOpenPauseMenu={() => setIsPauseMenuOpen(true)}
+                    onOpenTechTree={() => setIsResearchModalOpen(true)}
+                    onOpenMoraleModal={() => setIsMoraleModalOpen(true)}
+                    onOpenWeatherModal={() => setIsWeatherModalOpen(true)}
+                    onOpenPopulationModal={() => setIsPopulationModalOpen(true)}
+                    onOpenRadio={() => {
+                      const unread =
+                        radioDirectiveState?.transmissionLog?.find((t) => !t.isRead) ||
+                        radioDirectiveState?.transmissionLog?.[0] ||
+                        null;
+                      setActiveRadioTransmission(unread);
+                      setIsRadioModalOpen(true);
+                    }}
+                    radioUnreadCount={radioDirectiveState?.unreadCount ?? 0}
+                  />
+    
+                  {/* Active Blueprint Hologram Placement Banner */}
+                  {pendingFreestandingType && (
+                    <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 px-4 py-2 bg-amber-950/90 border-2 border-amber-500 rounded-lg shadow-2xl backdrop-blur-md animate-pulse">
+                      <div className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping" />
+                      <div className="text-xs font-mono font-bold text-amber-200">
+                        PLACING <span className="text-amber-400 uppercase">{FUNCTIONAL_BUILDING_DEFINITIONS[pendingFreestandingType]?.name || pendingFreestandingType}</span> — Tap open ground on the map to construct
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPendingFreestandingType(null);
+                          soundService.playClick();
+                        }}
+                        className="px-2 py-0.5 ml-2 text-[10px] uppercase font-bold text-amber-950 bg-amber-400 hover:bg-amber-300 rounded transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+    
+                  {/* Audio Subsystem & Soundscape Modal (§15) */}
+                  <AudioSettingsModal
+                    isOpen={isAudioModalOpen}
+                    onClose={() => setIsAudioModalOpen(false)}
+                    currentPhase={gameClock.phase}
+                    isNight={gameClock.isNight}
+                    dangerLevel={dangerLevel}
+                  />
+    
+                  {/* Top-Right Squad Tactical Command Card & Selector Strip */}
+                  <TacticalSquadSelectorStrip
+                    squads={combatSquads}
+                    selectedSquadId={selectedSquadId}
+                    onSelectSquad={handleSelectSquad}
+                    onCreateSquad={() => setIsSquadModalOpen(true)}
+                    onPanToSquad={(sq) => {
+                      handleMinimapPanTo({ x: sq.position ? sq.position.x : sq.x, z: sq.position ? sq.position.z : sq.z });
+                    }}
+                  />
+    
+                  {/* Squad Command & Muster Panel — opened by the '+' Form Squad button (§4.3) */}
+                  <SquadManagementModal
+                    isOpen={isSquadModalOpen}
+                    onClose={() => setIsSquadModalOpen(false)}
+                    settlement={settlement}
+                    onCreateSquad={handleCreateSquad}
+                    onModifyGeneralMembers={handleModifySquadGeneralMembers}
+                    onDisbandSquad={handleDisbandSquad}
+                  />
+    
+                  {/* Selection Info Dock — squad / building / vehicle info panels share one
+                      slot with the same size & position as the squad panel, and stack
+                      vertically (each scrollable) when several selections are open. */}
+                  {(selectedSquadId || selectedBuilding || selectedVehicleId) && (() => {
+                    const selectedSquadObj = combatSquads.find((s) => s.squadId === selectedSquadId) || null;
+                    const selectedMountedVehicle = (() => {
+                      if (!selectedSquadId) return null;
+                      const byAssigned = settlement.vehicles?.find((v) => v.assignedSquadId === selectedSquadId);
+                      if (byAssigned) return byAssigned;
+                      const mid = selectedSquadObj?.mountedVehicleId;
+                      return mid ? settlement.vehicles?.find((v) => v.id === mid) || null : null;
+                    })();
+                    return (
+                    <div
+                      id="selection-info-dock"
+                      className="fixed bottom-14 left-2 right-2 md:top-12 md:left-auto md:right-16 md:bottom-auto z-40 flex flex-col gap-2 pointer-events-none max-h-[calc(100vh-72px)] overflow-y-auto no-scrollbar"
+                    >
+                      <TacticalSquadHUD
+                        squad={selectedSquadObj}
+                        mountedVehicle={selectedMountedVehicle}
+                        onDismountVehicle={
+                          selectedMountedVehicle ? () => handleDismountVehicle(selectedMountedVehicle.id) : undefined
+                        }
+                        onDeselect={() => setSelectedSquadId(null)}
+                        onChangeStance={handleChangeSquadStance}
+                        onOrderFallbackHQ={handleOrderSquadRecall}
+                        onStartScavengeArea={() => handleStartSquadScavengeArea(selectedSquadId || selectedSquadObj?.squadId || '')}
+                        isScavengeAreaActive={activeGatherType === 'scavenge'}
+                        inventory={selectedSquadId ? settlement.squadInventories?.[selectedSquadId] : undefined}
+                        armory={settlement.armory || { weapons: [], armor: [] }}
+                        onAssignWeapon={handleAssignWeapon}
+                        onAssignArmor={handleAssignArmor}
+                        allSquads={combatSquads}
+                        onSelectSquad={handleSelectSquad}
+                        onDisbandSquad={handleDisbandSquad}
+                      />
+    
+                      {selectedBuilding && (
+                        <BuildingAdaptationDrawer
+                          building={selectedBuilding}
+                          adaptedInfo={
+                            settlement.adaptedBuildings?.get(selectedBuilding.id) ||
+                            settlement.freestandingBuildings?.find(
+                              (f) => String(f.buildingId) === String(selectedBuilding.id)
+                            )
+                          }
+                          isHQ={
+                            !!settlement.hq &&
+                            String(settlement.hq.buildingId) === String(selectedBuilding.id)
+                          }
+                          settlement={settlement}
+                          hiddenGroup={
+                            getHiddenGroupValues(settlement.hiddenGroups)
+                              .find((group) => String(group.buildingId) === String(selectedBuilding.id)) || null
+                          }
+                          onClose={() => {
+                            setSelectedBuilding(null);
+                            setActiveSidebarTab(null);
+                          }}
+                          onDismantle={handleOrderDeconstruction}
+                          onFocusBuilding={handleFocusBuilding}
+                          onAppointHead={handleAppointHead}
+                          onVacateSurvivorRole={handleVacateSurvivorRole}
+                          onInvestigateHiddenGroup={(group) => {
+                            if (group) setActiveRecruitmentGroup(group);
+                          }}
+                          onRepairBuilding={handleRepairBuilding}
+                          onSearchInfestedBuilding={handleSearchBuilding}
+                        />
+                      )}
+    
+                      {selectedVehicleId && (
+                        <VehicleTacticalDrawer
+                          vehicle={settlement.vehicles?.find((v) => v.id === selectedVehicleId) || null}
+                          onClose={() => setSelectedVehicleId(null)}
+                          settlement={settlement}
+                          onUpdateSettlement={setSettlement}
+                          combatSquads={combatSquads}
+                          onUpdateCombatSquads={handleUpdateCombatSquads}
+                          onOpenFullFleetModal={() => setIsVehicleModalOpen(true)}
+                          onOrderVehicleExtraction={handleOrderVehicleExtraction}
+                        />
+                      )}
+                    </div>
+                    );
+                  })()}
+    
+                  {/* Area Drag-Box Gathering Overlay */}
+                  <AreaGatherOverlay
+                    isActive={activeGatherType !== null}
+                    gatherType={activeGatherType || 'wood'}
+                    onCancel={() => {
+                      setActiveGatherType(null);
+                      sceneRef.current?.setGatherHighlight(null, null);
+                    }}
+                    onDragBoundsChange={(bounds) => {
+                      sceneRef.current?.setGatherHighlight(activeGatherType, bounds);
+                    }}
+                    onDesignateArea={(type, bounds) => {
+                      sceneRef.current?.setGatherHighlight(null, null);
+                      if (type === 'scavenge') handleDesignateSquadScavenge(bounds);
+                      else handleDesignateGatherArea(type, bounds);
+                    }}
+                    screenRectToWorldBounds={(x1, y1, x2, y2) => {
+                      if (sceneRef.current) {
+                        return sceneRef.current.screenRectToWorldBounds(x1, y1, x2, y2);
+                      }
+                      return { minX: -50, maxX: 50, minZ: -50, maxZ: 50 };
+                    }}
+                  />
+    
+                  {/* Unified bottom-left notification stack — single tray holds both the
+                      persistent tactical alert stream and the transient toast, so they never
+                      overlap. Rows animate in/out smoothly as a coordinated column. */}
+                  <NotificationTray
+                    alerts={alerts}
+                    toasts={toasts}
+                    onDismissAlert={handleDismissAlert}
+                    onDismissToast={(id) => setToasts((prev) => prev.filter((t) => t.id !== id))}
+                  />
+    
+                  {/* Bottom-Left 4-Button Action Bar (Buildings, Fortifications, Area Works, Citizens/Workers) */}
+                  <TacticalActionBar
+                    settlement={settlement}
+                    onSelectAdaptationType={(typeId) => {
+                      if (selectedBuilding) {
+                        handleAdaptBuilding(selectedBuilding, typeId);
+                      } else {
+                        // Arm the conversion: the next structure clicked becomes this facility.
+                        setPendingAdaptType(typeId);
+                        setToastMessage({
+                          title: 'SELECT BUILDING',
+                          desc: 'Click a structure on the map to convert it into this facility.',
+                          type: 'info',
+                        });
+                      }
+                      soundService.playClick();
+                    }}
+                    onSelectFreestandingBlueprint={(typeId) => {
+                      if (typeId) {
+                        setPendingFreestandingType(typeId);
+                        setPendingAdaptType(null);
+                        setSelectedBuilding(null);
+                        const def = FUNCTIONAL_BUILDING_DEFINITIONS[typeId];
+                        setToastMessage({
+                          title: 'BLUEPRINT ARMED: ' + (def?.name || typeId).toUpperCase(),
+                          desc: 'Tap anywhere on open ground to place structure and deploy builders.',
+                          type: 'info',
+                        });
+                        soundService.playCombatActionSFX('assault_order');
+                      } else {
+                        setIsFreestandingModalOpen(true);
+                        soundService.playClick();
+                      }
+                    }}
+                    onStartGatherArea={(type) => {
+                      setActiveGatherType(type);
+                      soundService.playClick();
+                    }}
+                    activeGatherType={activeGatherType}
+                    onUpdateWorkerJobPriority={(jobId, priority) => {
+                      setSettlement((prev) => updateWorkerJobPriority(prev, jobId, priority));
+                    }}
+                    onUpdateWorkerJobLimit={(jobId, limit) => {
+                      setSettlement((prev) => updateWorkerJobLimit(prev, jobId, limit));
+                    }}
+                    onSetWorkerJobToZero={(jobId) => {
+                      setSettlement((prev) => setWorkerJobToZero(prev, jobId));
+                    }}
+                    onSetWorkerJobToMax={(jobId) => {
+                      setSettlement((prev) => setWorkerJobToMax(prev, jobId));
+                    }}
+                    onOpenPopulationRoster={() => setIsPopulationModalOpen(true)}
+                    idleLaborCount={settlement.generalPopulation?.unassigned || 0}
+                    totalLaborCount={settlement.namedSurvivors.length + (settlement.generalPopulation?.total || 0)}
+                  />
+    
+                  {/* Bottom-Right Unified Building Info Mini-Panel & Radar Minimap */}
+                  <TacticalMinimapWidget
+                    selectedBuilding={selectedBuilding}
+                    adaptedBuildingInfo={selectedBuilding ? settlement.adaptedBuildings?.get(selectedBuilding.id) || null : null}
+                    buildings={mapData?.buildings || []}
+                    landuse={mapData?.landuse || []}
+                    squads={combatSquads}
+                    zombies={zombies.filter((z) => z.state !== 'dead')}
+                    vehicles={settlement.vehicles || []}
+                    hqBuildingId={settlement.hq?.buildingId || null}
+                    mapRadius={mapData?.radius || 4000}
+                    cameraPosition={sceneRef.current?.cameraController?.target || { x: 0, z: 0 }}
+                    onPanTo={handleMinimapPanTo}
+                    onCenterHQ={() => {
+                      if (settlement.hq) {
+                        const bldg = mapData?.buildings.find((b) => b.id === settlement.hq?.buildingId);
+                        if (bldg) handleMinimapPanTo(bldg.center);
+                      }
+                    }}
+                    onResetNorth={() => {
+                      soundService.playClick();
+                      sceneRef.current?.cameraController.faceNorth();
+                    }}
+                    isScavengeViewActive={isScavengeViewActive}
+                    scavengeFilterType={scavengeFilterType}
+                    onToggleScavengeView={() => {
+                      setIsScavengeViewActive((prev) => {
+                        const next = !prev;
+                        if (sceneRef.current) {
+                          sceneRef.current.setScavengeView(next, scavengeFilterType);
+                        }
+                        return next;
+                      });
+                    }}
+                    onSetScavengeFilter={(filter) => {
+                      setScavengeFilterType(filter);
+                      setIsScavengeViewActive(true);
+                      if (sceneRef.current) {
+                        sceneRef.current.setScavengeView(true, filter);
+                      }
+                    }}
+                    showStreetLabels={showStreetLabels}
+                    onToggleStreetLabels={() => {
+                      setShowStreetLabels((prev) => {
+                        const next = !prev;
+                        if (sceneRef.current) {
+                          sceneRef.current.setShowStreetLabels(next);
+                        }
+                        return next;
+                      });
+                    }}
+                    showSatelliteOverlay={showSatelliteOverlay}
+                    onToggleSatelliteOverlay={() => {
+                      setShowSatelliteOverlay((prev) => {
+                        const next = !prev;
+                        if (sceneRef.current) {
+                          sceneRef.current.setSatelliteOverlay(next, satelliteQuality);
+                        }
+                        return next;
+                      });
+                    }}
+                    satelliteQuality={satelliteQuality}
+                    onSatelliteQualityChange={(q) => {
+                      setSatelliteQuality(q);
+                      if (showSatelliteOverlay && sceneRef.current) {
+                        sceneRef.current.setSatelliteOverlay(true, q);
+                      }
+                    }}
+                    showLanduse={showLanduse}
+                    onToggleLanduse={() => {
+                      setShowLanduse((prev) => !prev);
+                    }}
+                    showStructureOutlines={showBuildingEdges}
+                    onToggleStructureOutlines={() => {
+                      setShowBuildingEdges((prev) => {
+                        const next = !prev;
+                        if (sceneRef.current) {
+                          sceneRef.current.setShowBuildingEdges(next);
+                        }
+                        return next;
+                      });
+                    }}
+                    labelDetailMode={labelDetailMode}
+                    onToggleLabelDetailMode={() => {
+                      setLabelDetailMode((prev) => {
+                        const next = prev === 'detailed' ? 'minimal' : 'detailed';
+                        if (sceneRef.current) {
+                          sceneRef.current.setLabelDetailMode(next);
+                        }
+                        return next;
+                      });
+                    }}
+                    onToggleHideUi={() => setIsHideUi(true)}
+                    isExpeditionViewActive={isExpeditionViewActive}
+                    onToggleExpeditionView={() => {
+                      if (sceneRef.current) {
+                        const isExp = sceneRef.current.cameraController.toggleExpeditionView();
+                        setIsExpeditionViewActive(isExp);
+                      }
+                    }}
+                    onScavengeSelected={(bldg) => {
+                      const sq = combatSquads.find((s) => s.squadId === selectedSquadId) || combatSquads[0];
+                      if (sq) {
+                        handleOrderSquadMove(sq.squadId, bldg.center, bldg.id, bldg.name);
+                      }
+                    }}
+                    onAdaptSelected={(bldg) => {
+                      setSelectedBuilding(bldg);
+                      setActiveSidebarTab('build');
+                    }}
+                    onDemolishSelected={(bldg) => handleOrderDeconstruction(bldg.id)}
+                    onOpenRadio={() => {
+                      const unread =
+                        radioDirectiveState?.currentIncomingTransmission ||
+                        radioDirectiveState?.transmissionLog?.find((t) => !t.isRead) ||
+                        radioDirectiveState?.transmissionLog?.[0] ||
+                        null;
+                      setActiveRadioTransmission(unread);
+                      setIsRadioModalOpen(true);
+                    }}
+                    unreadRadioCount={radioDirectiveState?.unreadCount || 0}
+                    hasIncomingRadio={Boolean(radioDirectiveState?.unreadCount && radioDirectiveState.unreadCount > 0)}
+                    isInitialPendingRadio={isInitialCommsPending}
+                  />
+    
+    
+                  {/* Phase 1 HQ Selection Card (shown ONLY after initial radio communication has been confirmed AND no HQ is selected yet) */}
+                  {!settlement.hq && isHQSelectionUnlocked && (
+                    <HQSelectionCard
+                      selectedBuilding={selectedBuilding}
+                      onConfirmHQ={handleConfirmHQ}
+                    />
+                  )}
+                </>
+              )}
+    
+              {/* World Discovery Recruitment Encounter Modal (§4.4) */}
+              <RecruitmentEncounterModal
+                isOpen={!!activeRecruitmentGroup}
+                onClose={() => setActiveRecruitmentGroup(null)}
+                group={activeRecruitmentGroup}
+                settlement={settlement}
+                onRecruit={handleRecruitGroup}
+              />
+    
+              {/* Rival-Faction Ransom Event Modal (§5.2) */}
+              <RansomEventModal
+                isOpen={!!activeRansomHideoutId}
+                onClose={() => setActiveRansomHideoutId(null)}
+                hideout={
+                  (activeRansomHideoutId && settlement.rivalHideouts?.get(activeRansomHideoutId)) || null
+                }
+                settlement={settlement}
+                onPayRansom={handlePayRansom}
+                onRefuseRescue={handleRefuseRescue}
+              />
+    
+              {/* Colony Overrun & Destruction Alert Modal (§7.5) */}
+              {overrunSettlement && (
+                <ColonyOverrunModal
+                  isOpen={!!overrunSettlement && !isExtinct}
+                  destroyedSettlement={overrunSettlement}
+                  operationalSettlements={(Object.values(settlements) as SettlementRecord[]).filter(
+                    (s) => s.status === 'operational'
+                  )}
+                  onOpenGlobe={() => {
+                    setOverrunSettlement(null);
+                    setViewMode('globe');
+                  }}
+                  onSwitchToSettlement={(targetId) => {
+                    setOverrunSettlement(null);
+                    handleSelectExistingSettlement(targetId);
+                  }}
+                  onDispatchRelief={(originId) => {
+                    setOverrunSettlement(null);
+                    handleSelectExistingSettlement(originId);
+                    setActiveSidebarTab('caravans');
+                  }}
+                />
+              )}
+    
+              {/* Total Extinction Game Over Modal (§7.5) */}
+              <GameOverExtinctModal
+                isOpen={isExtinct}
+                stats={calculateGlobalNetworkStats(settlements, caravans)}
+                onRestartGame={handleRestartGame}
+              />
+    
+    </>
+  );
+};

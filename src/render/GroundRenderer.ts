@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { sampleElevation } from '../services/elevationService';
-import { loadSatelliteTexture } from '../services/satelliteService';
+import { loadSatelliteTexture, shouldReburnSatellite, updateSatelliteCamera } from '../services/satelliteService';
 import { ElevationGrid, GeoPoint, LanduseArea, Point2D } from '../types/map';
 import { tessellatePolygonConformal } from './terrainTessellation';
 import {
@@ -53,6 +53,8 @@ export class GroundRenderer {
   private waterMaterial: THREE.MeshStandardMaterial;
 
   private landuseMaterials: Record<string, THREE.Material> = {};
+  // Whether landuse overlays are currently hidden (satellite view shown).
+  private landuseVisible = true;
 
   private currentElevation: ElevationGrid | null = null;
   private currentExaggeration = 1.0;
@@ -61,6 +63,8 @@ export class GroundRenderer {
   private currentCenter: GeoPoint | null = null;
   private currentRadius = 1200;
   private currentTerrainSize = 2600;
+  private currentSatelliteQuality: import('../types/saveGame').SatelliteQuality = 'balanced';
+  private satelliteCameraTracking = false;
 
   // Water animation throttle
   private lastWaterUpdateTime = 0;
@@ -269,7 +273,7 @@ export class GroundRenderer {
     }
 
     if (this.isSatelliteActive && this.currentCenter) {
-      this.setSatelliteOverlay(true, this.currentCenter, this.currentRadius);
+      this.setSatelliteOverlay(true, this.currentSatelliteQuality, this.currentCenter, this.currentRadius);
     }
   }
 
@@ -281,9 +285,32 @@ export class GroundRenderer {
     this.lightingBlend = 0;
   }
 
-  public async setSatelliteOverlay(active: boolean, center?: GeoPoint, radius?: number) {
+  /**
+   * Tracking point for the satellite focal bands (world X/Z of the camera
+   * target). When the satellite overlay is active and the player pans beyond a
+   * threshold, the sharpest tile bands re-burn around the camera.
+   */
+  public setSatelliteFollowPoint(x: number, z: number) {
+    if (!this.isSatelliteActive) return;
+    if (!this.satelliteCameraTracking) {
+      this.satelliteCameraTracking = true;
+      updateSatelliteCamera(x, z); // prime with the first position
+    }
+    if (shouldReburnSatellite(x, z)) {
+      updateSatelliteCamera(x, z);
+    }
+  }
+
+  public async setSatelliteOverlay(
+    active: boolean,
+    quality: import('../types/saveGame').SatelliteQuality = 'balanced',
+    center?: GeoPoint,
+    radius?: number
+  ) {
     this.isSatelliteActive = active;
+    this.satelliteCameraTracking = false; // re-anchor the follow point on next frame
     if (center) this.currentCenter = center;
+    this.currentSatelliteQuality = quality;
     if (radius) {
       this.currentRadius = radius;
       // IMPORTANT: do NOT recompute currentTerrainSize here. It must equal the
@@ -297,16 +324,11 @@ export class GroundRenderer {
 
     if (active && this.currentCenter) {
       try {
-        const tex = await loadSatelliteTexture(this.currentCenter, this.currentTerrainSize);
+        const tex = await loadSatelliteTexture(this.currentCenter, this.currentTerrainSize, this.currentSatelliteQuality);
         if (this.terrainMesh && this.isSatelliteActive) {
           this.groundMaterial.map = tex;
           this.groundMaterial.color.setHex(0xffffff);
           this.groundMaterial.needsUpdate = true;
-
-          // Fade solid vegetation overlays to reveal real satellite trees and landscape
-          if (this.landuseMaterials.park) (this.landuseMaterials.park as any).opacity = 0.25;
-          if (this.landuseMaterials.forest) (this.landuseMaterials.forest as any).opacity = 0.25;
-          if (this.landuseMaterials.grass) (this.landuseMaterials.grass as any).opacity = 0.25;
         }
       } catch (err) {
         console.warn('Failed loading satellite texture overlay:', err);
@@ -315,12 +337,23 @@ export class GroundRenderer {
       this.groundMaterial.map = this.baseGroundTexture;
       this.groundMaterial.color.setHex(0x858e99);
       this.groundMaterial.needsUpdate = true;
-
-      // Restore solid landuse overlays
-      if (this.landuseMaterials.park) (this.landuseMaterials.park as any).opacity = 1.0;
-      if (this.landuseMaterials.forest) (this.landuseMaterials.forest as any).opacity = 1.0;
-      if (this.landuseMaterials.grass) (this.landuseMaterials.grass as any).opacity = 1.0;
     }
+
+    // Satellite imagery replaces the procedural map layers: hide the landuse
+    // polygons (grass/forest/park/water) while it is shown. (The old material
+    // opacity "fade" was a no-op — these materials aren't transparent.)
+    this.setLanduseVisible(!active);
+  }
+
+  /**
+   * Shows/hides every landuse overlay mesh (grass, forest, park, water...).
+   * Kept as a flag so a later rebuildLanduse re-applies the current state.
+   */
+  public setLanduseVisible(visible: boolean) {
+    this.landuseVisible = visible;
+    this.group.children.forEach((child) => {
+      if (child.userData?.isLanduse) child.visible = visible;
+    });
   }
 
   /**
@@ -404,6 +437,9 @@ export class GroundRenderer {
         // Skip degenerate polygon
       }
     }
+
+    // A rebuild after a satellite toggle must honour the current hidden state.
+    this.setLanduseVisible(this.landuseVisible);
   }
 
   public setWireframe(show: boolean) {

@@ -1,0 +1,10 @@
+[2m14:39:18[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [33mwarning: [33mDuplicate member "labelGroup" in class body[33m
+66 |    private labelMaterials: THREE.MeshBasicMaterial[] = [];
+67 |    private showStreetLabels = false;
+68 |    private labelGroup = new THREE.Group();
+   |            ^
+69 |  
+70 |    /**
+[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mC:/Users/aeryt/Documents/TERMINUS/src/render/RoadRenderer.ts[39m

@@ -19,6 +19,7 @@ interface GameCanvasProps {
   showBricks: boolean;
   showLanduse: boolean;
   showSatelliteOverlay?: boolean;
+  satelliteQuality?: import('../types/saveGame').SatelliteQuality;
   selectedSquadId?: string | null;
   selectedVehicleId?: string | null;
   onSelectBuilding: (building: BuildingPolygon | null) => void;
@@ -52,6 +53,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   showBricks,
   showLanduse,
   showSatelliteOverlay = false,
+  satelliteQuality = 'balanced',
   selectedSquadId,
   selectedVehicleId,
   onSelectBuilding,
@@ -246,9 +248,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
 
   useEffect(() => {
     if (sceneRef.current) {
-      sceneRef.current.setSatelliteOverlay(showSatelliteOverlay);
+      sceneRef.current.setSatelliteOverlay(showSatelliteOverlay, satelliteQuality);
     }
-  }, [showSatelliteOverlay]);
+  }, [showSatelliteOverlay, satelliteQuality]);
 
   useEffect(() => {
     if (sceneRef.current && mapData) {

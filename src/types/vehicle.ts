@@ -151,6 +151,19 @@ export interface WorldVehicle {
   // grid's revision and the vehicle re-routes immediately instead of driving a
   // stale route into new walls.
   routeRevision?: number;
+
+  // Length (metres) of the final leg of the current route that runs OFF the
+  // road network, from the last road waypoint to targetPos. Vehicles drive it
+  // at a reduced speed and never enter building/water footprints.
+  offRoadLegDistance?: number;
+
+  // True when the vehicle stopped short of its ordered destination because the
+  // last off-road step was blocked by a building/water footprint (e.g. an HQ or
+  // depot right-click, whose target point lies inside the building). The vehicle
+  // has reached the nearest drivable point and should be treated as PARKED so
+  // downstream logic (deposit, dismount, queue-dispatch) can take over instead
+  // of waiting forever for it to reach an unreachable targetPos.
+  reachBlocked?: boolean;
 }
 
 

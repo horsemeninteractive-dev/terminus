@@ -385,6 +385,8 @@ export function dismountSquadFromVehicle(
     autoDepotReturn: false,
     autoScavengeBuildingId: null,
     autoScavengeBuildingName: null,
+    offRoadLegDistance: 0,
+    reachBlocked: false,
   };
 
   // Place squad just to the side of the vehicle
@@ -425,7 +427,17 @@ export function orderVehicleRoadTravel(
   // Keep the final road approach outside the destination footprint. The road
   // graph supplies the route; the simulation validates every step against map
   // obstacles before accepting movement.
-  const waypoints = route.length > 1 ? route : [roadGraph.findClosestPointOnRoad(vehicle.position).point];
+  const baseWaypoints = route.length > 1 ? route : [roadGraph.findClosestPointOnRoad(vehicle.position).point];
+
+  // Off-road final leg: cars stay on the road as far as they can and only leave
+  // it to reach an off-road destination (e.g. a structure with no road access).
+  // The vehicle drives that leg at a reduced speed (see updateVehiclesTick).
+  const roadEnd = baseWaypoints[baseWaypoints.length - 1];
+  const offRoadLegDistance = Math.hypot(roadEnd.x - targetPos.x, roadEnd.z - targetPos.z);
+  const waypoints =
+    offRoadLegDistance > 2.0
+      ? [...baseWaypoints, { x: targetPos.x, z: targetPos.z }]
+      : baseWaypoints;
 
   return {
     ...vehicle,
@@ -433,8 +445,15 @@ export function orderVehicleRoadTravel(
     roadPathWaypoints: waypoints,
     currentWaypointIndex: 0,
     targetPos,
+    offRoadLegDistance: offRoadLegDistance > 2.0 ? offRoadLegDistance : 0,
+    // A fresh order: the vehicle is no longer stopped short of a blocked target.
+    reachBlocked: false,
   };
 }
+
+// Off-road speed multiplier: leaving the road network costs the vehicle 40%
+// of its top speed, so road-first routing is almost always worth it.
+const OFF_ROAD_SPEED_FACTOR = 0.6;
 
 // ==========================================
 // 4. Vehicle Real-Time Simulation Tick (§8)
@@ -545,13 +564,16 @@ export function updateVehiclesTick(
     // Invalidate a stale route: if freestanding walls/towers/gates were placed
     // or removed since this route was computed, drop the cached waypoints and
     // re-route so the vehicle immediately goes around new construction instead
-    // of driving into it and stalling at the contact check. A route with no
-    // recorded revision (freshly ordered) is considered stale once so its very
-    // first tick is computed against the current obstacle layout.
+    // of driving into it and stalling at the contact check. Only routes that
+    // were STAMPED with an older revision are invalidated — a freshly ordered
+    // route (no stamp yet) drives immediately, otherwise every new order would
+    // dead-stop its first tick whenever no freestanding obstacles exist to
+    // trigger a re-route.
     if (
       current.isMoving &&
       current.roadPathWaypoints.length > 0 &&
       current.currentFuel > 0 &&
+      current.routeRevision !== undefined &&
       current.routeRevision !== freestandingRevision
     ) {
       const stalled = {
@@ -582,7 +604,14 @@ export function updateVehiclesTick(
         const distToWp = Math.hypot(dx, dz);
 
         if (distToWp > 0.8) {
-          const moveStep = Math.min(distToWp, current.speed * effectiveDeltaSec);
+          // Cars stay on the road network as long as possible and only leave it
+          // for the final leg (the appended off-road waypoint). Off-road driving
+          // is slower — a speed penalty for leaving the asphalt.
+          const isOffRoadStep =
+            (current.offRoadLegDistance || 0) > 0 &&
+            current.currentWaypointIndex === current.roadPathWaypoints.length - 1;
+          const stepSpeed = isOffRoadStep ? current.speed * OFF_ROAD_SPEED_FACTOR : current.speed;
+          const moveStep = Math.min(distToWp, stepSpeed * effectiveDeltaSec);
           const moveFraction = moveStep / distToWp;
 
           const newX = current.position.x + dx * moveFraction;
@@ -592,6 +621,22 @@ export function updateVehiclesTick(
           // current position toward the original destination so the vehicle finds
           // a drivable path around the obstruction.
           if (isBlockedByMap({ x: newX, z: newZ }, mapData, freestandingPolys)) {
+            if (isOffRoadStep) {
+              // The off-road leg runs into a building/water footprint — the
+              // destination itself is not drivable (e.g. an order targeted at a
+              // point inside the HQ/buildings, which vehicles must never enter).
+              // Stop short at the nearest drivable point and treat the vehicle
+              // as ARRIVED: clear targetPos and mark reachBlocked so App-side
+              // parked logic (deposit dismount, queue dispatch) takes over
+              // instead of considering the vehicle perpetually en route.
+              current.isMoving = false;
+              current.roadPathWaypoints = [];
+              current.currentWaypointIndex = 0;
+              current.offRoadLegDistance = 0;
+              current.targetPos = null;
+              current.reachBlocked = true;
+              return current;
+            }
             if (roadGraph && current.targetPos && current.currentFuel > 0) {
               const stalled = {
                 ...current,
@@ -609,6 +654,7 @@ export function updateVehiclesTick(
             current.targetPos = null;
             current.roadPathWaypoints = [];
             current.currentWaypointIndex = 0;
+            current.offRoadLegDistance = 0;
             return current;
           }
           const newRot = Math.atan2(dx, dz);
@@ -685,6 +731,7 @@ export function updateVehiclesTick(
             current.isMoving = false;
             current.roadPathWaypoints = [];
             current.currentWaypointIndex = 0;
+            current.offRoadLegDistance = 0;
             const finalPos = current.targetPos;
             current.targetPos = null;
 

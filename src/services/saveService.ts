@@ -148,6 +148,8 @@ export class SaveGameService {
       worldVehicles?: any[];
       dangerLevel?: number;
       timeOfDay?: string;
+      satelliteOverlay?: boolean;
+      satelliteQuality?: import('../types/saveGame').SatelliteQuality;
       scenarioSettings?: any;
     },
     saveIdToOverwrite?: string
@@ -224,6 +226,8 @@ export class SaveGameService {
         worldVehicles: payload.worldVehicles,
         dangerLevel: payload.dangerLevel,
         timeOfDay: payload.timeOfDay,
+        satelliteOverlay: payload.satelliteOverlay,
+        satelliteQuality: payload.satelliteQuality,
       },
     };
 

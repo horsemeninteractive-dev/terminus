@@ -78,9 +78,9 @@ export const MedicalTriageModal: React.FC<MedicalTriageModalProps> = ({
  : 5
  : 0;
 
- // Find Infirmary Buildings
+ // Find Infirmary Buildings (canonical Medbay or legacy Infirmary Clinic)
  const infirmaries = (Array.from(adaptedBuildings.values()) as AdaptedBuilding[]).filter(
- (b) => b.typeId === 'infirmary_clinic' && b.constructionStatus === 'completed'
+ (b) => (b.typeId === 'infirmary_clinic' || b.typeId === 'medbay') && b.constructionStatus === 'completed'
  );
  const hasOperationalMedbay = infirmaries.length > 0;
 

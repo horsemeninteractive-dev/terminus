@@ -16,6 +16,7 @@ import {
   HeartPulse,
   Home,
   Layers,
+  Lock,
   MoreHorizontal,
   Pickaxe,
   Plus,
@@ -44,6 +45,9 @@ import {
   FunctionalCategory,
   SettlementState,
 } from '../types/settlement';
+import {
+  getBuildingLockStatus,
+} from '../services/researchService';
 import {
   WorkerJobTypeId,
   WorkerPriorityLevel,
@@ -120,6 +124,60 @@ const BUILDING_CATEGORY_TABS: BuildingCategoryTab[] = [
     categories: ['decorative', 'other'],
   },
 ];
+
+// Legacy alias ids that duplicate a canonical IFZ building (e.g. 'Infirmary
+// Clinic' is just Medbay under an old name). They stay fully functional for
+// save compatibility but are hidden from the picker so the roster reads cleanly
+// against the IFZ reference (each facility appears once under its real name).
+const LEGACY_ALIAS_TYPE_IDS = new Set<FunctionalBuildingTypeId>([
+  'shelter_bunkhouse',
+  'storage_depot',
+  'greenhouse_hydro',
+  'food_pantry',
+  'workshop_forge',
+  'timber_mill',
+  'scrap_smelter',
+  'guard_watchtower',
+  'barricade_gatehouse',
+  'armory_cache',
+  'infirmary_clinic',
+  'community_hall',
+  'comms_relay',
+  'research_lab',
+]);
+
+// Canonical freestanding fortifications (walls, gates, towers) shown in the
+// Fortifications panel — matches the IFZ wall/tower roster plus the Terminus
+// original Floodlight Tower.
+const FORTIFICATION_TYPE_IDS: FunctionalBuildingTypeId[] = [
+  'barbed_wire',
+  'wooden_palisade',
+  'metal_fence',
+  'brick_wall',
+  'fortified_wall',
+  'wooden_gate',
+  'metal_gate',
+  'fortified_gate',
+  'wooden_tower',
+  'metal_tower',
+  'fortified_tower',
+  'floodlight_tower',
+];
+
+const FORTIFICATION_ICONS: Partial<Record<FunctionalBuildingTypeId, LucideIcon>> = {
+  barbed_wire: ShieldAlert,
+  wooden_palisade: Shield,
+  metal_fence: Shield,
+  brick_wall: Shield,
+  fortified_wall: Construction,
+  wooden_gate: Home,
+  metal_gate: Home,
+  fortified_gate: Construction,
+  wooden_tower: ShieldAlert,
+  metal_tower: ShieldAlert,
+  fortified_tower: ShieldAlert,
+  floodlight_tower: Zap,
+};
 
 const JOB_ICONS: Record<WorkerJobTypeId, LucideIcon> = {
   builder: Hammer,
@@ -199,7 +257,10 @@ export const TacticalActionBar: React.FC<TacticalActionBarProps> = ({
   const currentCategoryTab = BUILDING_CATEGORY_TABS.find((t) => t.id === selectedBuildingTab) || BUILDING_CATEGORY_TABS[0];
   const tabBuildings = useMemo(() => {
     return Object.values(FUNCTIONAL_BUILDING_DEFINITIONS).filter((def) => {
-      return currentCategoryTab.categories.includes(def.category);
+      return (
+        currentCategoryTab.categories.includes(def.category) &&
+        !LEGACY_ALIAS_TYPE_IDS.has(def.id)
+      );
     });
   }, [selectedBuildingTab, currentCategoryTab]);
 
@@ -207,7 +268,7 @@ export const TacticalActionBar: React.FC<TacticalActionBarProps> = ({
     <div
       id="tactical-bottom-action-bar"
       ref={containerRef}
-      className="fixed bottom-3 sm:bottom-4 left-3 sm:left-4 z-40 flex flex-col select-none pointer-events-auto max-w-[calc(100vw-1.5rem)] font-sans"
+      className="fixed bottom-3 sm:bottom-4 left-3 sm:left-4 z-[46] flex flex-col select-none pointer-events-auto max-w-[calc(100vw-1.5rem)] font-sans"
     >
       {/* ------------------------------------------------------------- */}
       {/* 1. BUILDINGS PANEL (MATCHING SCREENSHOT 1021)                 */}
@@ -262,26 +323,60 @@ export const TacticalActionBar: React.FC<TacticalActionBarProps> = ({
                 </div>
               ) : (
                 tabBuildings.map((def) => {
+                  const lock = getBuildingLockStatus(settlement, def.researchRequirement);
+                  const locked = !lock.unlocked;
                   return (
                     <button
                       key={def.id}
+                      disabled={locked}
                       onClick={() => {
-                        onSelectAdaptationType(def.id);
+                        // IFZ: freestanding-only facilities (fields, greenhouses,
+                        // canneries) are placed on open ground, not adapted.
+                        if (def.adaptationAllowed) {
+                          onSelectAdaptationType(def.id);
+                        } else {
+                          onSelectFreestandingBlueprint(def.id);
+                        }
                         setActivePanel(null);
                         soundEngine.playClick();
                       }}
-                      className="w-full flex items-center justify-between p-2.5 bg-[#0F141D] hover:bg-[#182232] border border-[#1E293B] hover:border-[#10B981] transition-all text-left group min-h-[46px] touch-manipulation"
+                      title={locked ? `Requires research: ${lock.requiredName}` : undefined}
+                      className={`w-full flex items-center justify-between p-2.5 border transition-all text-left min-h-[46px] touch-manipulation ${
+                        locked
+                          ? 'bg-[#0C0F14] border-[#1A212C] opacity-60 cursor-not-allowed'
+                          : 'bg-[#0F141D] hover:bg-[#182232] border-[#1E293B] hover:border-[#10B981] group'
+                      }`}
                     >
                       <div className="flex items-center gap-2.5 min-w-0">
-                        <div className="w-6 h-6 rounded bg-[#1A2332] border border-[#2D3B4E] flex items-center justify-center shrink-0">
-                          <Plus className="w-3.5 h-3.5 text-[#10B981]" />
+                        <div className={`w-6 h-6 rounded border flex items-center justify-center shrink-0 ${
+                          locked
+                            ? 'bg-[#14181F] border-[#232B36]'
+                            : 'bg-[#1A2332] border-[#2D3B4E] group-hover:border-[#10B981]'
+                        }`}>
+                          {locked ? (
+                            <Lock className="w-3.5 h-3.5 text-[#64748B]" />
+                          ) : (
+                            <Plus className="w-3.5 h-3.5 text-[#10B981]" />
+                          )}
                         </div>
-                        <span className="font-heading font-black text-xs text-[#E2E8F0] group-hover:text-white uppercase tracking-wider truncate">
+                        <span className={`font-heading font-black text-xs uppercase tracking-wider truncate ${
+                          locked ? 'text-[#94A3B8]' : 'text-[#E2E8F0] group-hover:text-white'
+                        }`}>
                           {def.name}
                         </span>
                       </div>
-                      <div className="text-[10px] font-mono text-[#64748B] group-hover:text-[#94A3B8] shrink-0 ml-2">
-                        {def.adaptationCost.wood}W / {def.adaptationCost.metal}M / {def.adaptationCost.bricks}B
+                      <div className="shrink-0 ml-2 text-right">
+                        {locked ? (
+                          <span className="text-[9px] font-mono text-[#B45309] uppercase tracking-wide whitespace-nowrap">
+                            Requires {lock.requiredName}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-mono text-[#64748B] group-hover:text-[#94A3B8] whitespace-nowrap">
+                            {def.adaptationAllowed
+                              ? `${def.adaptationCost.wood}W / ${def.adaptationCost.metal}M / ${def.adaptationCost.bricks}B`
+                              : `PLACE ${def.freestandingCost.wood}W / ${def.freestandingCost.metal}M / ${def.freestandingCost.bricks}B`}
+                          </span>
+                        )}
                       </div>
                     </button>
                   );
@@ -310,140 +405,49 @@ export const TacticalActionBar: React.FC<TacticalActionBarProps> = ({
           </div>
 
           <div className="flex flex-col gap-1 p-1 max-h-72 overflow-y-auto">
-            <button
-              onClick={() => {
-                onSelectFreestandingBlueprint('wooden_palisade');
-                setActivePanel(null);
-                soundEngine.playClick();
-              }}
-              className="flex items-center gap-2.5 p-2 bg-[#0F141D] hover:bg-[#1A2332] border border-[#1E293B] hover:border-[#10B981] transition-all text-left"
-            >
-              <Shield className="w-4 h-4 text-[#F59E0B] shrink-0" />
-              <div className="flex flex-col">
-                <span className="font-heading font-bold text-xs text-white uppercase">Wooden Palisade Wall</span>
-                <span className="font-mono text-[9px] text-[#94A3B8]">Cost: 20 Wood | Perimeter Barrier</span>
-              </div>
-            </button>
-
-            <button
-              onClick={() => {
-                onSelectFreestandingBlueprint('brick_wall');
-                setActivePanel(null);
-                soundEngine.playClick();
-              }}
-              className="flex items-center gap-2.5 p-2 bg-[#0F141D] hover:bg-[#1A2332] border border-[#1E293B] hover:border-[#10B981] transition-all text-left"
-            >
-              <Shield className="w-4 h-4 text-[#EA580C] shrink-0" />
-              <div className="flex flex-col">
-                <span className="font-heading font-bold text-xs text-white uppercase">Solid Brick Wall</span>
-                <span className="font-mono text-[9px] text-[#94A3B8]">Cost: 35 Bricks, 5 Wood, 5 Metal</span>
-              </div>
-            </button>
-
-            <button
-              onClick={() => {
-                onSelectFreestandingBlueprint('fortified_wall');
-                setActivePanel(null);
-                soundEngine.playClick();
-              }}
-              className="flex items-center gap-2.5 p-2 bg-[#0F141D] hover:bg-[#1A2332] border border-[#1E293B] hover:border-[#10B981] transition-all text-left"
-            >
-              <Construction className="w-4 h-4 text-[#E2E8F0] shrink-0" />
-              <div className="flex flex-col">
-                <span className="font-heading font-bold text-xs text-white uppercase">Reinforced Concrete Wall</span>
-                <span className="font-mono text-[9px] text-[#94A3B8]">Cost: 50 Bricks, 30 Metal, 10 Wood</span>
-              </div>
-            </button>
-
-            <button
-              onClick={() => {
-                onSelectFreestandingBlueprint('metal_fence');
-                setActivePanel(null);
-                soundEngine.playClick();
-              }}
-              className="flex items-center gap-2.5 p-2 bg-[#0F141D] hover:bg-[#1A2332] border border-[#1E293B] hover:border-[#10B981] transition-all text-left"
-            >
-              <Shield className="w-4 h-4 text-[#94A3B8] shrink-0" />
-              <div className="flex flex-col">
-                <span className="font-heading font-bold text-xs text-white uppercase">Steel Mesh Fence</span>
-                <span className="font-mono text-[9px] text-[#94A3B8]">Cost: 30 Metal, 5 Wood, 5 Bricks</span>
-              </div>
-            </button>
-
-            <button
-              onClick={() => {
-                onSelectFreestandingBlueprint('wooden_gate');
-                setActivePanel(null);
-                soundEngine.playClick();
-              }}
-              className="flex items-center gap-2.5 p-2 bg-[#0F141D] hover:bg-[#1A2332] border border-[#1E293B] hover:border-[#10B981] transition-all text-left"
-            >
-              <Home className="w-4 h-4 text-[#10B981] shrink-0" />
-              <div className="flex flex-col">
-                <span className="font-heading font-bold text-xs text-white uppercase">Fortified Wooden Gate</span>
-                <span className="font-mono text-[9px] text-[#94A3B8]">Cost: 35 Wood, 10 Metal | Passable Gate</span>
-              </div>
-            </button>
-
-            <button
-              onClick={() => {
-                onSelectFreestandingBlueprint('metal_gate');
-                setActivePanel(null);
-                soundEngine.playClick();
-              }}
-              className="flex items-center gap-2.5 p-2 bg-[#0F141D] hover:bg-[#1A2332] border border-[#1E293B] hover:border-[#10B981] transition-all text-left"
-            >
-              <Home className="w-4 h-4 text-[#38BDF8] shrink-0" />
-              <div className="flex flex-col">
-                <span className="font-heading font-bold text-xs text-white uppercase">Heavy Steel Gate</span>
-                <span className="font-mono text-[9px] text-[#94A3B8]">Cost: 45 Metal, 10 Bricks, 5 Wood</span>
-              </div>
-            </button>
-
-            <button
-              onClick={() => {
-                onSelectFreestandingBlueprint('wooden_tower');
-                setActivePanel(null);
-                soundEngine.playClick();
-              }}
-              className="flex items-center gap-2.5 p-2 bg-[#0F141D] hover:bg-[#1A2332] border border-[#1E293B] hover:border-[#10B981] transition-all text-left"
-            >
-              <ShieldAlert className="w-4 h-4 text-[#F59E0B] shrink-0" />
-              <div className="flex flex-col">
-                <span className="font-heading font-bold text-xs text-white uppercase">Guard Watchtower</span>
-                <span className="font-mono text-[9px] text-[#94A3B8]">Cost: 45 Wood, 10 Metal, 10 Bricks</span>
-              </div>
-            </button>
-
-            <button
-              onClick={() => {
-                onSelectFreestandingBlueprint('metal_tower');
-                setActivePanel(null);
-                soundEngine.playClick();
-              }}
-              className="flex items-center gap-2.5 p-2 bg-[#0F141D] hover:bg-[#1A2332] border border-[#1E293B] hover:border-[#10B981] transition-all text-left"
-            >
-              <ShieldAlert className="w-4 h-4 text-[#38BDF8] shrink-0" />
-              <div className="flex flex-col">
-                <span className="font-heading font-bold text-xs text-white uppercase">Steel Truss Tower</span>
-                <span className="font-mono text-[9px] text-[#94A3B8]">Cost: 55 Metal, 15 Wood, 15 Bricks</span>
-              </div>
-            </button>
-
-            <button
-              onClick={() => {
-                onSelectFreestandingBlueprint('floodlight_tower');
-                setActivePanel(null);
-                soundEngine.playClick();
-              }}
-              className="flex items-center gap-2.5 p-2 bg-[#0F141D] hover:bg-[#1A2332] border border-[#1E293B] hover:border-[#10B981] transition-all text-left"
-            >
-              <Zap className="w-4 h-4 text-[#FBBF24] shrink-0" />
-              <div className="flex flex-col">
-                <span className="font-heading font-bold text-xs text-white uppercase">Floodlight Tower</span>
-                <span className="font-mono text-[9px] text-[#94A3B8]">Cost: 40 Metal, 10 Wood, 10 Bricks | Night Vision</span>
-              </div>
-            </button>
+            {FORTIFICATION_TYPE_IDS.map((typeId) => {
+              const def = FUNCTIONAL_BUILDING_DEFINITIONS[typeId];
+              if (!def) return null;
+              const Icon = FORTIFICATION_ICONS[typeId] || Shield;
+              const lock = getBuildingLockStatus(settlement, def.researchRequirement);
+              const locked = !lock.unlocked;
+              const cost = def.freestandingCost;
+              return (
+                <button
+                  key={typeId}
+                  disabled={locked}
+                  onClick={() => {
+                    onSelectFreestandingBlueprint(typeId);
+                    setActivePanel(null);
+                    soundEngine.playClick();
+                  }}
+                  title={locked ? `Requires research: ${lock.requiredName}` : undefined}
+                  className={`flex items-center gap-2.5 p-2 border transition-all text-left ${
+                    locked
+                      ? 'bg-[#0C0F14] border-[#1A212C] opacity-60 cursor-not-allowed'
+                      : 'bg-[#0F141D] hover:bg-[#1A2332] border-[#1E293B] hover:border-[#10B981]'
+                  }`}
+                >
+                  <Icon className="w-4 h-4 shrink-0" style={{ color: def.badgeColor }} />
+                  <div className="flex flex-col min-w-0">
+                    <span
+                      className={`font-heading font-bold text-xs uppercase truncate ${
+                        locked ? 'text-[#94A3B8]' : 'text-white'
+                      }`}
+                    >
+                      {def.name}
+                    </span>
+                    {locked ? (
+                      <span className="font-mono text-[9px] text-[#B45309]">Requires {lock.requiredName}</span>
+                    ) : (
+                      <span className="font-mono text-[9px] text-[#94A3B8] truncate">
+                        Cost: {cost.wood}W / {cost.metal}M / {cost.bricks}B
+                      </span>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
           </div>
         </div>
       )}

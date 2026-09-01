@@ -233,7 +233,10 @@ export function findNearestStorageDropoff(
         : Object.values(settlement.adaptedBuildings);
 
     for (const bldg of adaptedList as any[]) {
-      if (bldg.typeId === 'storage_depot' && bldg.constructionStatus === 'completed') {
+      if (
+        (bldg.typeId === 'storage_depot' || bldg.typeId === 'warehouse') &&
+        bldg.constructionStatus === 'completed'
+      ) {
         const center =
           bldg.center ||
           (buildings ? buildings.find((b) => String(b.id) === String(bldg.buildingId))?.center : null);
@@ -253,10 +256,13 @@ export function findNearestStorageDropoff(
     }
   }
 
-  // Check freestanding storage depots
+  // Check freestanding storage depots (canonical Warehouse or legacy alias)
   if (settlement.freestandingBuildings) {
     for (const bldg of settlement.freestandingBuildings) {
-      if (bldg.typeId === 'storage_depot' && bldg.position) {
+      if (
+        (bldg.typeId === 'storage_depot' || bldg.typeId === 'warehouse') &&
+        bldg.position
+      ) {
         const dist = Math.hypot(pos.x - bldg.position.x, pos.z - bldg.position.z);
         if (!best || dist < best.dist) {
           best = {

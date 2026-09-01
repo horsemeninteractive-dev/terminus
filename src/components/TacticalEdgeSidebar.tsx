@@ -365,15 +365,15 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  setSquadFormError(null);
  if (availableLeaders.length > 0) {
  setNewSquadLeaderId(availableLeaders[0].id);
+ } else {
+ setNewSquadLeaderId('');
  }
  }}
- disabled={atSquadCapacity || availableLeaders.length === 0}
+ disabled={atSquadCapacity}
  title={
  atSquadCapacity
  ? 'Squad capacity reached — disband a squad first'
- : availableLeaders.length === 0
- ? 'No available named survivors to lead'
- : 'Muster a new tactical squad'
+ : 'Muster a new tactical squad (leaderless all-recruit squads allowed)'
  }
  className="px-2.5 py-1.5 bg-[#17202B] hover:bg-[#202C3C] border border-[#CBD5E1]/70 hover:border-[#CBD5E1] text-[10px] font-heading font-bold text-[#E8E8E8] uppercase transition-colors shrink-0 disabled:opacity-40 disabled:pointer-events-none"
  >
@@ -385,8 +385,10 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  onSubmit={(e) => {
  e.preventDefault();
  setSquadFormError(null);
- if (!newSquadLeaderId) {
- setSquadFormError('SELECT A NAMED SQUAD LEADER.');
+ if (newSquadGeneralCount > (newSquadLeaderId ? 3 : 4)) {
+ setSquadFormError(
+ 'MAX SQUAD SIZE IS 4 (LEADER + 3, OR 4 RECRUITS WITHOUT A NAMED LEADER).'
+ );
  return;
  }
  if (newSquadGeneralCount > freeGeneralWorkers) {
@@ -450,8 +452,10 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  onChange={(e) => setNewSquadLeaderId(e.target.value)}
  className="w-full px-2 py-1 text-[10px] font-mono bg-[#0E1014] border border-[#262C36] text-[#E8E8E8] focus:outline-none focus:border-[#CBD5E1]"
  >
- <option value="" disabled>
- -- SELECT LEADER --
+ <option value="">
+ {availableLeaders.length > 0
+ ? '-- NO LEADER (ALL-RECRUIT 4-MAN) --'
+ : '-- GENERIC FIELD LEADER --'}
  </option>
  {availableLeaders.map((s) => (
  <option key={s.id} value={s.id}>
@@ -459,12 +463,17 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  </option>
  ))}
  </select>
+ {availableLeaders.length === 0 && (
+ <span className="text-[9px] font-mono text-[#FBBF24]">
+ LEADERLESS SQUADS ALLOWED
+ </span>
+ )}
  </div>
  </div>
 
  <div className="flex items-center justify-between gap-2 px-2 py-1.5 bg-[#0E1014] border border-[#1E242E]">
  <span className="text-[9px] font-mono text-[#94A3B8]">
- CIVILIAN RECRUITS (0–3)
+ CIVILIAN RECRUITS (0–{newSquadLeaderId ? 3 : 4})
  </span>
  <div className="flex items-center gap-2">
  <button
@@ -482,11 +491,15 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  type="button"
  onClick={() =>
  setNewSquadGeneralCount(
- Math.min(3, Math.min(freeGeneralWorkers, newSquadGeneralCount + 1))
+ Math.min(
+ newSquadLeaderId ? 3 : 4,
+ Math.min(freeGeneralWorkers, newSquadGeneralCount + 1)
+ )
  )
  }
  disabled={
- newSquadGeneralCount >= 3 || newSquadGeneralCount >= freeGeneralWorkers
+ newSquadGeneralCount >= (newSquadLeaderId ? 3 : 4) ||
+ newSquadGeneralCount >= freeGeneralWorkers
  }
  className="px-1.5 py-0.5 bg-[#1A1E24] border border-[#262C36] text-[#94A3B8] hover:text-[#E8E8E8] disabled:opacity-30"
  >

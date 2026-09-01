@@ -66,6 +66,17 @@ export class RoadRenderer {
   private labelMaterials: THREE.MeshBasicMaterial[] = [];
   private showStreetLabels = false;
 
+  /**
+   * Toggles the road surface/curb/marking meshes without touching the street
+   * name labels (they live in their own group and follow showStreetLabels).
+   * Used so satellite imagery can replace the vector road layer entirely.
+   */
+  public setMeshesVisible(visible: boolean) {
+    this.group.children.forEach((child) => {
+      if (child !== this.labelGroup) child.visible = visible;
+    });
+  }
+
   constructor() {
     this.group.name = 'RoadsGroup';
     this.labelGroup.name = 'RoadLabelsGroup';

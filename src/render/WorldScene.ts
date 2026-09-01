@@ -21,6 +21,7 @@ import { RoadRenderer } from './RoadRenderer';
 import { SmokeParticleSystem } from './SmokeParticleSystem';
 import { VehicleRenderer } from './VehicleRenderer';
 import { VisionSource } from '../services/fogOfWarService';
+import type { SatelliteQuality } from '../types/saveGame';
 import { SkyAtmosphere } from './SkyAtmosphere';
 
 /** Yields to the browser so the loading overlay can animate between heavy build stages. */
@@ -261,6 +262,8 @@ export class WorldScene {
   public isScavengeViewActive = false;
   public scavengeFilterType = 'all';
   public showStreetLabels = false;
+  // Satellite overlay replaces the vector map layers (roads, landuse) while shown.
+  private satelliteOverlayActive = false;
   public labelDetailMode: 'detailed' | 'minimal' = 'minimal';
   private precomputedLootPins: PrecomputedLootPin[] = [];
 
@@ -509,6 +512,9 @@ export class WorldScene {
         cat,
       };
     });
+    // A satellite overlay restored from a save may pre-date the layer builds
+    // above (roads/landuse are recreated during load), so re-apply its state.
+    this.applySatelliteOverlayVisibility();
     onProgress?.(1, 'Deployment ready');
   }
 
@@ -690,6 +696,11 @@ export class WorldScene {
     );
     this.groundRenderer.updateLighting(groundGrade);
     this.fogOfWarRenderer.updateLighting(this.fog.color, mix(k0.ambientIntensity, k1.ambientIntensity), h);
+
+    // Window glow on textured facades: peak at midnight, zero by mid-morning/
+    // mid-afternoon so lit windows ramp in at dusk and out at dawn.
+    const nightGlow = Math.max(0, Math.cos(((h / 24) * Math.PI * 2)));
+    this.buildingRenderer.setNightGlow(nightGlow > 0.08 ? (nightGlow - 0.08) / 0.92 : 0);
   }
 
   private spawnTapFeedback(x: number, y: number, z: number, color = 0xe2e8f0) {
@@ -1529,10 +1540,22 @@ export class WorldScene {
     this.buildingRenderer.setEdgesVisible(visible);
   }
 
-  public setSatelliteOverlay(active: boolean) {
+  public setSatelliteOverlay(active: boolean, quality?: SatelliteQuality) {
+    this.satelliteOverlayActive = active;
     if (this.currentMapData) {
-      this.groundRenderer.setSatelliteOverlay(active, this.currentMapData.center, this.currentMapData.radius);
+      this.groundRenderer.setSatelliteOverlay(active, quality, this.currentMapData.center, this.currentMapData.radius);
     }
+    this.applySatelliteOverlayVisibility();
+  }
+
+  /**
+   * While satellite imagery is shown the procedural map layers underneath are
+   * hidden: road surface/curb/marking meshes (street name labels stay — they
+   * read perfectly on top of aerial imagery) and all landuse polygons.
+   */
+  private applySatelliteOverlayVisibility() {
+    this.roadRenderer.setMeshesVisible(!this.satelliteOverlayActive);
+    this.groundRenderer.setLanduseVisible(!this.satelliteOverlayActive);
   }
 
   public updateCombat(
@@ -1589,6 +1612,14 @@ export class WorldScene {
     this.combatRenderer.setSimulationPaused(paused);
     this.vehicleRenderer.setSimulationPaused(paused);
     this.markerRenderer.setSimulationPaused(paused);
+  }
+
+  /**
+   * Simulation clock speed (1/2/4) — forwarded to the combat renderer so worker
+   * stride/harvest animation cadence scales with time speed.
+   */
+  public setClockSpeed(speed: number) {
+    this.combatRenderer.setClockSpeed(speed);
   }
 
   public updateFogOfWar(
@@ -2072,6 +2103,13 @@ export class WorldScene {
 
     // Update Ground water caustics & animations
     this.groundRenderer.update(delta, now / 1000);
+
+    // Keep the satellite focal bands following the camera target (re-burn the
+    // canvas around the view if the player has panned far enough).
+    this.groundRenderer.setSatelliteFollowPoint(
+      this.cameraController.target.x,
+      this.cameraController.target.z
+    );
 
     // Update Smoke & Construction Visuals
     this.smokeSystem.update(delta, now / 1000);

@@ -26,10 +26,31 @@ import { BuildingPolygon, LanduseArea, Point2D } from '../types/map';
 import { TacticalSquadUnit, ZombieUnit } from '../types/combat';
 import { WorldVehicle } from '../types/vehicle';
 import { AdaptedBuilding } from '../types/settlement';
+import {
+  FUNCTIONAL_BUILDING_DEFINITIONS,
+  getBuildingWorkerSlots,
+} from '../data/functionalBuildings';
 import { soundEngine } from '../services/soundService';
+import { estimateSatelliteVram } from '../services/satelliteService';
 import { PushToTalkButton } from './PushToTalkButton';
 
 export type ScavengeLootFilter = 'all' | 'food' | 'medical' | 'weapons' | 'fuel' | 'materials' | 'assorted';
+
+const RESOURCE_LABELS: Record<string, string> = {
+  grain: 'Grain',
+  fresh_harvest: 'Harvest',
+  raw_meat: 'Meat',
+  mre_rations: 'Rations',
+  canned_goods: 'Canned',
+  fertilizer: 'Fertilizer',
+  wood: 'Wood',
+  metal: 'Metal',
+  bricks: 'Bricks',
+  tools: 'Tools',
+  fuel: 'Fuel',
+  ammo: 'Ammo',
+  beer: 'Beer',
+};
 
 interface TacticalMinimapWidgetProps {
   selectedBuilding: BuildingPolygon | null;
@@ -58,6 +79,8 @@ interface TacticalMinimapWidgetProps {
   onToggleStructureOutlines?: () => void;
   showSatelliteOverlay?: boolean;
   onToggleSatelliteOverlay?: () => void;
+  satelliteQuality?: import('../types/saveGame').SatelliteQuality;
+  onSatelliteQualityChange?: (quality: import('../types/saveGame').SatelliteQuality) => void;
   showLanduse?: boolean;
   onToggleLanduse?: () => void;
   labelDetailMode?: 'detailed' | 'minimal';
@@ -104,6 +127,8 @@ export const TacticalMinimapWidget: React.FC<TacticalMinimapWidgetProps> = ({
   onToggleStructureOutlines,
   showSatelliteOverlay = false,
   onToggleSatelliteOverlay,
+  satelliteQuality = 'balanced',
+  onSatelliteQualityChange,
   showLanduse = true,
   onToggleLanduse,
   labelDetailMode = 'minimal',
@@ -120,6 +145,24 @@ export const TacticalMinimapWidget: React.FC<TacticalMinimapWidgetProps> = ({
   isInitialPendingRadio = false,
   mapRadius = 4000,
 }) => {
+  // Staffing + production readout for the selected adapted facility: assigned
+  // workers vs size-based slots, and the current daily output rate (scaled by
+  // how fully the building is staffed, so it reflects what production will
+  // actually deliver).
+  const buildingDef = adaptedBuildingInfo
+    ? FUNCTIONAL_BUILDING_DEFINITIONS[adaptedBuildingInfo.typeId]
+    : null;
+  const staffSlots = adaptedBuildingInfo ? getBuildingWorkerSlots(adaptedBuildingInfo) : 0;
+  const staffCount = adaptedBuildingInfo
+    ? Math.min(adaptedBuildingInfo.assignedWorkers ?? 0, staffSlots)
+    : 0;
+  const staffRatio = staffSlots > 0 ? staffCount / staffSlots : 0;
+  const outputLines = (buildingDef?.outputs || []).map((o) => {
+    const rate = o.amountPerDay * staffRatio;
+    const label = RESOURCE_LABELS[o.resource] || o.resource;
+    return `+${rate >= 10 ? rate.toFixed(0) : rate.toFixed(1)} ${label}/day`;
+  });
+
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [isMinimized, setIsMinimized] = useState(false);
   const [isFilterMenuOpen, setIsFilterMenuOpen] = useState(false);
@@ -399,6 +442,14 @@ export const TacticalMinimapWidget: React.FC<TacticalMinimapWidgetProps> = ({
   const isHQ = selectedBuilding && hqBuildingId !== null && String(selectedBuilding.id) === String(hqBuildingId);
   const lat = 52.094;
 
+  // Satellite canvas footprint follows the terrain mesh extent (radius * 2.2,
+  // min 5000) — same formula GroundRenderer uses for currentTerrainSize.
+  const satelliteTerrainMeters = Math.max(5000, Math.round((mapRadius || 4000) * 2.2));
+  const vramBytes = (q: import('../types/saveGame').SatelliteQuality) =>
+    estimateSatelliteVram(q, satelliteTerrainMeters);
+  const formatVram = (bytes: number) =>
+    bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`;
+
   const lootCategories: { id: ScavengeLootFilter; label: string; icon: React.ReactNode; desc: string; color: string }[] = [
     { id: 'all', label: 'All Loot Types', icon: <PackageSearch className="w-3.5 h-3.5" />, desc: 'Show all unscavenged locations', color: '#10B981' },
     { id: 'food', label: 'Food & Rations', icon: <Apple className="w-3.5 h-3.5" />, desc: 'Supermarkets, groceries, dining', color: '#D97706' },
@@ -412,7 +463,7 @@ export const TacticalMinimapWidget: React.FC<TacticalMinimapWidgetProps> = ({
   return (
     <div
       id="tactical-minimap-widget"
-      className="fixed bottom-3 sm:bottom-4 right-3 sm:right-4 z-30 flex flex-col items-end gap-1.5 select-none pointer-events-auto"
+      className="fixed bottom-3 sm:bottom-4 right-3 sm:right-4 z-[44] flex flex-col items-end gap-1.5 select-none pointer-events-auto"
     >
       {/* ---------------- PUSH TO TALK BUTTON (Directly Above Minimap Panel) ---------------- */}
       {onOpenRadio && (
@@ -449,16 +500,25 @@ export const TacticalMinimapWidget: React.FC<TacticalMinimapWidgetProps> = ({
           </div>
 
           {/* Building Subtitle / Status */}
-          <div className="flex items-center justify-between text-[10px] font-mono text-[#64748B] pt-0.5 border-t border-[#1E293B]">
-            <span className="truncate">
-              {isHQ
-                ? 'Operational Central Base'
-                : adaptedBuildingInfo
-                ? `Levels: ${adaptedBuildingInfo.levels || 1} • Workers: ${adaptedBuildingInfo.assignedWorkers || 0}`
-                : selectedBuilding.type
-                ? selectedBuilding.type.toUpperCase()
-                : 'Unexplored / Raw Structure'}
-            </span>
+          <div className="text-[10px] font-mono text-[#64748B] pt-0.5 border-t border-[#1E293B]">
+            {isHQ ? (
+              <span className="truncate">Operational Central Base</span>
+            ) : adaptedBuildingInfo ? (
+              <div className="flex flex-col gap-0.5">
+                <span className="truncate">
+                  Levels: {adaptedBuildingInfo.levels || 1} • Staff: {staffCount}/{staffSlots}
+                </span>
+                {outputLines.length > 0 ? (
+                  <span className="truncate text-[#4BEFA8]">{outputLines.join(' • ')}</span>
+                ) : buildingDef?.outputs?.length ? (
+                  <span className="truncate text-[#94A3B8]">Unstaffed — no production</span>
+                ) : null}
+              </div>
+            ) : (
+              <span className="truncate">
+                {selectedBuilding.type ? selectedBuilding.type.toUpperCase() : 'Unexplored / Raw Structure'}
+              </span>
+            )}
           </div>
 
           {/* Quick Actions Bar if building selected */}
@@ -707,6 +767,49 @@ export const TacticalMinimapWidget: React.FC<TacticalMinimapWidgetProps> = ({
                       >
                         {showSatelliteOverlay ? 'ON' : 'OFF'}
                       </button>
+                    </div>
+                    {/* Satellite imagery quality tier (persisted in the save) */}
+                    <div className="flex flex-col gap-1.5 bg-[#0F141D] p-2 border border-[#1E293B]">
+                      <div className="flex items-center justify-between">
+                        <div className="flex flex-col">
+                          <span className="font-mono text-[10px] font-bold text-white">Imagery Quality</span>
+                          <span className="font-mono text-[8px] text-[#94A3B8]">Canvas resolution & tile budget (saved with expedition)</span>
+                        </div>
+                        <div className="flex gap-1">
+                          {(['performance', 'balanced', 'detail'] as const).map((q) => (
+                            <button
+                              key={q}
+                              onClick={() => {
+                                soundEngine.playClick();
+                                onSatelliteQualityChange?.(q);
+                              }}
+                              className={`px-2 py-1 text-[9px] font-mono font-bold uppercase border transition-all ${
+                                satelliteQuality === q
+                                  ? 'bg-[#064E3B] border-[#10B981] text-[#10B981]'
+                                  : 'bg-[#1E293B]/60 border-slate-700 text-[#94A3B8]'
+                              }`}
+                            >
+                              {q === 'performance' ? 'LOW' : q === 'balanced' ? 'MED' : 'HIGH'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      {/* VRAM cost per tier (active tier highlighted) */}
+                      <div className="flex items-center justify-between border-t border-[#1E293B] pt-1.5">
+                        <span className="font-mono text-[8px] text-[#64748B]">VRAM cost</span>
+                        <div className="flex gap-1.5">
+                          {(['performance', 'balanced', 'detail'] as const).map((q) => (
+                            <span
+                              key={q}
+                              className={`font-mono text-[8px] font-bold ${
+                                satelliteQuality === q ? 'text-[#4BEFA8]' : 'text-[#64748B]'
+                              }`}
+                            >
+                              {formatVram(vramBytes(q))}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
                     </div>
 
                     {/* Layer 3: Bodies of Water & Green Areas */}

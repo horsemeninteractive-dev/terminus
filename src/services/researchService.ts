@@ -20,6 +20,24 @@ export function isResearchUnlocked(settlement: SettlementState, nodeId: string):
   return settlement.research.unlockedNodes.includes(nodeId);
 }
 
+/** Human-readable name for a research node id (falls back to the raw id). */
+export function getResearchNodeName(nodeId: string): string {
+  return RESEARCH_TREE_NODES[nodeId]?.name || nodeId;
+}
+
+/**
+ * Whether a building (identified by its optional researchRequirement node id) is
+ * currently unlocked. Buildings with no requirement are available from the start.
+ */
+export function getBuildingLockStatus(
+  settlement: SettlementState,
+  researchRequirement?: string
+): { unlocked: boolean; requiredName?: string } {
+  if (!researchRequirement) return { unlocked: true };
+  const unlocked = isResearchUnlocked(settlement, researchRequirement);
+  return { unlocked, requiredName: getResearchNodeName(researchRequirement) };
+}
+
 /** The single authoritative list of nodes. */
 export function getAllResearchNodes(): ResearchNode[] {
   return Object.values(RESEARCH_TREE_NODES);
@@ -39,7 +57,11 @@ export function getResearchWorkerCount(settlement: SettlementState): number {
   ];
   for (const bldg of sourceNodes) {
     if (!bldg || bldg.constructionStatus !== 'completed') continue;
-    if (bldg.typeId === 'research_lab') workers += bldg.assignedWorkers || 0;
+    // Both the canonical Research Center and the legacy Research Lab alias count
+    // as research stations so adapted centers actually accelerate research.
+    if (bldg.typeId === 'research_center' || bldg.typeId === 'research_lab') {
+      workers += bldg.assignedWorkers || 0;
+    }
   }
   return workers;
 }
@@ -170,29 +192,36 @@ export function pauseResearch(settlement: SettlementState): SettlementState {
 export function tickResearchSimulation(
   settlement: SettlementState,
   deltaRealSeconds: number,
-  clockSpeed = 1
+  clockSpeed = 1,
+  isNight = false
 ): SettlementState {
   if (!settlement.research) {
     return { ...settlement, research: createInitialResearchState() };
   }
   if (clockSpeed === 0 || deltaRealSeconds <= 0) return settlement;
 
-  const { totalRatePerSec, researchWorkers } = calculateResearchGenerationRate(settlement);
+  const { totalRatePerSec, baseRate, survivorBonus, researchWorkers } =
+    calculateResearchGenerationRate(settlement);
   const effectiveDeltaSec = deltaRealSeconds * clockSpeed;
   const effectiveWorkers = Math.max(1, researchWorkers);
 
+  // At night research-station workers are sheltered: the active project holds
+  // and only the baseline household-knowledge trickle continues.
+  const genRate = isNight ? baseRate + survivorBonus : totalRatePerSec;
+  const activeWorkerSec = isNight ? 0 : effectiveWorkers;
+
   let research = {
     ...settlement.research,
-    passiveRatePerSec: totalRatePerSec,
+    passiveRatePerSec: genRate,
     researchPoints:
-      Math.round((settlement.research.researchPoints + totalRatePerSec * effectiveDeltaSec) * 100) / 100,
+      Math.round((settlement.research.researchPoints + genRate * effectiveDeltaSec) * 100) / 100,
   };
 
   const activeId = research.activeResearchId;
   if (activeId) {
     const node = RESEARCH_TREE_NODES[activeId];
     if (node) {
-      const gainedWorkerSec = effectiveWorkers * effectiveDeltaSec;
+      const gainedWorkerSec = activeWorkerSec * effectiveDeltaSec;
       const nextProgress = research.activeProgressSec + gainedWorkerSec;
       if (nextProgress >= node.baseTimeSec) {
         // Project complete: unlock, charge RP, clear active slot.

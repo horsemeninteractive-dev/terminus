@@ -116,8 +116,8 @@ export interface SquadInventory {
 export interface Squad {
   id: string;
   name: string;
-  leaderId: string; // References NamedSurvivor ID (exactly 1)
-  generalCount: number; // 0 to 3 general pop members (Total squad max = 4)
+  leaderId: string; // NamedSurvivor ID, or '' for a leaderless all-recruit squad (generic Field Leader)
+  generalCount: number; // general pop members: 0-3 with a named leader, 4 for a leaderless squad (Total squad max = 4)
   status: SquadPhysicalAction;
   inventory: LootItem[];
   currentWeightKg: number;

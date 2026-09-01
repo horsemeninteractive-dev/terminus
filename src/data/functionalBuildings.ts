@@ -225,7 +225,9 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
       'Tilled outdoor soil plot producing Grain. Requires assigned field workers and basic tools. Output is boosted by fertilizer but affected by weather and winter.',
     iconName: 'Sprout',
     badgeColor: '#10b981',
-    adaptationAllowed: true,
+    // IFZ: Fields are freestanding open-ground plots (a flat rectangular plane),
+    // not adapted real buildings.
+    adaptationAllowed: false,
     constructionAllowed: true,
     workerCapacity: 4,
     resourceCosts: {
@@ -252,7 +254,8 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     researchRequirement: 'farming',
     iconName: 'Sun',
     badgeColor: '#059669',
-    adaptationAllowed: true,
+    // IFZ: Vast Fields are larger freestanding plots (bigger plane than Field).
+    adaptationAllowed: false,
     constructionAllowed: true,
     workerCapacity: 8,
     resourceCosts: {
@@ -279,7 +282,8 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     researchRequirement: 'greenhouses',
     iconName: 'Sprout',
     badgeColor: '#34d399',
-    adaptationAllowed: true,
+    // IFZ: Greenhouses are freestanding weather-proof plots.
+    adaptationAllowed: false,
     constructionAllowed: true,
     workerCapacity: 4,
     resourceCosts: {
@@ -366,7 +370,8 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     researchRequirement: 'food_preservation',
     iconName: 'Utensils',
     badgeColor: '#eab308',
-    adaptationAllowed: true,
+    // IFZ: Canneries are freestanding industrial plants.
+    adaptationAllowed: false,
     constructionAllowed: true,
     workerCapacity: 5,
     resourceCosts: {
@@ -509,7 +514,7 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     category: 'production',
     description:
       'Precision gunsmithing lathes, barrel drills, and ammo presses. Manufactures Pistols, Assault Rifles, Shotguns, Sniper Rifles, Heavy Machine Guns, and Ammunition Crates.',
-    researchRequirement: 'firearms_crafting',
+    researchRequirement: 'pistol', // IFZ: unlocked via Pistol Production (Arms branch)
     iconName: 'Crosshair',
     badgeColor: '#dc2626',
     adaptationAllowed: true,
@@ -969,7 +974,7 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     category: 'utility',
     description:
       'Radio broadcast tower and receiver. Transmits recruitment beacons to invite hidden survivor groups to join the zone, and allows instant emergency squad recall orders.',
-    researchRequirement: 'basic_antenna_technology',
+    researchRequirement: 'basic_antenna', // IFZ: Basic Antenna Technology
     iconName: 'Radio',
     badgeColor: '#8b5cf6',
     adaptationAllowed: true,
@@ -1701,6 +1706,23 @@ export function calculatePolygonArea(polygon: Point2D[]): number {
     area -= polygon[j].x * (polygon[i].z ?? (polygon[i] as any).y ?? 0);
   }
   return Math.abs(area) / 2;
+}
+
+/**
+ * Worker slots a building can actually staff, scaling with physical size like
+ * IFZ (roughly 1 slot per 45 m² of footprint). Never below the type's nominal
+ * `workerCapacity` for small structures, and capped at 4× nominal so an absurdly
+ * large footprint can't swallow the whole labour pool.
+ */
+export function getBuildingWorkerSlots(b: {
+  typeId: FunctionalBuildingTypeId;
+  footprintAreaM2?: number;
+}): number {
+  const def = FUNCTIONAL_BUILDING_DEFINITIONS[b.typeId];
+  const area = b.footprintAreaM2 || 50;
+  const nominal = def?.workerCapacity || 2;
+  const sizeSlots = Math.max(1, Math.round(area / 45));
+  return Math.max(nominal, Math.min(sizeSlots, nominal * 4));
 }
 
 /**

@@ -4,6 +4,9 @@ import { AdaptedBuilding } from '../types/settlement';
 const WALL_TYPES = ['wooden_palisade', 'brick_wall', 'fortified_wall', 'metal_fence', 'barbed_wire'];
 const GATE_TYPES = ['wooden_gate', 'metal_gate', 'fortified_gate'];
 const TOWER_TYPES = ['wooden_tower', 'metal_tower', 'fortified_tower', 'floodlight_tower'];
+// IFZ fields/greenhouses: freestanding flat rectangular plots (vast = bigger).
+const FIELD_TYPES = ['field', 'vast_field'];
+const GREENHOUSE_TYPES = ['greenhouse', 'greenhouse_hydro'];
 
 /**
  * Rendered footprint dimensions for a freestanding structure type. Must stay in
@@ -14,7 +17,13 @@ export function getFreestandingDimensions(typeId: string): { width: number; leng
   if (WALL_TYPES.includes(typeId)) return { width: 2.4, length: 10 };
   if (GATE_TYPES.includes(typeId)) return { width: 10, length: 3.2 };
   if (TOWER_TYPES.includes(typeId)) return { width: 5.2, length: 5.2 };
+  if (FIELD_TYPES.includes(typeId)) return { width: 16, length: 20 };
+  if (GREENHOUSE_TYPES.includes(typeId)) return { width: 12, length: 16 };
   return { width: 8, length: 8 };
+}
+
+export function isFreestandingField(typeId: string): boolean {
+  return FIELD_TYPES.includes(typeId) || GREENHOUSE_TYPES.includes(typeId);
 }
 
 export function isFreestandingWall(typeId: string): boolean {

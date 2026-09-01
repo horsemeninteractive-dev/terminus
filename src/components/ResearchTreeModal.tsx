@@ -9,6 +9,7 @@ import {
   Wheat, Wine, Wrench, X, Zap,
 } from 'lucide-react';
 import { RESEARCH_BRANCHES, RESEARCH_TREE_NODES } from '../data/researchTreeData';
+import { FUNCTIONAL_BUILDING_DEFINITIONS } from '../data/functionalBuildings';
 import {
   calculateResearchGenerationRate,
   canUnlockResearchNode,
@@ -17,7 +18,7 @@ import {
   startResearchNode,
 } from '../services/researchService';
 import { ResearchBranch, ResearchNode } from '../types/research';
-import { SettlementState } from '../types/settlement';
+import { FunctionalBuildingDefinition, SettlementState } from '../types/settlement';
 import { soundService } from '../services/soundService';
 
 interface ResearchTreeModalProps {
@@ -116,6 +117,27 @@ export const ResearchTreeModal: React.FC<ResearchTreeModalProps> = ({ settlement
     () => Object.values(RESEARCH_TREE_NODES).filter((node) => node.branch === activeBranch),
     [activeBranch]
   );
+  // Which buildings each research node unlocks: reverse-lookup of every building
+  // definition's researchRequirement, plus the explicit unlockedBuildingTypeId
+  // declarations on the tree nodes themselves (deduped).
+  const buildingsByNode = useMemo(() => {
+    const map = new Map<string, FunctionalBuildingDefinition[]>();
+    const add = (nodeId: string, def?: FunctionalBuildingDefinition) => {
+      if (!def) return;
+      const list = map.get(nodeId) || [];
+      if (!list.some((d) => d.id === def.id)) list.push(def);
+      map.set(nodeId, list);
+    };
+    Object.values(FUNCTIONAL_BUILDING_DEFINITIONS).forEach((def) => {
+      if (def.researchRequirement) add(def.researchRequirement, def);
+    });
+    Object.values(RESEARCH_TREE_NODES).forEach((node) => {
+      if (node.unlockedBuildingTypeId) {
+        add(node.id, FUNCTIONAL_BUILDING_DEFINITIONS[node.unlockedBuildingTypeId]);
+      }
+    });
+    return map;
+  }, []);
   const selected = selectedId ? RESEARCH_TREE_NODES[selectedId] : null;
   const rate = calculateResearchGenerationRate(settlement);
   const SceneIcon = BRANCH_SCENES[activeBranch].icon;
@@ -187,13 +209,14 @@ export const ResearchTreeModal: React.FC<ResearchTreeModalProps> = ({ settlement
 
   const start = () => {
     if (!selected) return;
-    try { const r = startResearchNode(settlement, selected.id); onUpdateSettlement(r.updatedSettlement); soundService.playTechUnlock(); setError(null); } catch (e: any) { setError(e?.message || 'Cannot start research.'); soundService.playToastSound('warn'); }
+    try { const r = startResearchNode(settlement, selected.id); onUpdateSettlement(r.updatedSettlement); soundService.playTechUnlock(); setError(null); } catch (e: any) { setError(e?.message || 'Cannot start research.'); soundService.notify({ title: 'RESEARCH', desc: e?.message || 'Cannot start research.', type: 'warn' }); }
   };
-  const pause = () => { onUpdateSettlement(pauseResearch(settlement)); soundService.playToastSound('info'); setError(null); };
+  const pause = () => { onUpdateSettlement(pauseResearch(settlement)); soundService.notify({ title: 'RESEARCH', desc: 'Research paused.', type: 'info' }); setError(null); };
 
   const selectedProgress = selected && isActive(selected) ? Math.min(100, (research.activeProgressSec / selected.baseTimeSec) * 100) : 0;
   const selectedActive = selected ? isActive(selected) : false;
   const check = selected ? canUnlockResearchNode(settlement, selected.id) : null;
+  const unlockedBuildings = selected ? buildingsByNode.get(selected.id) || [] : [];
 
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/75 backdrop-blur-sm p-3 sm:p-6">
@@ -307,6 +330,25 @@ export const ResearchTreeModal: React.FC<ResearchTreeModalProps> = ({ settlement
                     <div className="mt-2 space-y-2">{selected.effects.map((effect, i) => (
                       <div key={i} className="flex justify-between gap-3 border-b border-[#293B3E] py-2 text-[11px]"><span className="text-[#B8C5C6]">{effect.stat}</span><strong className="text-[#4BEFA8]">{effect.value}</strong></div>
                     ))}</div>
+                  </div>
+                )}
+
+                {unlockedBuildings.length > 0 && (
+                  <div className="mt-5">
+                    <div className="text-[10px] uppercase tracking-widest text-[#7D9295]">Unlocks Buildings</div>
+                    <div className="mt-2 space-y-1.5">
+                      {unlockedBuildings.map((b) => (
+                        <div key={b.id} className="flex items-center gap-2 border border-[#2A3A3E] bg-[#0E171A] px-2 py-1.5">
+                          <span className="h-3 w-1 shrink-0 rounded-sm" style={{ background: b.badgeColor }} />
+                          <span className="flex-1 min-w-0 truncate font-heading text-[11px] font-bold uppercase text-[#D7E2E3]">
+                            {b.name}
+                          </span>
+                          <span className="shrink-0 font-mono text-[8px] uppercase tracking-wider text-[#7D9295]">
+                            {b.adaptationAllowed ? (b.constructionAllowed ? 'Adapt / Build' : 'Adapt') : 'Build'}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
 

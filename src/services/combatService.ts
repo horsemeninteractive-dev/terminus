@@ -57,7 +57,8 @@ export function advanceGameClock(
   }
 
   const effectiveDelta = realDeltaSeconds * clock.speed;
-  const inGameHoursAdvanced = effectiveDelta / 15.0; // 1 in-game hour per 15 real seconds
+  // 1 in-game hour per 25 real seconds -> a full day-night cycle is 10 minutes at 1x.
+  const inGameHoursAdvanced = effectiveDelta / 25.0;
   let newHour = clock.hour + inGameHoursAdvanced;
   let newDay = clock.day;
   let dayChanged = false;
@@ -208,15 +209,19 @@ export function createZombieUnit(
 
 /**
  * Builds the per-unit roster for a squad: exactly 1 named leader + N general
- * recruits. All units default to a combat knife and no armor (§4.3).
+ * recruits by default. Leaderless squads (includeLeader = false) field N
+ * generic recruits only — every member is a nameless citizen. All units default
+ * to a combat knife and no armor (§4.3).
  */
 export function buildSquadMembers(
   squadId: string,
   leaderName: string,
-  generalCount: number
+  generalCount: number,
+  includeLeader = true
 ): SquadMemberUnit[] {
-  const members: SquadMemberUnit[] = [
-    {
+  const members: SquadMemberUnit[] = [];
+  if (includeLeader) {
+    members.push({
       id: `${squadId}_leader`,
       name: leaderName,
       faceUrl: pickSurvivorFaceUrl(),
@@ -226,8 +231,8 @@ export function buildSquadMembers(
       weaponId: 'knife',
       armorId: null,
       isAlive: true,
-    },
-  ];
+    });
+  }
   for (let i = 0; i < Math.max(0, generalCount); i++) {
     members.push({
       id: `${squadId}_member_${i}`,
@@ -254,7 +259,12 @@ export function recomputeSquadHealth(squad: TacticalSquadUnit): TacticalSquadUni
     (acc, m) => (m.isAlive ? acc + m.currentHp : acc),
     0
   );
-  squad.generalCount = Math.max(0, squad.members.length - 1);
+  // generalCount = citizens other than the named leader. Leaderless squads have
+  // no leader member, so every member counts as a general.
+  squad.generalCount = Math.max(
+    0,
+    squad.members.length - (squad.members.some((m) => m.isLeader) ? 1 : 0)
+  );
   const aliveCount = squad.members.filter((m) => m.isAlive).length;
   if (aliveCount === 0) {
     squad.state = 'downed';
@@ -322,9 +332,10 @@ export function createTacticalSquadUnit(
   leaderName: string,
   leaderCombatTier: StatTier,
   generalCount: number,
-  spawnPos: Point2D
+  spawnPos: Point2D,
+  hasLeader = true
 ): TacticalSquadUnit {
-  const members = buildSquadMembers(squadId, leaderName, generalCount);
+  const members = buildSquadMembers(squadId, leaderName, generalCount, hasLeader);
 
   const base: TacticalSquadUnit = {
     squadId,
@@ -337,14 +348,14 @@ export function createTacticalSquadUnit(
     z: spawnPos.z,
     y: 0,
     rotation: 0,
-    maxHp: 100 + generalCount * 50,
-    currentHp: 100 + generalCount * 50,
+    maxHp: (hasLeader ? 100 : 0) + generalCount * 50,
+    currentHp: (hasLeader ? 100 : 0) + generalCount * 50,
     attackRange: 28, // 28 meters engagement range
     fireRate: 1.6,
     lastFireTime: 0,
-    damagePerVolley: 12 + generalCount * 5,
+    damagePerVolley: (hasLeader ? 12 : 0) + generalCount * 5,
     critChance: 0.05,
-    moveSpeed: 6.0, // 6 m/s tactical jog; scavenging routes must remain viable
+    moveSpeed: 10.0, // 10 m/s tactical run (~36 km/h); brisk enough to cross the 8km map, slower than vehicles on roads
     state: 'idle',
     manualOrder: false,
     targetPos: null,
@@ -355,7 +366,7 @@ export function createTacticalSquadUnit(
     members,
     inventory: [],
     currentWeightKg: 0,
-    maxWeightKg: 1 + generalCount,
+    maxWeightKg: (hasLeader ? 1 : 0) + generalCount,
   };
 
   return recomputeSquadHealth(recomputeSquadStats(base));
@@ -581,7 +592,13 @@ export function tickCombatSimulation(
       if (bldg.constructionStatus === 'completed') {
         if (bldg.typeId === 'floodlight_tower') {
           lightEmitters.push({ x: bldg.position.x, z: bldg.position.z, radius: 80, label: bldg.name });
-        } else if (hasFloodlightTech && (bldg.typeId === 'guard_watchtower' || bldg.typeId === 'shelter_bunkhouse')) {
+        } else if (
+          hasFloodlightTech &&
+          (bldg.typeId === 'guard_watchtower' ||
+            bldg.typeId === 'wooden_tower' ||
+            bldg.typeId === 'shelter_bunkhouse' ||
+            bldg.typeId === 'shelter')
+        ) {
           lightEmitters.push({ x: bldg.position.x, z: bldg.position.z, radius: 55, label: bldg.name });
         }
       }
@@ -593,7 +610,10 @@ export function tickCombatSimulation(
         if (free.constructionStatus === 'completed') {
           if (free.typeId === 'floodlight_tower') {
             lightEmitters.push({ x: free.position.x, z: free.position.z, radius: 80, label: free.name });
-          } else if (hasFloodlightTech && free.typeId === 'guard_watchtower') {
+          } else if (
+            hasFloodlightTech &&
+            (free.typeId === 'guard_watchtower' || free.typeId === 'wooden_tower')
+          ) {
             lightEmitters.push({ x: free.position.x, z: free.position.z, radius: 55, label: free.name });
           }
         }
@@ -1810,15 +1830,22 @@ export function syncTacticalSquadUnits(
   return settlement.squads
     .filter((sq) => sq.status !== 'captured')
     .map((sq, index) => {
-    const leaderSurvivor = settlement.namedSurvivors.find((ns) => ns.id === sq.leaderId);
-    const leaderName = leaderSurvivor ? leaderSurvivor.name : 'Squad Leader';
+    // An empty leaderId marks a leaderless squad: all members are generic
+    // recruits with no named survivor at the head. The tactical unit still gets
+    // a nominal leader name/tier so stats code keeps working, but no leader
+    // member is generated.
+    const hasLeader = !!sq.leaderId;
+    const leaderSurvivor = sq.leaderId
+      ? settlement.namedSurvivors.find((ns) => ns.id === sq.leaderId)
+      : undefined;
+    const leaderName = leaderSurvivor ? leaderSurvivor.name : 'Field Leader';
     const leaderCombatTier: StatTier = leaderSurvivor ? leaderSurvivor.stats.combat : 'novice';
 
     const existing = existingMap.get(sq.id);
     if (existing) {
       // Keep real-time position/health and update composition. Refresh the member
       // roster to match settlement composition while preserving each unit's HP & gear.
-      const desired = buildSquadMembers(sq.id, leaderName, sq.generalCount);
+      const desired = buildSquadMembers(sq.id, leaderName, sq.generalCount, hasLeader);
       const preserved = desired.map((d) => {
         const prev = existing.members.find(
           (m) => m.id === d.id || (m.isLeader && d.isLeader)
@@ -1862,7 +1889,8 @@ export function syncTacticalSquadUnits(
       leaderName,
       leaderCombatTier,
       sq.generalCount,
-      spawnPos
+      spawnPos,
+      hasLeader
     );
   });
 }

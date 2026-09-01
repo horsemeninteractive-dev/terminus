@@ -32,6 +32,37 @@ export const GameSettingsModal: React.FC<GameSettingsModalProps> = ({
  const [saveSuccess, setSaveSuccess] = useState(false);
  const [radioSettings, setRadioSettings] = useState(soundService.getSettings());
  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
+
+ // Fullscreen is live display state (not a persisted setting): mirrored from
+ // the Fullscreen API so the toggle stays in sync even when the user exits via
+ // Esc, and hidden/disabled in browsers without support.
+ const fullscreenSupported =
+   typeof document !== 'undefined' && typeof document.documentElement.requestFullscreen === 'function';
+ const [isFullscreen, setIsFullscreen] = useState<boolean>(
+   typeof document !== 'undefined' && !!document.fullscreenElement
+ );
+ React.useEffect(() => {
+   if (!fullscreenSupported) return;
+   const onChange = () => setIsFullscreen(!!document.fullscreenElement);
+   document.addEventListener('fullscreenchange', onChange);
+   return () => document.removeEventListener('fullscreenchange', onChange);
+ }, [fullscreenSupported]);
+ // The modal stays mounted (renders null when closed), so state survives a
+ // close/reopen — re-read the live API state every time it opens.
+ React.useEffect(() => {
+   if (isOpen) setIsFullscreen(!!document.fullscreenElement);
+ }, [isOpen]);
+ const handleFullscreenToggle = () => {
+   if (!fullscreenSupported) return;
+   // Reconcile state from the API result directly (not just the
+   // fullscreenchange event): some webviews/embeds never dispatch the event,
+   // and a rejected request must not leave a stale checked box.
+   if (document.fullscreenElement) {
+     document.exitFullscreen().then(() => setIsFullscreen(false)).catch(() => setIsFullscreen(!!document.fullscreenElement));
+   } else {
+     document.documentElement.requestFullscreen().then(() => setIsFullscreen(true)).catch(() => setIsFullscreen(false));
+   }
+ };
  React.useEffect(() => {
    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
    const refreshVoices = () => setAvailableVoices(window.speechSynthesis.getVoices().filter((voice) => voice.lang.toLowerCase().startsWith('en')));
@@ -245,6 +276,23 @@ export const GameSettingsModal: React.FC<GameSettingsModalProps> = ({
 
  {activeTab === 'graphics' && (
  <div className="space-y-5">
+ {/* Fullscreen Mode */}
+ <div className="p-4 bg-[#0E1524] border border-[#1E293B] flex items-center justify-between">
+ <div>
+ <div className="text-xs font-heading font-bold text-white uppercase">FULLSCREEN MODE</div>
+ <div className="text-[10px] font-mono text-[#64748B]">
+ {fullscreenSupported ? 'Toggle the game between windowed and fullscreen display' : 'Fullscreen is not supported by this browser or context'}
+ </div>
+ </div>
+ <input
+ type="checkbox"
+ checked={isFullscreen}
+ disabled={!fullscreenSupported}
+ onChange={handleFullscreenToggle}
+ className="w-4 h-4 accent-[#E8E8E8] cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+ />
+ </div>
+
  {/* Elevation Exaggeration */}
  <div className="p-4 bg-[#0E1524] border border-[#1E293B]">
  <div className="flex items-center justify-between mb-2">

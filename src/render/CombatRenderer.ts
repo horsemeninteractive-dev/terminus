@@ -43,6 +43,13 @@ export class CombatRenderer {
   private zombieSmoothers = new Map<string, PositionSmoother>();
   private hostileHumanSmoothers = new Map<string, PositionSmoother>();
   private workerAnimState = new Map<string, 'harvesting' | 'constructing' | null>();
+  // Walk-cycle state: accumulated phase + last sampled position per worker so
+  // the stride cadence can scale with clock speed (and stop when standing still).
+  private workerWalkPhase = new Map<string, number>();
+  private workerPrevPos = new Map<string, { x: number; z: number }>();
+  // Simulation clock speed (1/2/4) — worker animation cadence scales with it so
+  // limbs keep up with the speed-scaled ground movement instead of slow-motion.
+  private clockSpeed = 1;
 
   // Selected squad
   private selectedSquadId: string | null = null;
@@ -282,6 +289,15 @@ export class CombatRenderer {
     }
   }
 
+  /**
+   * Simulation clock speed (1/2/4) — worker animation cadence (walk stride,
+   * harvest bob) scales with it so limbs keep pace with the speed-scaled ground
+   * movement instead of looking slow-motion at high time speeds.
+   */
+  public setClockSpeed(speed: number) {
+    this.clockSpeed = speed > 0 ? speed : 1;
+  }
+
   public update(delta: number, nowSec: number) {
     const now = performance.now();
 
@@ -310,12 +326,26 @@ export class CombatRenderer {
       const elev = sampleElevation(this.currentElevation, p.x, p.z, this.currentExaggeration);
       mesh.position.set(p.x, elev, p.z);
       const anim = this.workerAnimState.get(id);
+      // All worker animation cadence is scaled by the clock speed so limbs keep
+      // pace with the speed-scaled ground movement (no slow-motion at 2x/4x).
+      const speed = this.clockSpeed;
       if (anim === 'harvesting') {
-        const t = (Date.now() % 1000) / 1000;
+        const t = ((Date.now() * speed) % 1000) / 1000;
         mesh.position.y += Math.sin(t * Math.PI * 2) * 0.08;
       } else if (anim === 'constructing') {
-        const t = (Date.now() % 800) / 800;
+        const t = ((Date.now() * speed) % 800) / 800;
         mesh.position.y += Math.abs(Math.sin(t * Math.PI)) * 0.1;
+      } else {
+        // Walk-cycle: stride bob while actually covering ground, cadence scaled
+        // by clock speed (~2.2 strides/sec at 1x).
+        const prev = this.workerPrevPos.get(id);
+        const moved = prev ? Math.hypot(p.x - prev.x, p.z - prev.z) : 0;
+        if (moved > 0.005) {
+          const phase = (this.workerWalkPhase.get(id) || 0) + delta * 2.2 * speed;
+          this.workerWalkPhase.set(id, phase);
+          mesh.position.y += Math.sin(phase) * 0.05;
+        }
+        this.workerPrevPos.set(id, { x: p.x, z: p.z });
       }
     }
 
@@ -668,6 +698,8 @@ export class CombatRenderer {
         this.workerMeshes.delete(id);
         this.workerSmoothers.delete(id);
         this.workerAnimState.delete(id);
+        this.workerWalkPhase.delete(id);
+        this.workerPrevPos.delete(id);
       }
     }
   }

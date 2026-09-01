@@ -77,11 +77,16 @@ export const SquadManagementModal: React.FC<SquadManagementModalProps> = ({
  e.preventDefault();
  setErrorMessage(null);
 
+ // Leaderless squads are allowed: when every named survivor already leads a
+ // squad (or none exist), the new squad fields a generic 'Field Leader'.
  const leaderIdToUse =
  selectedLeaderId || (availableLeaders.length > 0 ? availableLeaders[0].id : '');
 
- if (!leaderIdToUse) {
- setErrorMessage('Please select a Named Squad Leader.');
+ const maxGeneralForSquad = leaderIdToUse ? 3 : 4;
+ if (newGeneralCount > maxGeneralForSquad) {
+ setErrorMessage(
+ `Squad cap is 4 people (${maxGeneralForSquad} general member(s) ${leaderIdToUse ? 'with a named leader' : 'without a named leader'}).`
+ );
  return;
  }
 
@@ -116,7 +121,7 @@ export const SquadManagementModal: React.FC<SquadManagementModalProps> = ({
  TACTICAL SQUADS COMMAND (§4.3)
  </h2>
  <p className="text-xs text-slate-400">
- Squad composition: Exactly 1 Named Leader + up to 3 General Population members (Cap: 4)
+ Squad composition: 1 Named Leader + up to 3 General members, or an all-recruit 4-man squad without a named survivor (Cap: 4)
  </p>
  </div>
  </div>
@@ -155,7 +160,7 @@ export const SquadManagementModal: React.FC<SquadManagementModalProps> = ({
  {!isFormingNew && (
  <button
  id="form-new-squad-btn"
- disabled={squads.length >= squadCapacity || availableLeaders.length === 0}
+ disabled={squads.length >= squadCapacity}
  onClick={handleOpenForm}
  className="px-3.5 py-1.5 bg-[#1C232E] hover:bg-[#28303D] disabled:opacity-40 disabled:pointer-events-none text-[#E8E8E8] font-semibold transition-all flex items-center gap-2 text-xs border border-[#CBD5E1]/50"
  >
@@ -211,15 +216,17 @@ export const SquadManagementModal: React.FC<SquadManagementModalProps> = ({
 
  <div>
  <label className="block text-xs font-semibold text-slate-300 mb-1">
- Select Named Squad Leader (Required)
+ {availableLeaders.length > 0 ? 'Select Named Squad Leader (Optional)' : 'Named Squad Leader'}
  </label>
  <select
  value={selectedLeaderId}
  onChange={(e) => setSelectedLeaderId(e.target.value)}
  className="w-full px-3 py-2 text-xs bg-slate-900 border border-slate-700 text-slate-100 focus:outline-none focus:border-[#475569]"
  >
- <option value="" disabled>
- -- Choose a Named Survivor --
+ <option value="">
+ {availableLeaders.length > 0
+ ? '-- No leader (all-recruit 4-man squad) --'
+ : '-- No named survivor available: generic Field Leader --'}
  </option>
  {availableLeaders.map((s) => (
  <option key={s.id} value={s.id}>
@@ -227,6 +234,11 @@ export const SquadManagementModal: React.FC<SquadManagementModalProps> = ({
  </option>
  ))}
  </select>
+ {availableLeaders.length === 0 && (
+ <p className="text-[11px] text-amber-300/90 mt-1">
+ No free named survivors — squad will be led by a generic field leader.
+ </p>
+ )}
  </div>
  </div>
 
@@ -234,10 +246,13 @@ export const SquadManagementModal: React.FC<SquadManagementModalProps> = ({
  <div className="p-3 bg-slate-900/60 border border-slate-800 flex items-center justify-between">
  <div>
  <div className="text-xs font-semibold text-slate-200">
- General Population Recruits (0 to 3)
+ General Population Recruits (0 to {selectedLeaderId ? 3 : 4})
  </div>
  <div className="text-[11px] text-slate-400">
  Pulls non-combatant citizens into this squad. They will not work base jobs while deployed.
+ {selectedLeaderId
+ ? ' A named leader + recruits fills the 4-man cap.'
+ : ' Without a named leader evey recruit counts toward the 4-man cap.'}
  </div>
  </div>
 
@@ -256,9 +271,17 @@ export const SquadManagementModal: React.FC<SquadManagementModalProps> = ({
  <button
  type="button"
  onClick={() =>
- setNewGeneralCount(Math.min(3, Math.min(freeGeneralWorkers, newGeneralCount + 1)))
+ setNewGeneralCount(
+ Math.min(
+ selectedLeaderId ? 3 : 4,
+ Math.min(freeGeneralWorkers, newGeneralCount + 1)
+ )
+ )
  }
- disabled={newGeneralCount >= 3 || newGeneralCount >= freeGeneralWorkers}
+ disabled={
+ newGeneralCount >= (selectedLeaderId ? 3 : 4) ||
+ newGeneralCount >= freeGeneralWorkers
+ }
  className="p-1.5 bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-30 border border-slate-700"
  >
  <Plus className="w-3.5 h-3.5" />

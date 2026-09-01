@@ -332,10 +332,14 @@ export function calculateSettlementMorale(
     ...settlement.freestandingBuildings,
   ];
   const hasClinic = allBuildings.some(
-    (b) => b.typeId === 'infirmary_clinic' && b.constructionStatus === 'completed'
+    (b) =>
+      (b.typeId === 'infirmary_clinic' || b.typeId === 'medbay') &&
+      b.constructionStatus === 'completed'
   );
   const hasCommunityHall = allBuildings.some(
-    (b) => b.typeId === 'community_hall' && b.constructionStatus === 'completed'
+    (b) =>
+      (b.typeId === 'community_hall' || b.typeId === 'gathering_place') &&
+      b.constructionStatus === 'completed'
   );
 
   if (hasClinic) {
@@ -575,8 +579,8 @@ export function tickMoraleAndGrowthSimulation(
   }
 
   const effectiveDelta = deltaSeconds * clockSpeed;
-  // 1 in-game day = 360 real seconds at 1x speed.
-  const fractionOfDay = effectiveDelta / 360.0;
+  // 1 in-game day = 600 real seconds (10 minutes) at 1x speed.
+  const fractionOfDay = effectiveDelta / 600.0;
 
   // Age tracked children from elapsed simulation time. A child born on day N
   // becomes an adult on day N + 16 and joins the worker pool automatically.

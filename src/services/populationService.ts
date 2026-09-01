@@ -19,9 +19,14 @@ import {
   AdaptedBuilding,
   ConstructionWorkOrder,
   FunctionalBuildingTypeId,
+  FunctionalCategory,
   SettlementState,
+  SettlementStockpile,
 } from '../types/settlement';
-import { FUNCTIONAL_BUILDING_DEFINITIONS } from '../data/functionalBuildings';
+import {
+  FUNCTIONAL_BUILDING_DEFINITIONS,
+  getBuildingWorkerSlots,
+} from '../data/functionalBuildings';
 
 export type {
   WorkerJobTypeId,
@@ -115,6 +120,75 @@ export function calculateCitizenBreakdownStats(state: SettlementState): CitizenB
 /**
  * Computes the maximum worker capacity / demand for each of the 8 job types
  */
+/**
+ * Which worker job a completed building draws its staff from. Explicit map first
+ * (mirrors the historical demand switch), then a category fallback so Terminus
+ * extras still slot into a sensible job.
+ */
+const BUILDING_JOB_MAP: Partial<Record<FunctionalBuildingTypeId, WorkerJobTypeId>> = {
+  // Farming
+  field: 'farming',
+  vast_field: 'farming',
+  greenhouse: 'farming',
+  greenhouse_hydro: 'farming',
+  barn: 'farming',
+  // Food Preparation
+  cookhouse: 'food_prep',
+  cannery: 'food_prep',
+  food_pantry: 'food_prep',
+  // Guard / Defence
+  wooden_tower: 'guard',
+  metal_tower: 'guard',
+  fortified_tower: 'guard',
+  floodlight_tower: 'guard',
+  guard_watchtower: 'guard',
+  shooting_range: 'guard',
+  wooden_gate: 'guard',
+  metal_gate: 'guard',
+  fortified_gate: 'guard',
+  barricade_gatehouse: 'guard',
+  // Factory / Industry
+  foresters_hut: 'factory',
+  sawmill: 'factory',
+  timber_mill: 'factory',
+  tool_factory: 'factory',
+  workshop_forge: 'factory',
+  scrapyard: 'factory',
+  scrap_smelter: 'factory',
+  arms_factory: 'factory',
+  armory_cache: 'factory',
+  chemical_plant: 'factory',
+  protective_gear_factory: 'factory',
+  vehicle_workshop: 'factory',
+  clay_pit: 'factory',
+  generator_station: 'factory',
+  // Science / Research
+  research_center: 'scientist',
+  research_lab: 'scientist',
+  weather_center: 'scientist',
+  antenna: 'scientist',
+  comms_relay: 'scientist',
+  expedition_center: 'scientist',
+  // Nurse / Medical
+  medbay: 'nurse',
+  hospital: 'nurse',
+  infirmary_clinic: 'nurse',
+};
+
+export function getBuildingJobForType(b: {
+  typeId: FunctionalBuildingTypeId;
+  category: FunctionalCategory;
+}): WorkerJobTypeId | null {
+  const explicit = BUILDING_JOB_MAP[b.typeId];
+  if (explicit) return explicit;
+  if (b.category === 'food') return 'farming';
+  if (b.category === 'defense' || b.category === 'defense_towers' || b.category === 'defense_walls') return 'guard';
+  if (b.category === 'production') return 'factory';
+  if (b.category === 'utility') return 'scientist';
+  if (b.category === 'civilian') return 'nurse';
+  return null;
+}
+
 export function getWorkerJobDemand(state: SettlementState): Record<WorkerJobTypeId, number> {
   const demand: Record<WorkerJobTypeId, number> = {
     builder: 0,
@@ -160,87 +234,13 @@ export function getWorkerJobDemand(state: SettlementState): Record<WorkerJobType
     demand.scavenger = 20; // Ready standby scavenging pool
   }
 
-  // 3-8. Building-specific Capacities
+  // 3-8. Building-specific Capacities — worker slots scale with physical size
+  // (IFZ-style), so a bigger building demands (and can staff) more workers.
   for (const b of adaptedArray) {
     if (b.constructionStatus !== 'completed') continue;
-    const def = FUNCTIONAL_BUILDING_DEFINITIONS[b.typeId];
-    const capacity = def?.workerCapacity || Math.max(1, Math.round((b.footprintAreaM2 || 50) / 40));
-
-    switch (b.typeId) {
-      // Farming
-      case 'field':
-      case 'vast_field':
-      case 'greenhouse':
-      case 'greenhouse_hydro':
-      case 'barn':
-        demand.farming += capacity;
-        break;
-
-      // Food Preparation
-      case 'cookhouse':
-      case 'cannery':
-      case 'food_pantry':
-        demand.food_prep += capacity;
-        break;
-
-      // Guard / Defense
-      case 'wooden_tower':
-      case 'metal_tower':
-      case 'fortified_tower':
-      case 'floodlight_tower':
-      case 'guard_watchtower':
-      case 'shooting_range':
-      case 'wooden_gate':
-      case 'metal_gate':
-      case 'fortified_gate':
-      case 'barricade_gatehouse':
-        demand.guard += capacity;
-        break;
-
-      // Factory / Industry
-      case 'foresters_hut':
-      case 'sawmill':
-      case 'tool_factory':
-      case 'scrapyard':
-      case 'arms_factory':
-      case 'chemical_plant':
-      case 'protective_gear_factory':
-      case 'vehicle_workshop':
-      case 'clay_pit':
-      case 'workshop_forge':
-      case 'timber_mill':
-      case 'scrap_smelter':
-      case 'armory_cache':
-      case 'generator_station':
-        demand.factory += capacity;
-        break;
-
-      // Science / Research
-      case 'research_center':
-      case 'research_lab':
-      case 'weather_center':
-      case 'antenna':
-      case 'comms_relay':
-      case 'expedition_center':
-        demand.scientist += capacity;
-        break;
-
-      // Nurse / Medical
-      case 'medbay':
-      case 'hospital':
-      case 'infirmary_clinic':
-        demand.nurse += capacity;
-        break;
-
-      default:
-        // Category fallback
-        if (b.category === 'food') demand.farming += capacity;
-        else if (b.category === 'defense' || b.category === 'defense_towers' || b.category === 'defense_walls') demand.guard += capacity;
-        else if (b.category === 'production') demand.factory += capacity;
-        else if (b.category === 'utility') demand.scientist += capacity;
-        else if (b.category === 'civilian') demand.nurse += capacity;
-        break;
-    }
+    const job = getBuildingJobForType(b);
+    if (!job) continue;
+    demand[job] += getBuildingWorkerSlots(b);
   }
 
   // Basic HQ baseline capacity for small colonies
@@ -695,6 +695,31 @@ export function recalculateLaborDistribution(state: SettlementState): Settlement
     }
   }
 
+  // Staff completed production/defence buildings: the workers allocated to each
+  // job (above) are spread across that job's buildings, each capped at its
+  // size-based worker slots. This is what makes "workers go to buildings" — a
+  // field with slots but no farming labour produces nothing.
+  const completedSites = adaptedArray.filter((b) => b.constructionStatus === 'completed');
+  const jobSites = new Map<WorkerJobTypeId, AdaptedBuilding[]>();
+  for (const b of completedSites) {
+    const job = getBuildingJobForType(b);
+    if (!job) continue;
+    if (!jobSites.has(job)) jobSites.set(job, []);
+    jobSites.get(job)!.push(b);
+  }
+  for (const job of ALL_WORKER_JOB_TYPES) {
+    let pool = assignedWorkerJobs[job];
+    const sites = jobSites.get(job) || [];
+    for (const b of sites) {
+      const slots = getBuildingWorkerSlots(b);
+      b.assignedWorkers = Math.min(slots, pool);
+      pool = Math.max(0, pool - slots);
+    }
+  }
+  for (const b of completedSites) {
+    if (b.assignedWorkers === undefined) b.assignedWorkers = 0;
+  }
+
   // Map to legacy JobSector for backwards compatibility
   const legacyAssignedJobs: Record<JobSector, number> = {
     construction: assignedWorkerJobs.builder,
@@ -927,60 +952,72 @@ export function createSquad(
     };
   }
 
-  let leader = state.namedSurvivors.find((s) => s.id === leaderId);
-  if (!leader) {
+  // An empty leaderId is an explicit request for a LEADERLESS squad: all 4
+  // members are generic recruits. A non-empty leaderId that doesn't resolve
+  // falls back to the old behaviour (any free named survivor, then any survivor).
+  let leader = state.namedSurvivors.find((s) => s.id === leaderId) || null;
+  if (!leader && leaderId) {
     leader =
       state.namedSurvivors.find((s) => s.role?.type !== 'squad_leader') ||
-      state.namedSurvivors[0];
+      state.namedSurvivors[0] ||
+      null;
   }
-  if (!leader) {
-    return {
-      success: false,
-      newState: state,
-      error: 'No named survivors available to lead squad.',
-    };
-  }
+  const hasNamedLeader = !!leader;
 
-  // Validate general members availability
-  const currentGeneralInSquads = state.squads.reduce((acc, sq) => acc + sq.generalCount, 0);
+  // Validate general members availability. A named leader is one of the 4 people;
+  // without one, all 4 members come from the general population (leaderless
+  // squad must draw one extra citizen from the pool to fill the leader's slot).
+  const currentGeneralInSquads = state.squads.reduce((acc, sq) => acc + (sq.generalCount || 0), 0);
   const freeGeneral = Math.max(0, state.generalPopulation.total - currentGeneralInSquads);
-  const clampedGeneral = Math.max(0, Math.min(3, Math.min(generalCount, freeGeneral)));
+  const maxGeneral = hasNamedLeader ? 3 : 4;
+  const clampedGeneral = Math.max(0, Math.min(maxGeneral, Math.min(generalCount, freeGeneral)));
 
-  // If leader was previously a building Head or leading another squad, vacate that first
-  let cleanedState = vacateSurvivorRole(state, leader.id);
+  // If a named leader was previously a building Head or leading another squad, vacate that first
+  let cleanedState = hasNamedLeader ? vacateSurvivorRole(state, leader!.id) : state;
+
+  // People in the squad: the named leader + generals, or 100% generals when
+  // leaderless. maxWeightKg mirrors the old 1 + generalCount convention (slot
+  // per person), so leaderless squads carry exactly their member count.
+  const squadPeople = (hasNamedLeader ? 1 : 0) + clampedGeneral;
 
   const squadId = `squad_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
   const newSquad: Squad = {
     id: squadId,
     name: squadName.trim() || `Recon Squad ${cleanedState.squads.length + 1}`,
-    leaderId: leader.id,
+    // Empty leaderId = leaderless squad led by a generic field leader.
+    leaderId: hasNamedLeader ? leader!.id : '',
     generalCount: clampedGeneral,
     status: 'idle',
     inventory: [],
     currentWeightKg: 0,
-    maxWeightKg: 1 + clampedGeneral,
+    maxWeightKg: Math.max(1, squadPeople),
     createdAt: Date.now(),
   };
 
-  // Update leader's role
-  const updatedSurvivors = cleanedState.namedSurvivors.map((s) =>
-    s.id === leader.id
-      ? {
-          ...s,
-          role: {
-            type: 'squad_leader' as const,
-            squadId: newSquad.id,
-            squadName: newSquad.name,
-          },
-        }
-      : s
-  );
+  // Update leader's role (no-op for leaderless squads)
+  const updatedSurvivors = hasNamedLeader
+    ? cleanedState.namedSurvivors.map((s) =>
+        s.id === leader!.id
+          ? {
+              ...s,
+              role: {
+                type: 'squad_leader' as const,
+                squadId: newSquad.id,
+                squadName: newSquad.name,
+              },
+            }
+          : s
+      )
+    : cleanedState.namedSurvivors;
 
   const intermediate: SettlementState = {
     ...cleanedState,
     namedSurvivors: updatedSurvivors,
     squads: [...cleanedState.squads, newSquad],
-    squadInventories: { ...(cleanedState.squadInventories || {}), [newSquad.id]: { capacity: 1 + clampedGeneral, used: 0, items: [] } },
+    squadInventories: {
+      ...(cleanedState.squadInventories || {}),
+      [newSquad.id]: { capacity: squadPeople, used: 0, items: [] },
+    },
   };
 
   return {
@@ -1162,7 +1199,8 @@ export interface CompletedDeconstruction {
 export function tickSettlementSimulation(
   state: SettlementState,
   deltaSeconds: number,
-  grid?: PathGrid | null
+  grid?: PathGrid | null,
+  isNight = false
 ): {
   newState: SettlementState;
   completedConstructions: string[];
@@ -1181,6 +1219,12 @@ export function tickSettlementSimulation(
 
   // Process existing orders
   for (const order of activeOrders) {
+    // At night crews have returned to shelter/HQ — construction holds until dawn.
+    if (isNight) {
+      updatedOrders.push(order);
+      continue;
+    }
+
     const bldg =
       state.adaptedBuildings.get(order.buildingId) ||
       state.freestandingBuildings.find((f) => f.buildingId === order.buildingId);
@@ -1314,9 +1358,11 @@ export function tickSettlementSimulation(
 
   state.constructionOrders = updatedOrders;
 
-  // 1b. Advance Deconstruction Jobs (§7.2) — mirrors construction, but recovers materials
+  // 1b. Advance Deconstruction Jobs (§7.2) — mirrors construction, but recovers
+  // materials. Holds at night while workers are sheltered.
   const completedDeconIds: (string | number)[] = [];
 
+  if (!isNight) {
   for (const job of state.deconstructionJobs.values()) {
     const assignedWorkers = job.assignedWorkers || 0;
     let workDonePerSec = assignedWorkers * 2.5;
@@ -1329,6 +1375,7 @@ export function tickSettlementSimulation(
     if (job.progressPct >= 100) {
       completedDeconIds.push(job.buildingId);
     }
+  }
   }
 
   if (completedDeconIds.length > 0) {
@@ -1376,6 +1423,7 @@ export function tickSettlementSimulation(
       let storageCap = 250;
       let livingCap = 0;
       let defenseRating = 0;
+      let squadCapacity = 2;
       if (state.hq) {
         storageCap += Math.round(state.hq.footprintAreaM2 * 0.5);
         livingCap += Math.max(2, state.hq.maxCapacity || Math.floor(state.hq.footprintAreaM2 / 20));
@@ -1386,13 +1434,87 @@ export function tickSettlementSimulation(
         defenseRating += b.defenseRating;
         if (b.typeId === 'storage_depot') storageCap += b.maxCapacity;
         else if (b.typeId === 'shelter_bunkhouse') livingCap += b.maxCapacity;
+        if (b.typeId === 'squad_quarters') {
+          squadCapacity += FUNCTIONAL_BUILDING_DEFINITIONS[b.typeId]?.squadCapacity || 1;
+        }
       }
-      return { storageCap, livingCap, defenseRating };
+      return { storageCap, livingCap, defenseRating, squadCapacity };
     })();
 
     state.totalStorageCapacity = stats.storageCap;
     state.totalLivingCapacity = stats.livingCap;
     state.totalDefenseRating = stats.defenseRating;
+    state.squadCapacity = stats.squadCapacity;
+  }
+
+  // 1c. Building Production (§7.2) — completed buildings convert their inputs to
+  // outputs over the in-game day, scaled by staffing (size-based slots) and input
+  // availability. Day length = 600 sim-seconds (10 minutes at 1x), the same
+  // convention as food consumption/morale, so a Field's 8 Grain/day offsets
+  // citizens. At night workers return to shelter/HQ, so production holds.
+  const dayFraction = deltaSeconds / 600;
+  if (!isNight && dayFraction > 0) {
+    const RESOURCE_PATHS: Record<string, [keyof SettlementStockpile, string]> = {
+      grain: ['food', 'grain'],
+      fresh_harvest: ['food', 'fresh_harvest'],
+      raw_meat: ['food', 'raw_meat'],
+      mre_rations: ['food', 'mre_rations'],
+      canned_goods: ['food', 'canned_goods'],
+      wood: ['materials', 'wood'],
+      metal: ['materials', 'metal'],
+      bricks: ['materials', 'bricks'],
+      tools: ['materials', 'tools'],
+      fertilizer: ['materials', 'fertilizer'],
+      beer: ['materials', 'beer'],
+      fuel: ['fuel', 'gasoline'],
+      ammo: ['ammo', 'sharedPool'],
+    };
+    const getRes = (res: string): number => {
+      const p = RESOURCE_PATHS[res];
+      if (!p) return 0;
+      return (state.stockpile[p[0]] as any)[p[1]] ?? 0;
+    };
+    const addRes = (res: string, amount: number) => {
+      const p = RESOURCE_PATHS[res];
+      if (!p) return;
+      (state.stockpile[p[0]] as any)[p[1]] = Math.max(
+        0,
+        ((state.stockpile[p[0]] as any)[p[1]] ?? 0) + amount
+      );
+    };
+
+    const productionBuildings = [
+      ...Array.from(state.adaptedBuildings.values()),
+      ...(state.freestandingBuildings || []),
+    ].filter((b) => b.constructionStatus === 'completed');
+
+    for (const b of productionBuildings) {
+      const def = FUNCTIONAL_BUILDING_DEFINITIONS[b.typeId];
+      if (!def || !def.outputs || def.outputs.length === 0) continue;
+      const slots = getBuildingWorkerSlots(b);
+      const staff = Math.min(b.assignedWorkers ?? 0, slots);
+      if (staff <= 0) continue;
+      const staffRatio = staff / Math.max(1, slots);
+
+      // Input availability limits output (e.g. a Barn needs Grain feed).
+      let inputRatio = 1;
+      for (const inp of def.inputs || []) {
+        const need = inp.amountPerDay * dayFraction;
+        if (need <= 0) continue;
+        const avail = getRes(inp.resource);
+        inputRatio = Math.min(inputRatio, avail / need);
+      }
+      const ratio = Math.max(0, Math.min(staffRatio, inputRatio));
+      if (ratio <= 0) continue;
+
+      for (const inp of def.inputs || []) {
+        addRes(inp.resource, -inp.amountPerDay * dayFraction * ratio);
+      }
+      for (const out of def.outputs) {
+        addRes(out.resource, out.amountPerDay * dayFraction * ratio);
+      }
+      stateChanged = true;
+    }
   }
 
 
