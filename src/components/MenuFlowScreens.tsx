@@ -15,6 +15,26 @@ import type { SettlementState } from '../types/settlement';
 import type { RadioDirectiveState, RadioTransmission } from '../types/radioDirective';
 import type { SettlementRecord, TradeCaravan } from '../types/caravan';
 
+// localStorage key recording that the first-launch cinematic credits roll
+// (IntroSequence) has already played for this user.
+const BOOT_INTRO_SEEN_KEY = 'terminus_ifz_boot_intro_seen';
+
+function hasSeenBootIntro(): boolean {
+  try {
+    return localStorage.getItem(BOOT_INTRO_SEEN_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function markBootIntroSeen(): void {
+  try {
+    localStorage.setItem(BOOT_INTRO_SEEN_KEY, '1');
+  } catch {
+    // Storage may be unavailable (private mode) — the intro simply replays.
+  }
+}
+
 export interface MenuFlowScreensProps {
   activePlacement: SettlementPlacement | null;
   activeSettlementId: string;
@@ -120,7 +140,18 @@ export const MenuFlowScreens: React.FC<MenuFlowScreensProps> = (props) => {
     
           {/* 0a. Initial Start Screen (Fullscreen & Input Detection: Touch vs Click) */}
           {viewMode === 'start_screen' && (
-            <StartScreen onStart={() => setViewMode('intro')} />
+            <StartScreen
+              onStart={() => {
+                // The cinematic credits roll before the menu only plays on the
+                // very first launch; returning players jump straight to the menu.
+                if (hasSeenBootIntro()) {
+                  setViewMode('main_menu');
+                } else {
+                  markBootIntroSeen();
+                  setViewMode('intro');
+                }
+              }}
+            />
           )}
     
           {/* 0b. Cinematic Engine & Studio Intro Sequence */}

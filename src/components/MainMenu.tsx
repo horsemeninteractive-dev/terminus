@@ -121,16 +121,56 @@ const CATEGORY_ACCENTS: Record<string, string> = {
   Security: 'border-[#A78BFA]/60 text-[#C4B5FD]',
 };
 
+/** Split a bullet into its bold lead summary and the remaining detail. */
+function splitEntry(text: string): { lead: string; rest: string } {
+  const m = text.match(/^(\*\*[^*]+\*\*)/);
+  if (m) return { lead: m[1], rest: text.slice(m[1].length).trim() };
+  return { lead: '', rest: text };
+}
+
+const entryKey = (cat: string, i: number) => `${cat}::${i}`;
+
 /** Structured, readable rendering of the release notes with version tabs. */
 function ChangelogReleaseNotes() {
   const releases = useMemo(() => parseChangelog(changelogRaw), []);
   const [activeIdx, setActiveIdx] = useState(0);
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const active = releases[Math.min(activeIdx, releases.length - 1)];
   if (!releases.length) return null;
 
+  const toggle = (k: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return next;
+    });
+
+  const switchVersion = (i: number) => {
+    setActiveIdx(i);
+    setExpanded(new Set());
+  };
+
+  const expandAll = () => {
+    const all = new Set<string>();
+    for (const cat of active.categories) {
+      cat.items.forEach((item, i) => {
+        if (item.kind === 'bullet' && splitEntry(item.text).rest) all.add(entryKey(cat.name, i));
+      });
+    }
+    setExpanded(all);
+  };
+
+  const collapseAll = () => setExpanded(new Set());
+  const bulletCount = active.categories.reduce(
+    (n, c) => n + c.items.filter((it) => it.kind === 'bullet').length,
+    0
+  );
+  const allOpen = bulletCount > 0 && expanded.size >= bulletCount;
+
   return (
     <div>
-      {/* Version tabs: newest release first */}
+      {/* Version tabs + expand controls: newest release first */}
       <div className="flex items-center gap-1.5 mb-3 flex-wrap">
         <span className="font-heading font-bold text-[#EF4444] text-[11px] uppercase tracking-wider mr-1">
           RELEASE NOTES
@@ -138,7 +178,7 @@ function ChangelogReleaseNotes() {
         {releases.map((r, i) => (
           <button
             key={r.title}
-            onClick={() => setActiveIdx(i)}
+            onClick={() => switchVersion(i)}
             className={`px-2.5 py-1 text-[10px] font-heading uppercase tracking-wider border clip-tactical-bracket transition-colors ${
               i === activeIdx
                 ? 'bg-[#B31217] border-[#EF4444] text-white'
@@ -148,6 +188,22 @@ function ChangelogReleaseNotes() {
             v{r.title}
           </button>
         ))}
+        <div className="ml-auto flex items-center gap-1.5">
+          <button
+            onClick={expandAll}
+            disabled={allOpen}
+            className="px-2 py-1 text-[9px] font-heading uppercase tracking-wider border border-[#262F3D] text-[#8C9BAE] hover:text-white hover:border-[#8C9BAE] disabled:opacity-40 disabled:cursor-default disabled:hover:text-[#8C9BAE] disabled:hover:border-[#262F3D] clip-tactical-bracket transition-colors"
+          >
+            Expand All
+          </button>
+          <button
+            onClick={collapseAll}
+            disabled={expanded.size === 0}
+            className="px-2 py-1 text-[9px] font-heading uppercase tracking-wider border border-[#262F3D] text-[#8C9BAE] hover:text-white hover:border-[#8C9BAE] disabled:opacity-40 disabled:cursor-default disabled:hover:text-[#8C9BAE] disabled:hover:border-[#262F3D] clip-tactical-bracket transition-colors"
+          >
+            Collapse
+          </button>
+        </div>
       </div>
 
       <div className="max-h-[52vh] overflow-y-auto pr-1.5 space-y-3">
@@ -177,18 +233,67 @@ function ChangelogReleaseNotes() {
                 <span className="text-[#5B6B7C] font-normal tracking-normal">({cat.items.length})</span>
               </div>
               <div className="space-y-2">
-                {cat.items.map((item, i) =>
-                  item.kind === 'bullet' ? (
-                    <div key={i} className="flex gap-1.5 pl-1">
-                      <span className="text-[#B31217] shrink-0 leading-snug">▸</span>
-                      <p className="text-[#A6B3C4] text-[11px] leading-relaxed min-w-0">{inlineMarkup(item.text)}</p>
-                    </div>
-                  ) : (
-                    <p key={i} className="text-[#8C9BAE] text-[11px] leading-relaxed pl-1">
-                      {inlineMarkup(item.text)}
-                    </p>
-                  )
-                )}
+                {cat.items.map((item, i) => {
+                  if (item.kind === 'note') {
+                    return (
+                      <p key={i} className="text-[#8C9BAE] text-[11px] leading-relaxed pl-1">
+                        {inlineMarkup(item.text)}
+                      </p>
+                    );
+                  }
+                  const key = entryKey(cat.name, i);
+                  const isOpen = expanded.has(key);
+                  const { lead, rest } = splitEntry(item.text);
+                  // A bullet that is entirely bold has nothing to hide.
+                  if (!rest) {
+                    return (
+                      <div key={i} className="flex gap-1.5 pl-1">
+                        <span className="text-[#B31217] shrink-0 leading-snug">▸</span>
+                        <p className="text-[#A6B3C4] text-[11px] leading-relaxed min-w-0">{inlineMarkup(item.text)}</p>
+                      </div>
+                    );
+                  }
+                  return (
+                    <button
+                      key={i}
+                      onClick={() => toggle(key)}
+                      title={isOpen ? 'Click to collapse' : 'Click to expand'}
+                      className={`w-full text-left flex gap-1.5 pl-1 pr-1.5 py-1 -my-1 rounded-sm transition-colors ${
+                        isOpen ? 'bg-white/[0.04]' : 'hover:bg-white/[0.03]'
+                      }`}
+                    >
+                      <span
+                        className={`text-[#B31217] shrink-0 leading-snug mt-px transition-transform duration-150 ${
+                          isOpen ? 'rotate-90' : ''
+                        }`}
+                      >
+                        ▸
+                      </span>
+                      <span className="min-w-0 text-[11px] leading-relaxed">
+                        {isOpen ? (
+                          lead ? (
+                            <>
+                              {inlineMarkup(lead)}
+                              <span className="text-[#A6B3C4]"> {inlineMarkup(rest)}</span>
+                            </>
+                          ) : (
+                            <span className="text-[#A6B3C4]">{inlineMarkup(rest)}</span>
+                          )
+                        ) : lead ? (
+                          <>
+                            {inlineMarkup(lead)}
+                            <span className="text-[#5B6B7C] text-[10px] uppercase tracking-wider ml-1">… expand</span>
+                          </>
+                        ) : (
+                          <>
+                            <span className="line-clamp-2 text-[#A6B3C4]">{inlineMarkup(rest)}</span>
+                            <span className="text-[#5B6B7C] text-[10px] uppercase tracking-wider ml-1">… expand</span>
+                          </>
+                        )}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           );

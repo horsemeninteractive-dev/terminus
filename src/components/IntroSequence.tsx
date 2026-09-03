@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { soundService } from '../services/soundService';
+import hiLogo from '../assets/images/HILogo.png';
 
 interface IntroSequenceProps {
   onComplete: () => void;
@@ -38,41 +39,13 @@ export const IntroSequence: React.FC<IntroSequenceProps> = ({ onComplete }) => {
       id: 'developer',
       title: 'HORSEMEN INTERACTIVE',
       renderLogo: () => (
-        <div className="relative w-32 h-32 md:w-40 md:h-40 flex items-center justify-center">
-          {/* Apocalyptic Four Horsemen Helm & Crossed Blades Crest */}
-          <svg className="w-full h-full" viewBox="0 0 100 100" fill="none">
-            {/* Outer Diamond / Shield Boundary */}
-            <polygon
-              points="50,4 94,50 50,96 6,50"
-              stroke="#B31217"
-              strokeWidth="2.5"
-              fill="#0E1013"
-              className="filter drop-shadow-[0_0_18px_rgba(179,18,23,0.8)]"
-            />
-            <polygon
-              points="50,12 86,50 50,88 14,50"
-              stroke="#EF4444"
-              strokeWidth="1"
-              strokeDasharray="4 2"
-              fill="rgba(179,18,23,0.15)"
-            />
-            {/* Stylized Warhorse / Knight Knighthead Silhouette */}
-            <path
-              d="M36 70 C36 58 40 46 46 38 C48 35 48 30 46 26 C49 26 53 29 55 33 C58 31 63 33 65 37 C67 41 65 46 59 48 C55 50 52 54 52 60 C52 64 54 68 56 70 Z"
-              fill="#E8E8E8"
-            />
-            {/* Horse Mane Crest & Flaming Eye */}
-            <path
-              d="M44 38 Q38 48 40 58 Q45 50 46 38 Z"
-              fill="#B31217"
-            />
-            <circle cx="56" cy="38" r="2.5" fill="#B31217" className="animate-pulse" />
-            {/* 4 Roman Numerals / Stars representing the Four Horsemen */}
-            <circle cx="50" cy="18" r="2" fill="#EF4444" />
-            <circle cx="82" cy="50" r="2" fill="#EF4444" />
-            <circle cx="50" cy="82" r="2" fill="#EF4444" />
-            <circle cx="18" cy="50" r="2" fill="#EF4444" />
-          </svg>
+        <div className="relative w-40 h-40 md:w-52 md:h-52 flex items-center justify-center">
+          {/* Official Horsemen Interactive logo */}
+          <img
+            src={hiLogo}
+            alt="Horsemen Interactive"
+            className="w-full h-full object-contain drop-shadow-[0_0_24px_rgba(179,18,23,0.45)]"
+          />
         </div>
       ),
     },

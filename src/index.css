@@ -624,3 +624,22 @@
 .animate-logo-cycle {
   animation: logoIntroCycle 2.4s cubic-bezier(0.4, 0, 0.2, 1) forwards;
 }
+
+/* Cinematic end-credits roll (§0b): the credit column rises from just below
+   the viewport (its top edge starts at one viewport-height down, so the first
+   card is on screen immediately) until the whole column has passed above.
+   translateY(100%) would instead push the column down by its own height,
+   hiding everything for most of the animation. */
+@keyframes creditsRollUp {
+  0% {
+    transform: translateY(100vh);
+  }
+  100% {
+    transform: translateY(-100%);
+  }
+}
+
+.animate-credits-roll {
+  animation: creditsRollUp 40s linear forwards;
+  will-change: transform;
+}
