@@ -354,6 +354,21 @@ export function useSquadActions(runtime: SquadActionsRuntime) {
     // 1. Check if the order target is a vehicle directly
     const directVeh = settlement.vehicles?.find((v) => v.id === squadId);
     if (directVeh && roadGraphRef.current) {
+      // An unmounted vehicle has NO driver — it cannot move itself. Reject the
+      // order with feedback instead of silently driving an empty vehicle; only
+      // a squad aboard (or one temporarily disembarked for a deposit run) may
+      // issue movement. The player must first order a squad to MOUNT it.
+      const depositingDriver = combatSquadsRef.current.some(
+        (s) => s.depositVehicleId === directVeh.id
+      );
+      if (!directVeh.assignedSquadId && !depositingDriver) {
+        setToastMessage({
+          title: 'NO DRIVER',
+          desc: `${directVeh.name} is empty — select a squad and order it to MOUNT the vehicle before issuing move orders.`,
+          type: 'info',
+        });
+        return;
+      }
       let updatedVeh = orderVehicleRoadTravel(directVeh, pos, roadGraphRef.current);
       if (targetBuildingId && !isStorageDropoffTarget) {
         updatedVeh = {

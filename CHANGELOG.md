@@ -21,7 +21,92 @@ Releasing:
 
 ---
 
-## [Unreleased]
+## [0.2.1] – 2026-09-03
+
+### Added
+
+- **Cinematic credits roll.** The Credits screen is now a fullscreen,
+  animated sequence in the style of the reference material: the Horsemen
+  Interactive logo holds, then credit sections fly in from the left while
+  their names cycle beneath and fly out to the right (5s logo hold, 4.5s
+  section hold, 500ms exit). A seeded field of 34 drifting infection embers
+  floats  over the burning-city backdrops, echoing the HUD's red/amber
+  accents. Credits now credit the actual AI toolchain — Google Gemini 3.8
+  Flash, Deepseek v4 Flash, ChatGPT 5.6 Luna, Claude Sonnet 5, and Freebuff —
+  plus the web technologies behind the game.
+- **First-launch intro gating.** The boot intro sequence (with the Horsemen
+  Interactive logo — now the real `HILogo.png` asset) only plays the first
+  time a user launches the app; returning players go straight to the main
+  menu (tracked via a localStorage flag).
+- **Expandable changelog modal.** Each changelog bullet shows only its bold
+  lead summary with a click to reveal the full detail paragraph, plus
+  EXPAND ALL / COLLAPSE ALL controls — no more walls of text in the
+  release-notes view.
+- **Lair population model hardening.** Every Lair now carries an explicit
+  `garrisonCeiling` (maximum sustainable population at its current
+  escalation) and `emergenceCapacity` (how many affiliated infected may be
+  OUTSIDE the building at once). Both are synced every tick, and emergence
+  pauses at capacity — most of a nest's garrison shelters inside, so a
+  breached Lair genuinely contains the population you fight. The Lair panel
+  shows the full breakdown: INFECTED NOW · SUSTAINABLE · FOUNDING GARRISON ·
+  EMERGENCE CAP.
+- **LOGISTICS worker category.** The Expedition Center no longer consumes
+  "scientists" — its staff are now a proper LOGISTICS job (Truck icon,
+  planning/coordination of caravans and migration), visible in the labour
+  panel alongside the other nine jobs.
+- **Battery Bank is now purpose-built freestanding infrastructure** (like the
+  Cistern, Generator and Floodlight Tower), unlocked purely by research
+  (Electrical Engineering → Battery Storage) instead of being adaptable from
+  an existing building.
+- **Defense structures only show overhead icons when damaged.** Completed
+  walls, towers and gates stay icon-free while healthy; the moment one takes
+  damage its icon reappears with a **radial durability meter** that visibly
+  refills as repair crews work.
+- **"Choose Production" instead of silent recipe swaps.** A multi-recipe
+  facility with no selected line now IDLES and shows a pulsing CHOOSE
+  PRODUCTION hint until the player picks a line — production never silently
+  switches to the first affordable recipe when preferred inputs run dry.
+  Legacy saves are stamped to their running line once on load, so nothing
+  that was already producing stops.
+
+### Changed
+
+- **Freestanding construction costs are single-source.** The duplicate
+  `resourceCosts` representation was removed from every building definition
+  (61 entries); `freestandingCost` and `adaptationCost` are now the sole
+  authorities for construction, refunds and the UI, with a data test guarding
+  the invariant.
+- **Water economy consolidated under waterService.** The per-person drinking
+  baseline (`DAILY_WATER_PER_PERSON`) now drives both the demand model and
+  both new-colony starting grants, so starting supplies can never drift from
+  consumption; the supplies-restocked event writes through
+  `addWaterToStockpile` like every other water mutation.
+- **Building visual fidelity pass:** gable ends now wear the facade masonry
+  (minus windows/doors) instead of the roof texture; every building category
+  gets three facade and three roof texture variants so neighbours no longer
+  read as clones; freestanding facilities render at their true module
+  dimensions with per-type silhouettes (cistern plinth + galvanised tank,
+  generator stack + fuel tank, battery cabinet row, antenna mast); defensive
+  barriers get material-accurate geometry — log stockade palisades,
+  see-through chain-link fences, barbed-wire strands, masonry shells — and
+  gates match their wall materials. Barriers gain live damage states
+  (charred stumps, torn panels, rust, cracks), rain grime, snow caps, and
+  repair animation that restores logs/panels/strands piece by piece as crews
+  work; building textures gain procedural bump maps for real light-reactive
+  relief.
+- **Primary HQ squad complement is fixed.** The starting HQ commands exactly
+  2 squads (and an 850-unit vault) regardless of its footprint — matching the
+  already-fixed storage — and the HQ panel now states the rule explicitly:
+  size grants durability, beds and defense, never command slots. Additional
+  HQs and Squad Quarters still scale with size.
+
+### Fixed
+
+- **Unmounted vehicles can no longer be ordered to drive themselves.**
+  Right-click orders on a selected vehicle, the Extraction button and the
+  Dispatch-vehicle order all rejected movement for an empty vehicle with a
+  NO DRIVER notice until a squad mounts it. (A squad temporarily disembarked
+  for a deposit run still counts as the driver.)
 
 ## [0.2.0] – 2026-09-03
 

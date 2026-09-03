@@ -4,6 +4,7 @@ import { clearMapCache } from '../services/mapCache';
 import { RoadNetworkGraph } from '../services/roadPathfinder';
 import { PathGrid } from '../services/pathfindingService';
 import { createInitialSettlementState } from '../services/settlementService';
+import { DAILY_WATER_PER_PERSON, STARTING_WATER_DAYS } from '../services/waterService';
 import { createInitialGameClock } from '../services/combatService';
 import { getInitialRadioDirectiveState } from '../services/radioDirectiveService';
 import { DEFAULT_PRESET } from '../data/sampleMapData';
@@ -430,7 +431,13 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
       newSettlement.generalPopulation.unassigned = newSettlement.generalPopulation.total;
       const totalStartingPopulation = newSettlement.namedSurvivors.length + newSettlement.generalPopulation.total;
       newSettlement.stockpile.food = { canned_goods: Math.round(totalStartingPopulation * 0.5 * 5), mre_rations: 0, dried_rations: 0, fresh_harvest: 0 };
-      newSettlement.stockpile.water = { bottled_water: Math.round(totalStartingPopulation * 1.5 * 7), purified_water: 0, rainwater: 0 };
+      // Water grant derives from the same per-person baseline as the demand
+      // model (waterService) so starting supplies track consumption exactly.
+      newSettlement.stockpile.water = {
+        bottled_water: Math.round(totalStartingPopulation * DAILY_WATER_PER_PERSON * STARTING_WATER_DAYS),
+        purified_water: 0,
+        rainwater: 0,
+      };
       newSettlement.stockpile.fuel = { gasoline: 50, diesel: 0, biofuel: 0 };
       newSettlement.stockpile.ammo = { sharedPool: 150 };
       newSettlement.stockpile.materials = { wood: 50, metal: 50, bricks: 50, tools: 20 };

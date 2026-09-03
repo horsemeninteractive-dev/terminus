@@ -334,6 +334,23 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
       </div>
       </div>
     )}
+    {!hqBreached && (
+      <>
+      <div className="grid grid-cols-2 gap-2">
+      <div>
+        <span className="text-[#6b7280]">Command Complement:</span>{' '}
+        <span className="font-bold text-white">{settlement.squadCapacity} Squads</span>
+      </div>
+      <div>
+        <span className="text-[#6b7280]">Storage Vault:</span>{' '}
+        <span className="font-bold text-white">850 Units</span>
+      </div>
+      </div>
+      <p className="text-[9px] leading-relaxed text-[#7d8a96]">
+      FIXED COMMAND CAPACITY — this primary HQ commands {settlement.squadCapacity} squads and an 850-unit vault regardless of its footprint. A larger starting HQ grants more durability, beds and defense, but never more command slots. Expand by establishing additional HQs or Squad Quarters, which scale with building size.
+      </p>
+      </>
+    )}
     </div>
   </div>
   );
@@ -525,9 +542,13 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
    <div className="bg-[#0e1117] p-2.5 border border-[#202836] space-y-1.5 text-[11px]">
     <div className="flex justify-between items-center">
      <span className="text-[#9ca3af] font-semibold">Production Recipe (§7.2):</span>
-     <span className="text-[10px] text-[#6b7280]">
-      {adaptedInfo.selectedRecipeId ? 'Player set' : 'Default'}
-     </span>
+     {adaptedInfo.selectedRecipeId ? (
+      <span className="text-[10px] text-[#6b7280]">Player set</span>
+     ) : (
+      <span className="text-[10px] font-bold text-amber-400 animate-pulse">
+      CHOOSE PRODUCTION — IDLE
+      </span>
+     )}
     </div>
     {activeDef.recipes!.map((r) => {
      const fmtFlow = (flows: { resource: string; amountPerDay: number }[]) =>
@@ -543,9 +564,9 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
          ? getWeaponDefinition(r.gear.itemId).name
          : getArmorDefinition(r.gear.itemId).name
        : null;
-     const isActive =
-       !locked &&
-       (adaptedInfo.selectedRecipeId ?? activeDef.recipes![0].id) === r.id;
+     // No recipe is "active" until the player picks one — the line only ever
+     // runs an explicit choice (production never auto-selects).
+     const isActive = !locked && adaptedInfo.selectedRecipeId === r.id;
      return (
       <button
        key={r.id}

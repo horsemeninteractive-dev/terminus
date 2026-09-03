@@ -26,6 +26,7 @@ import {
 import { startResearchNode } from '../services/researchService';
 import { getPrimaryHQ, isHQBuilding } from '../services/buildingOperational';
 import { calculateSettlementMorale } from '../services/moraleService';
+import { addWaterToStockpile } from '../services/waterService';
 import { soundService, ToastMessage } from '../services/soundService';
 import type { BuildingPolygon, MapData, Point2D } from '../types/map';
 import type { BuildingSearchState } from '../types/scavenging';
@@ -313,6 +314,15 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
 
   const handleOrderVehicleExtraction = (vehicle: WorldVehicle) => {
     if (!roadGraphRef.current) return;
+    // No driver, no movement: an empty vehicle cannot drive itself to HQ.
+    if (!vehicle.assignedSquadId) {
+      setToastMessage({
+        title: 'NO DRIVER',
+        desc: `${vehicle.name} is empty — order a squad to MOUNT it before requesting extraction.`,
+        type: 'info',
+      });
+      return;
+    }
     const hqPos = getPrimaryHQ(settlement)?.center || { x: 0, z: 0 };
     const updatedVeh = orderVehicleRoadTravel(vehicle, hqPos, roadGraphRef.current);
     setSettlement((prev) => ({
@@ -330,6 +340,15 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
 
   const handleOrderVehicleMove = (vehicle: WorldVehicle, targetPos: Point2D) => {
     if (!roadGraphRef.current) return;
+    // No driver, no movement: an empty vehicle cannot plot its own course.
+    if (!vehicle.assignedSquadId) {
+      setToastMessage({
+        title: 'NO DRIVER',
+        desc: `${vehicle.name} is empty — order a squad to MOUNT it before dispatching it.`,
+        type: 'info',
+      });
+      return;
+    }
     const updatedVeh = orderVehicleRoadTravel(vehicle, targetPos, roadGraphRef.current);
     setSettlement((prev) => ({
       ...prev,
@@ -475,22 +494,21 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
 
   const handleGrantFreshFood = useCallback(() => {
     setSettlement((prev) => {
-      const updatedStockpile = {
-        ...prev.stockpile,
-        food: {
-          ...prev.stockpile.food,
-          canned_goods: prev.stockpile.food.canned_goods + 40,
-          fresh_harvest: prev.stockpile.food.fresh_harvest + 60,
+      const updated = addWaterToStockpile(
+        {
+          ...prev,
+          stockpile: {
+            ...prev.stockpile,
+            food: {
+              ...prev.stockpile.food,
+              canned_goods: prev.stockpile.food.canned_goods + 40,
+              fresh_harvest: prev.stockpile.food.fresh_harvest + 60,
+            },
+          },
         },
-        water: {
-          ...prev.stockpile.water,
-          purified_water: prev.stockpile.water.purified_water + 80,
-        },
-      };
-      const updated = {
-        ...prev,
-        stockpile: updatedStockpile,
-      };
+        { purified_water: 80 },
+        1
+      );
       const newMorale = calculateSettlementMorale(updated, prev.weather, gameClock.day);
       return {
         ...updated,

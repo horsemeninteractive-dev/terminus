@@ -1,6 +1,7 @@
 import { CURRENT_SAVE_VERSION, SaveGameData, SaveGameMeta } from '../types/saveGame';
 import { SettlementState } from '../types/settlement';
 import { SettlementRecord } from '../types/caravan';
+import { FUNCTIONAL_BUILDING_DEFINITIONS } from '../data/functionalBuildings';
 import { getPrimaryHQ } from './buildingOperational';
 import { getDefaultLawsState } from './lawService';
 import { createEmptyExpeditionState } from '../types/expedition';
@@ -157,6 +158,17 @@ export function deserializeSettlementState(data: any): SettlementState {
           : legacy.initialOccupantCount ?? legacy.occupantCount ?? 0;
     }
     delete lair.maxPopulation;
+    // Explicit capacity fields: garrisonCeiling (max sustainable population at
+    // the current escalation) and emergenceCapacity (max infected allowed
+    // outside the building at once). Old records predate both — derive them
+    // from the founding garrison; the lair tick re-syncs them every tick
+    // anyway, so this is purely a first-load default.
+    if (typeof lair.garrisonCeiling !== 'number') {
+      lair.garrisonCeiling = lair.baselinePopulation;
+    }
+    if (typeof lair.emergenceCapacity !== 'number') {
+      lair.emergenceCapacity = Math.max(8, Math.round(lair.baselinePopulation * 0.35));
+    }
     if (typeof lair.population !== 'number') {
       lair.population = legacy.occupantCount ?? 0;
       lair.homeRadius = typeof legacy.homeRadius === 'number' ? legacy.homeRadius : 40;
@@ -167,6 +179,27 @@ export function deserializeSettlementState(data: any): SettlementState {
       lair.lastActivity = typeof lair.lastActivity === 'number' ? lair.lastActivity : Date.now();
     }
   }
+
+  // ------------- Production recipe migration (§7.2) -------------
+  // New multi-recipe facilities start UNASSIGNED ("Choose Production") and the
+  // production tick idles them until the player picks a line — production never
+  // auto-selects an arbitrary recipe. Records created before recipe selection
+  // existed carry no selectedRecipeId; stamp them to their first recipe ONCE on
+  // load so a factory that was already running keeps running through the
+  // migration period instead of silently idling after the rule change. Records
+  // stamped here are exactly the pre-existing ones — anything built after this
+  // ships starts unassigned.
+  const adaptedBuildings = toMap(data.adaptedBuildings);
+  const freestandingBuildings = (dataWithoutLegacy.freestandingBuildings || []).map(
+    (b: any) => ({ ...b })
+  );
+  const stampLegacyRecipe = (b: any) => {
+    if (!b || typeof b.typeId !== 'string' || typeof b.selectedRecipeId === 'string') return;
+    const def = FUNCTIONAL_BUILDING_DEFINITIONS[b.typeId as keyof typeof FUNCTIONAL_BUILDING_DEFINITIONS];
+    if (def?.recipes?.length) b.selectedRecipeId = def.recipes[0].id;
+  };
+  for (const b of adaptedBuildings.values()) stampLegacyRecipe(b);
+  for (const b of freestandingBuildings) stampLegacyRecipe(b);
 
   return {
     ...dataWithoutLegacy,
@@ -197,7 +230,8 @@ export function deserializeSettlementState(data: any): SettlementState {
       ? { ...data.trainingState, sessions: toMap(data.trainingState.sessions) }
       : createEmptyTrainingState(),
     squads,
-    adaptedBuildings: toMap(data.adaptedBuildings),
+    adaptedBuildings,
+    freestandingBuildings,
     buildingSections: toMap(data.buildingSections),
     infections: toMap(data.infections),
     outbreaks: toMap(data.outbreaks),

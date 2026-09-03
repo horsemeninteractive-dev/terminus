@@ -565,8 +565,10 @@ test('a breached HQ contributes no storage, housing, defense or squad slots', ()
   const healthy = recalculateSettlementStats([hq], hq.buildingId, new Map(), []);
   assert.equal(healthy.storageCap, 850, 'standing HQ grants the 850 vault');
   assert.equal(healthy.livingCap, 40);
-  // Base squad slots (2) + footprint scaling (100m2 → 1 slot) = 3.
-  assert.equal(healthy.squadCapacity, 3, 'HQ supplies squad slots');
+  // The primary HQ's squad complement is FIXED (2 slots) — the footprint of
+  // the building it was established in grants no extra slots. Only
+  // additional HQs and Squad Quarters scale with physical size.
+  assert.equal(healthy.squadCapacity, 2, 'HQ supplies its fixed squad slots only');
   assert.equal(healthy.defenseRating, 55);
 
   const destroyedHq = { ...hq, currentDurability: 0 };
@@ -591,6 +593,33 @@ test('a breached HQ contributes no storage, housing, defense or squad slots', ()
   assert.equal(mixed.livingCap, healthy.livingCap + 40);
 });
 
+test('primary HQ squad capacity is fixed regardless of building size', () => {
+  const mkHq = (id: string, footprintAreaM2: number) => ({
+    buildingId: id, buildingName: 'HQ', establishedAt: 0,
+    footprintAreaM2, levels: 1, center: { x: 0, z: 0 },
+    defenseRating: 55, maxCapacity: 40,
+    maxDurability: 800, currentDurability: 800,
+  });
+
+  // A tiny shack and a sprawling command block both command exactly 2 squads.
+  const tiny = recalculateSettlementStats([mkHq('hq_tiny', 25)], 'hq_tiny', new Map(), []);
+  const huge = recalculateSettlementStats([mkHq('hq_huge', 5000)], 'hq_huge', new Map(), []);
+  assert.equal(tiny.squadCapacity, 2, 'small primary HQ still grants the fixed 2 slots');
+  assert.equal(huge.squadCapacity, 2, 'large primary HQ gains NO footprint-scaled slots');
+  assert.equal(tiny.storageCap, 850, 'storage stays fixed too');
+  assert.equal(huge.storageCap, 850, 'storage stays fixed too');
+
+  // The same large building re-established as an ADDITIONAL HQ does scale.
+  const extra = recalculateSettlementStats(
+    [mkHq('hq_primary', 25), mkHq('hq_extra', 5000)],
+    'hq_primary',
+    new Map(),
+    []
+  );
+  // √5000/8 = 8.8 → 8 + 2 fixed = 10 from the additional HQ, on top of the primary's 2.
+  assert.equal(extra.squadCapacity, 2 + 10, 'additional HQ still scales with its footprint');
+});
+
 test('production never consumes inputs when its output cannot fit in storage', () => {
   // A completed cookhouse (grain_rations: 2 grain + 1 wood → 4 rations/day)
   // with full-time staff on an empty-population colony, so the only stockpile
@@ -607,8 +636,9 @@ test('production never consumes inputs when its output cannot fit in storage', (
     adaptationPercentage: 100, totalFloorAreaM2: 120, volumeM3: 360, maxCapacity: 12,
     currentUsage: 0, capacityUnit: 'citizens' as const, maxDurability: 420, currentDurability: 420,
     defenseRating: 40, isFreestanding: false, position: { x: 20, z: 20 }, height: 3,
-    levels: 1, constructionStatus: 'completed' as const, constructionProgress: 100,
+    levels: 1,    constructionStatus: 'completed' as const, constructionProgress: 100,
     constructionWorkRequired: 100, constructionWorkDone: 100, assignedWorkers: 4,
+    selectedRecipeId: 'grain_rations',
   };
   const seed = {
     ...base,
@@ -659,7 +689,10 @@ test('lairs are the home of a REAL infected population — kill them to clear, p
   const now = Date.now();
   const mkLair = (id: string, population: number, baselinePopulation = population, replenishAccumSec = 0): ZombieLair => ({
     id, buildingId: `b_${id}`, buildingName: id, isDiscovered: false, isCleared: false,
-    population, baselinePopulation, homeRadius: 40, spawnAccumSec: 0, lastActivity: now,
+    population, baselinePopulation,
+    garrisonCeiling: baselinePopulation,
+    emergenceCapacity: Math.max(8, Math.round(baselinePopulation * 0.35)),
+    homeRadius: 40, spawnAccumSec: 0, lastActivity: now,
     escalation: 0, escalationAccumSec: 0, threatTier: 'low', replenishAccumSec,
   });
   const buildings = [

@@ -274,10 +274,6 @@ export interface FunctionalBuildingDefinition {
   adaptationAllowed: boolean;
   constructionAllowed: boolean;
   workerCapacity: number;
-  resourceCosts: {
-    adaptation: ResourceCost;
-    freestanding: ResourceCost;
-  };
   durability: {
     adaptationBase: number;
     freestandingBase: number;

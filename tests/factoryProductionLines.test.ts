@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { tickSettlementSimulation } from '../src/services/populationService';
+import { deserializeSettlementState } from '../src/services/saveService';
 import { FUNCTIONAL_BUILDING_DEFINITIONS } from '../src/data/functionalBuildings';
 import { RESEARCH_TREE_NODES } from '../src/data/researchTreeData';
 import { isValidWeaponId, isValidArmorId } from '../src/types/combat';
@@ -59,12 +60,39 @@ function armoryCount(s: SettlementState, id: string): number {
     (s.armory?.armor.filter((a) => a === id).length || 0);
 }
 
-test('Arms Factory default line still presses Ammunition Crates (metal → ammo)', () => {
+test('an unselected multi-recipe factory IDLES — production never auto-picks a line (Choose Production)', () => {
+  // No recipe chosen: even with plenty of metal the factory runs NOTHING.
+  // Production must never silently swap to an arbitrary line when the
+  // preferred inputs change — the player picks the line explicitly.
   const arms = mkState({ a: { typeId: 'arms_factory', workers: 6 } }, { metal: 80 });
+  const r = tick(arms);
+  assert.equal(r.stockpile.ammo.sharedPool, 0, 'no ammo pressed without a chosen line');
+  assert.equal(r.stockpile.materials.metal, 80, 'no metal consumed without a chosen line');
+  assert.equal((r.armory?.weapons || []).length, 0, 'no weapons without a chosen line');
+});
+
+test('legacy saves without a recipe choice are stamped to their first line ON LOAD — nothing that was running stops', () => {
+  // Simulate a pre-recipe-selection save: a multi-recipe Arms Factory whose
+  // record has no selectedRecipeId at all.
+  const legacy = mkState({ a: { typeId: 'arms_factory', workers: 6 } }, { metal: 80 });
+  const rec = (legacy.adaptedBuildings as any).get('a');
+  delete rec.selectedRecipeId;
+
+  const migrated = deserializeSettlementState(legacy as any);
+  const stamped = (migrated.adaptedBuildings as any).get('a');
+  assert.equal(stamped.selectedRecipeId, 'ammo_crates', 'legacy record stamped to its first line on load');
+
+  // The migrated factory keeps pressing ammo — the migration period is seamless.
+  const r = tick(migrated);
+  assert.ok(Math.abs(r.stockpile.ammo.sharedPool - 20) < 0.5, `migrated factory keeps running (got ${Math.round(r.stockpile.ammo.sharedPool)})`);
+});
+
+test('a factory runs the CHOSEN ammo line — explicit selection, not a default', () => {
+  const arms = mkState({ a: { typeId: 'arms_factory', workers: 6, recipe: 'ammo_crates' } }, { metal: 80 });
   const r = tick(arms);
   assert.ok(Math.abs(r.stockpile.ammo.sharedPool - 20) < 0.5, `ammo crates yield ~20 ammo/day (got ${Math.round(r.stockpile.ammo.sharedPool)})`);
   assert.ok(Math.abs(r.stockpile.materials.metal - 74) < 0.5, 'metal consumed by the ammo line');
-  assert.equal((r.armory?.weapons || []).length, 0, 'default ammo line manufactures no weapons');
+  assert.equal((r.armory?.weapons || []).length, 0, 'the ammo line manufactures no weapons');
 });
 
 test('an unresearched weapon line never runs — research truly unlocks manufacture', () => {
@@ -112,9 +140,13 @@ test('each Arms Factory firearm is its own research-gated line with a distinct m
 });
 
 test('Protective Gear Factory produces armor sets instead of being a silent metal sink', () => {
-  // Old behaviour consumed 5 Metal/day and produced NOTHING. Now the default
-  // affordable line (Protector Vest) turns that metal into real armor.
-  const gear = mkState({ p: { typeId: 'protective_gear_factory', workers: 4 } }, { metal: 40 });
+  // Old behaviour consumed 5 Metal/day and produced NOTHING. With the Protector
+  // Vest line EXPLICITLY chosen, that metal turns into real armor — production
+  // only ever runs a line the player picked.
+  const gear = mkState(
+    { p: { typeId: 'protective_gear_factory', workers: 4, recipe: 'manufacture_protector' } },
+    { metal: 40 }
+  );
   const r = tick(gear);
   assert.equal(armoryCount(r, 'padded_jacket'), 1, 'Protector Vest (padded jacket) lands in the armory');
   assert.ok(Math.abs(r.stockpile.materials.metal - 35) < 0.5, 'only the vest line metal is consumed (5/day)');

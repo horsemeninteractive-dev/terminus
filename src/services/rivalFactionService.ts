@@ -261,6 +261,11 @@ export function generateZombieLairs(
       isCleared: false,
       population,
       baselinePopulation: population,
+      // At founding (escalation 0) the sustainable ceiling equals the founding
+      // garrison; escalation later swells it. Emergence capacity starts at a
+      // fraction of that so most of the nest stays inside the building.
+      garrisonCeiling: population,
+      emergenceCapacity: lairEmergenceCapacity(population),
       homeRadius,
       spawnAccumSec: Math.random() * intervalSec,
       lastActivity: Date.now(),
@@ -440,6 +445,12 @@ const LAIR_REPLENISH_INTERVAL_SEC: Record<LairThreatTier, number> = {
 // a sim-safety bound for how many real infected one lair can hold alive.
 const LAIR_GARRISON_GROWTH_PER_ESCALATION = 0.4;
 const LAIR_GARRISON_HARD_CAP = 220;
+// EMERGENCE CAPACITY — the share of the garrison that may be ACTIVE OUTSIDE
+// the building at once. IFZ's locality model keeps most infected around/inside
+// the Lair; only this fraction emerges into the home radius, roams or is
+// mobilized. The rest of the population shelters inside the structure.
+const LAIR_EMERGENCE_CAP_FRACTION = 0.35;
+const LAIR_EMERGENCE_CAP_FLOOR = 8;
 
 /** Garrison ceiling for a lair at a given escalation — baseline × growth
  *  multiplier, hard-capped. Never below the founding garrison. */
@@ -448,6 +459,12 @@ function lairGarrisonCeiling(baselinePopulation: number, escalation: number): nu
     baselinePopulation * (1 + LAIR_GARRISON_GROWTH_PER_ESCALATION * Math.max(0, escalation))
   );
   return Math.max(baselinePopulation, Math.min(LAIR_GARRISON_HARD_CAP, grown));
+}
+
+/** EMERGENCE CAPACITY for a lair — a fraction of its garrison ceiling, with
+ *  a floor so even small nests can field a meaningful local presence. */
+function lairEmergenceCapacity(garrisonCeiling: number): number {
+  return Math.max(LAIR_EMERGENCE_CAP_FLOOR, Math.round(garrisonCeiling * LAIR_EMERGENCE_CAP_FRACTION));
 }
 // NIGHT MOBILIZATION: a standing lair periodically commits a strike group of
 // its OWN resident infected toward the settlement. The interval starts long and
@@ -500,6 +517,21 @@ export function mobilizeLairHorde(
     };
   }
   return strikeGroup;
+}
+
+/** True when a point lies OUTSIDE the building's footprint bounding box —
+ *  the definition of "emerged from the nest" for locality accounting.
+ *  Shelterers inside the building are within the box; emerged/roaming/
+ *  mobilized infected are outside it. */
+function isOutsideBuildingPolygon(x: number, z: number, poly: Point2D[]): boolean {
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const p of poly) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.z < minZ) minZ = p.z;
+    if (p.z > maxZ) maxZ = p.z;
+  }
+  return x < minX || x > maxX || z < minZ || z > maxZ;
 }
 
 /** Random point inside a polygon (rejection sampling, center fallback). */
@@ -633,39 +665,61 @@ export function tickZombieLairs(
     //    ceiling: emergence is what makes a NEGLECTED nest swell past its
     //    baseline as escalation climbs — at/above the ceiling the lair has as
     //    many real infected as it can support and pauses (the accumulator keeps
-    //    banking, so it resumes the instant the garrison thins).
+    //    banking, so it resumes the instant the garrison thins). ALSO gated on
+    //    the EMERGENCE CAPACITY: only `emergenceCapacity` affiliated infected
+    //    may be outside the building at once — most of the garrison shelters
+    //    INSIDE, and the nest stops emitting while that many are already out.
     // The base cadence is stable per lair (derived from its id) so it never
     // re-rolls each tick.
+    // MAXIMUM SUSTAINABLE POPULATION — synced explicitly every tick from the
+    // escalation-grown garrison ceiling, so the record itself always shows how
+    // many infected this nest can support RIGHT NOW (as opposed to the founding
+    // `baselinePopulation` it regrows toward).
     const garrisonCeiling = lairGarrisonCeiling(lair.baselinePopulation, escalation);
+    // EMERGENCE CAPACITY — how many affiliated infected may be outside the
+    // building at once. The rest of the garrison shelters inside; only this
+    // share emerges, roams or mobilizes (IFZ locality model).
+    const emergenceCapacity = lairEmergenceCapacity(garrisonCeiling);
     let seed = 0;
     for (let c = 0; c < String(lair.id).length; c++) seed = (seed * 31 + String(lair.id).charCodeAt(c)) >>> 0;
     const lairBaseInterval = LAIR_SPAWN_BASE_MIN_SEC + (seed % LAIR_SPAWN_JITTER_SEC);
     const intervalSec = Math.max(30, lairBaseInterval - escalation * 6) * (isNight ? 1 : LAIR_EMERGE_DAY_MULT);
     let spawnAccum = (lair.spawnAccumSec ?? Math.random() * intervalSec) + deltaSec;
+    // Count affiliated infected ALREADY outside the building (emerged, roaming
+    // or mobilized) so emergence respects the capacity: most of the garrison
+    // stays inside, only `emergenceCapacity` may be out at once.
+    const emergedOutside = zombies.filter(
+      (z) =>
+        z.lairId === lair.id &&
+        z.currentHp > 0 &&
+        (poly ? isOutsideBuildingPolygon(z.x, z.z, poly) : false)
+    ).length;
     if (population > 0 && population < garrisonCeiling && spawnAccum >= intervalSec) {
-      spawnAccum = 0;
-      lair.lastActivity = now;
       const groupSize = Math.min(5, 2 + escalation);
-      for (let i = 0; i < groupSize; i++) {
-        const angle = Math.random() * Math.PI * 2;
-        const dist = 6 + Math.random() * 14;
-        const variant = Math.random() < 0.2 ? 'runner' : 'shambler';
-        const zmb = createZombieUnit(
-          variant,
-          center.x + Math.cos(angle) * dist,
-          center.z + Math.sin(angle) * dist,
-          0,
-          isNight
-        );
-        // Normal sunlight rules apply — no forced alert level. Most stay local;
-        // a minority are roamers that drift beyond the home radius.
-        zmb.lairId = lair.id;
-        zmb.homeX = center.x;
-        zmb.homeZ = center.z;
-        zmb.homeRadius = lair.homeRadius;
-        zmb.isRoamer = Math.random() < 0.15;
-        spawnedZombies.push(zmb);
-        population += 1;
+      if (emergedOutside + groupSize <= emergenceCapacity) {
+        spawnAccum = 0;
+        lair.lastActivity = now;
+        for (let i = 0; i < groupSize; i++) {
+          const angle = Math.random() * Math.PI * 2;
+          const dist = 6 + Math.random() * 14;
+          const variant = Math.random() < 0.2 ? 'runner' : 'shambler';
+          const zmb = createZombieUnit(
+            variant,
+            center.x + Math.cos(angle) * dist,
+            center.z + Math.sin(angle) * dist,
+            0,
+            isNight
+          );
+          // Normal sunlight rules apply — no forced alert level. Most stay local;
+          // a minority are roamers that drift beyond the home radius.
+          zmb.lairId = lair.id;
+          zmb.homeX = center.x;
+          zmb.homeZ = center.z;
+          zmb.homeRadius = lair.homeRadius;
+          zmb.isRoamer = Math.random() < 0.15;
+          spawnedZombies.push(zmb);
+          population += 1;
+        }
       }
     }
 
@@ -721,6 +775,10 @@ export function tickZombieLairs(
       ...lair,
       population,
       baselinePopulation: lair.baselinePopulation,
+      // Explicit maximum sustainable population + emergence capacity at the
+      // CURRENT escalation — synced every tick, never left to derived drift.
+      garrisonCeiling,
+      emergenceCapacity,
       homeRadius: lair.homeRadius,
       spawnAccumSec: spawnAccum,
       lastActivity: lair.lastActivity,

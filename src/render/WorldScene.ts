@@ -919,6 +919,11 @@ export class WorldScene {
     if (moonPhase) this.currentMoonPhase = moonPhase;
     this.weatherFX.setWeather(this.currentWeather, this.currentMoonPhase);
     this.skyAtmosphere.setMoonPhase(this.currentMoonPhase);
+    // Barriers weather with the sky: rain raises puddle grime up their bases,
+    // snow caps their tops (rebuild only when the look actually changes).
+    const rain = weather === 'rain' || weather === 'thunderstorm' ? 1 : 0;
+    const snow = weather === 'blizzard' || weather === 'freezing_frost' ? 1 : 0;
+    this.buildingRenderer.setBarrierWeather(snow, rain);
   }
 
   private lerpColor(out: THREE.Color, a: number, b: number, t: number): THREE.Color {

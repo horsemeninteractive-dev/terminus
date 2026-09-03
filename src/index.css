@@ -625,21 +625,164 @@
   animation: logoIntroCycle 2.4s cubic-bezier(0.4, 0, 0.2, 1) forwards;
 }
 
-/* Cinematic end-credits roll (§0b): the credit column rises from just below
-   the viewport (its top edge starts at one viewport-height down, so the first
-   card is on screen immediately) until the whole column has passed above.
-   translateY(100%) would instead push the column down by its own height,
-   hiding everything for most of the animation. */
-@keyframes creditsRollUp {
+/* Cinematic timed credits sequence (§0b): the game logo holds, then credit
+   sections fly in from the left while their names cycle beneath, flying out
+   right when a section ends. Timings mirror the reference credits screen:
+   logo 5s, credit hold 4.5s, name-cycle 5s, exit 500ms. */
+@keyframes logoFade {
   0% {
-    transform: translateY(100vh);
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  10% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  88% {
+    opacity: 1;
+    transform: scale(1);
   }
   100% {
-    transform: translateY(-100%);
+    opacity: 0;
+    transform: scale(1.04);
   }
 }
 
-.animate-credits-roll {
-  animation: creditsRollUp 40s linear forwards;
+.animate-logo-fade {
+  animation: logoFade 5s ease-in-out forwards;
+}
+
+@keyframes flyInLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-90px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.animate-fly-in-left {
+  animation: flyInLeft 480ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes flyOutLeft {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-90px);
+  }
+}
+
+.animate-fly-out-left {
+  animation: flyOutLeft 500ms cubic-bezier(0.55, 0, 0.55, 0.2) both;
+}
+
+@keyframes flyOutRight {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(90px);
+  }
+}
+
+.animate-fly-out-right {
+  animation: flyOutRight 500ms cubic-bezier(0.55, 0, 0.55, 0.2) both;
+}
+
+@keyframes nameCycle {
+  0% {
+    opacity: 0;
+    transform: translateY(26px) scale(0.9);
+  }
+  14% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  92% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-26px) scale(1);
+  }
+}
+
+.animate-name-cycle {
+  animation: nameCycle 5s ease-in-out both;
+}
+
+/* Cinematic credits backdrop (§0b): a slow Ken Burns drift over the AI city
+   horizons, with the dusk layer breathing over the night base, so the credit
+   text floats above a living, burning Terminus skyline rather than flat black. */
+@keyframes creditsKenburns {
+  0% {
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+  100% {
+    transform: scale(1.14) translate3d(-1.6%, -2.2%, 0);
+  }
+}
+
+.animate-credits-kenburns {
+  animation: creditsKenburns 60s ease-in-out infinite alternate;
   will-change: transform;
+}
+
+@keyframes creditsDuskBreath {
+  0%,
+  100% {
+    opacity: 0.12;
+  }
+  50% {
+    opacity: 0.75;
+  }
+}
+
+.animate-credits-dusk {
+  animation: creditsDuskBreath 22s ease-in-out infinite;
+}
+
+/* Drifting infection embers rising through the credits backdrop. Each particle
+   is positioned/coloured inline (--dur / --delay / --drift / --size vars) and
+   climbs from below the viewport, guttering like sparks over a burning city. */
+@keyframes emberRise {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0;
+  }
+  8% {
+    opacity: var(--peak, 0.9);
+  }
+  55% {
+    opacity: calc(var(--peak, 0.9) * 0.55);
+  }
+  100% {
+    transform: translate3d(var(--drift, 30px), -108vh, 0) scale(0.55);
+    opacity: 0;
+  }
+}
+
+.ember-particle {
+  position: absolute;
+  bottom: -3vh;
+  left: var(--left, 50%);
+  width: var(--size, 4px);
+  height: var(--size, 4px);
+  border-radius: 9999px;
+  background: radial-gradient(circle, var(--colour, #ffb37c) 0%, var(--colour, #ef4444) 40%, transparent 75%);
+  box-shadow: 0 0 calc(var(--size, 4px) * 2) var(--colour, #ef4444);
+  pointer-events: none;
+  animation: emberRise var(--dur, 14s) linear infinite;
+  animation-delay: var(--delay, 0s);
+  will-change: transform, opacity;
+  filter: blur(0.5px);
 }

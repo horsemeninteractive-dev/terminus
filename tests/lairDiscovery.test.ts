@@ -15,6 +15,8 @@ function mkLair(id: string, buildingId: string, overrides: Partial<ZombieLair> =
     isCleared: false,
     population: 60,
     baselinePopulation: 60,
+    garrisonCeiling: 60,
+    emergenceCapacity: Math.max(8, Math.round(60 * 0.35)),
     homeRadius: 40,
     spawnAccumSec: 0,
     lastActivity: now,

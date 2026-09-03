@@ -34,6 +34,13 @@ export const CISTERN_WEATHER_MULT: Record<WeatherType, number> = {
 /** Base collection per m² of roof per in-game day at 1.0× weather (liters). */
 const COLLECTION_L_PER_M2_PER_DAY = 0.5;
 
+/** Per-person drinking baseline (L/person/day) — the single source for BOTH
+ *  the settlement's daily water demand (calculateWaterDemand) and the new
+ *  colony's starting water grant, so the two can never drift apart. */
+export const DAILY_WATER_PER_PERSON = 1.5;
+/** New-colony starting grant: this many days of the per-person baseline. */
+export const STARTING_WATER_DAYS = 7;
+
 export function getCisternCapacity(roofAreaM2: number): number {
   return Math.max(MIN_CAPACITY_L, Math.round((roofAreaM2 / 10) * LITERS_PER_10M2));
 }
@@ -152,7 +159,7 @@ export function calculateWaterDemand(state: SettlementState): number {
     (typeof state.generalPopulation === 'number'
       ? state.generalPopulation
       : state.generalPopulation?.total || 0);
-  let demand = Math.max(1, pop) * 1.5;
+  let demand = Math.max(1, pop) * DAILY_WATER_PER_PERSON;
 
   for (const b of state.adaptedBuildings.values()) {
     if (!isBuildingOperational(b)) continue;

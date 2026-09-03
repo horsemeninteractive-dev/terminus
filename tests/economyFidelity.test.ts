@@ -168,3 +168,57 @@ test('the House boost scales with the share of colonists actually housed in Hous
   assert.ok(factor, 'scaled quality factor present');
   assert.ok((factor!.scoreDelta as number) >= 3 && (factor!.scoreDelta as number) < 15, `boost scaled (got ${factor!.scoreDelta})`);
 });
+
+test('freestandingCost and adaptationCost are the SOLE cost representations — no duplicate resourceCosts may resurface', () => {
+  const defs = FUNCTIONAL_BUILDING_DEFINITIONS;
+  const ids = Object.keys(defs);
+  assert.ok(ids.length >= 40, `definition table is populated (${ids.length} entries)`);
+
+  for (const id of ids) {
+    const def = defs[id as keyof typeof defs];
+    // The vestigial duplicate representation was removed (P1 canonical-cost
+    // pass) — a re-introduced resourceCosts would let UI and construction
+    // diverge again ("UI says 5 metal, construction charges 30").
+    assert.ok(
+      !('resourceCosts' in def),
+      `${id} must not carry the removed duplicate resourceCosts field`
+    );
+
+    const costs: [string, unknown][] = [];
+    if (def.adaptationAllowed) costs.push(['adaptationCost', def.adaptationCost]);
+    if (def.constructionAllowed) costs.push(['freestandingCost', def.freestandingCost]);
+    assert.ok(costs.length > 0, `${id} must be buildable or adaptable — no silent dead cost`);
+
+    for (const [field, cost] of costs) {
+      assert.ok(cost && typeof cost === 'object', `${id}.${field} must exist`);
+      const entries = Object.entries(cost as Record<string, unknown>);
+      assert.ok(entries.length > 0, `${id}.${field} must list at least one material`);
+      let total = 0;
+      for (const [mat, qty] of entries) {
+        assert.ok(
+          typeof qty === 'number' && Number.isFinite(qty) && qty >= 0,
+          `${id}.${field}.${mat} must be a finite number ≥ 0 (got ${qty})`
+        );
+        total += qty;
+      }
+      assert.ok(total > 0, `${id}.${field} must actually cost something (got all zeros)`);
+    }
+  }
+
+  // The construction path reads freestandingCost directly (populationService /
+  // settlementService); the adaptation path reads adaptationCost. Assert both
+  // are non-empty across the board so a future edit cannot leave one path
+  // pointing at a half-populated field.
+  const freeCount = ids.filter((id) => {
+    const def = defs[id as keyof typeof defs];
+    return def.constructionAllowed && Object.keys(def.freestandingCost).length > 0;
+  }).length;
+  const adaptCount = ids.filter((id) => {
+    const def = defs[id as keyof typeof defs];
+    return def.adaptationAllowed && Object.keys(def.adaptationCost).length > 0;
+  }).length;
+  const freeTotal = ids.filter((id) => defs[id as keyof typeof defs].constructionAllowed).length;
+  const adaptTotal = ids.filter((id) => defs[id as keyof typeof defs].adaptationAllowed).length;
+  assert.equal(freeCount, freeTotal, 'every construction-allowed building has a populated freestandingCost');
+  assert.equal(adaptCount, adaptTotal, 'every adaptation-allowed building has a populated adaptationCost');
+});

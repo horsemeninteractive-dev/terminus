@@ -1324,8 +1324,11 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  <span className="text-[10px] font-mono text-[#A3E635]">ESC LVL {selectedLair.escalation}</span>
  </div>
  <div className="text-[11px] font-mono text-[#E8E8E8]">
- {selectedLair.population} INFECTED · BASELINE {selectedLair.baselinePopulation}
+ {selectedLair.population} INFECTED NOW · SUSTAINABLE {selectedLair.garrisonCeiling ?? selectedLair.baselinePopulation}
  {selectedLair.population > selectedLair.baselinePopulation ? ' · SWOLLEN NEST' : ''}
+ </div>
+ <div className="text-[9px] font-mono text-[#6B8F5E]">
+ FOUNDING GARRISON {selectedLair.baselinePopulation} · EMERGENCE CAP {selectedLair.emergenceCapacity ?? Math.max(8, Math.round((selectedLair.baselinePopulation || 0) * 0.35))}
  </div>
  <p className="text-[10px] font-mono text-[#94A3B8]">
  {selectedLair.population > selectedLair.baselinePopulation

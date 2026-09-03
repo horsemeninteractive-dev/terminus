@@ -21,6 +21,10 @@ function mkBuilding(id: string, cx: number, cz: number): BuildingPolygon {
 }
 
 function mkLair(id: string, population: number, baselinePopulation: number, escalation = 0, isCleared = false): ZombieLair {
+  const garrisonCeiling = Math.max(
+    baselinePopulation,
+    Math.round(baselinePopulation * (1 + 0.4 * escalation))
+  );
   return {
     id,
     buildingId: id,
@@ -29,6 +33,8 @@ function mkLair(id: string, population: number, baselinePopulation: number, esca
     isCleared,
     population,
     baselinePopulation,
+    garrisonCeiling,
+    emergenceCapacity: Math.max(8, Math.round(garrisonCeiling * 0.35)),
     homeRadius: 40,
     spawnAccumSec: 0,
     lastActivity: Date.now(),

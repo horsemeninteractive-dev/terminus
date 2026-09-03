@@ -30,6 +30,7 @@ import {
   Sprout,
   TreePine,
   Trees,
+  Truck,
   User,
   Users,
   Utensils,
@@ -174,6 +175,7 @@ const JOB_ICONS: Record<WorkerJobTypeId, LucideIcon> = {
   scientist: FlaskConical,
   nurse: Plus,
   trainer: Crosshair,
+  logistics: Truck,
 };
 
 export const TacticalActionBar: React.FC<TacticalActionBarProps> = ({
@@ -234,6 +236,7 @@ export const TacticalActionBar: React.FC<TacticalActionBarProps> = ({
     factory: 0,
     scientist: 0,
     nurse: 0,
+    logistics: 0,
   };
 
   const workerPriorities = generalPop?.workerPriorities || DEFAULT_WORKER_PRIORITIES;

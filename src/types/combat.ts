@@ -449,10 +449,29 @@ export interface ZombieLair {
    * Founding garrison at generation — the nest's SOFT baseline, NOT a ceiling.
    * A partially cleared lair regrows toward this figure, and a neglected lair
    * deliberately SWELLS well beyond it as its escalation climbs (see
-   * LAIR_GARRISON_CEILING in rivalFactionService) — an old, unmolested nest
-   * becomes a genuine hive of 100+ infected.
+   * `garrisonCeiling` below and LAIR_GARRISON_CEILING in rivalFactionService)
+   * — an old, unmolested nest becomes a genuine hive of 100+ infected.
    */
   baselinePopulation: number;
+  /**
+   * MAXIMUM SUSTAINABLE POPULATION at the lair's CURRENT escalation — the
+   * founding garrison grown by escalation (baseline × growth per escalation,
+   * hard-capped at LAIR_GARRISON_HARD_CAP). Synced every lair tick and
+   * explicit, unlike the old derived-only ceiling: emergence pauses once
+   * population reaches this figure and resumes when the garrison thins. This
+   * is the REAL ceiling; `baselinePopulation` is only the founding strength
+   * a partially cleared nest regrows toward.
+   */
+  garrisonCeiling: number;
+  /**
+   * EMERGENCE CAPACITY — how many affiliated infected may be OUTSIDE the
+   * building at once (emerged into the home radius, roaming, or mobilized).
+   * The rest of the garrison shelters INSIDE the building. A fraction of the
+   * garrison ceiling, synced every lair tick; emergence pauses while this
+   * many infected are already out, keeping the nest's population mostly
+   * indoors per the IFZ locality model.
+   */
+  emergenceCapacity: number;
   /** Radius (m) around the building the lair's infected call home. Also the
    *  pressure radius: while the lair stands, infected cluster and emerge here. */
   homeRadius: number;

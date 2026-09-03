@@ -57,6 +57,7 @@ export const ALL_WORKER_JOB_TYPES: WorkerJobTypeId[] = [
   'scientist',
   'nurse',
   'trainer',
+  'logistics',
 ];
 
 export const DEFAULT_WORKER_PRIORITIES: Record<WorkerJobTypeId, WorkerPriorityLevel> = {
@@ -69,6 +70,7 @@ export const DEFAULT_WORKER_PRIORITIES: Record<WorkerJobTypeId, WorkerPriorityLe
   scientist: 2,
   nurse: 3,
   trainer: 3,
+  logistics: 2,
 };
 
 export const DEFAULT_WORKER_LIMITS: Record<WorkerJobTypeId, number> = {
@@ -81,6 +83,7 @@ export const DEFAULT_WORKER_LIMITS: Record<WorkerJobTypeId, number> = {
   scientist: 9999,
   nurse: 9999,
   trainer: 9999,
+  logistics: 9999,
 };
 
 export const WORKER_JOB_METADATA: Record<
@@ -96,6 +99,9 @@ export const WORKER_JOB_METADATA: Record<
   scientist: { name: 'SCIENTIST', iconName: 'FlaskConical', category: 'Research' },
   nurse: { name: 'NURSE', iconName: 'HeartPulse', category: 'Medical' },
   trainer: { name: 'RANGE OFFICER', iconName: 'Crosshair', category: 'Military' },
+  // §Terminus: Expedition Center staff are planners/coordinators — convoy,
+  // caravan and migration logistics — NOT scientists. Their own category.
+  logistics: { name: 'LOGISTICS', iconName: 'Truck', category: 'Logistics' },
 };
 
 /**
@@ -197,7 +203,9 @@ const BUILDING_JOB_MAP: Partial<Record<FunctionalBuildingTypeId, WorkerJobTypeId
   weather_center: 'scientist',
   antenna: 'scientist',
   comms_relay: 'scientist',
-  expedition_center: 'scientist',
+  // Logistics / Administration (§Terminus): Expedition Center staff plan and
+  // coordinate caravans, convoys and migration — a planning role, not science.
+  expedition_center: 'logistics',
   // Nurse / Medical
   medbay: 'nurse',
   hospital: 'nurse',
@@ -308,6 +316,7 @@ export function getWorkerJobDemand(state: SettlementState): Record<WorkerJobType
     scientist: 0,
     nurse: 0,
     trainer: 0,
+    logistics: 0,
   };
 
   if (!state.isInitialized || !getPrimaryHQ(state)) {
@@ -693,6 +702,7 @@ export function recalculateLaborDistribution(state: SettlementState): Settlement
     scientist: 0,
     nurse: 0,
     trainer: 0,
+    logistics: 0,
   };
 
   // If HQ is not established yet, all workers remain unassigned
@@ -847,7 +857,7 @@ export function recalculateLaborDistribution(state: SettlementState): Settlement
     defense: assignedWorkerJobs.guard,
     production: assignedWorkerJobs.factory,
     medical: assignedWorkerJobs.nurse,
-    other: assignedWorkerJobs.scientist + assignedWorkerJobs.scavenger,
+    other: assignedWorkerJobs.scientist + assignedWorkerJobs.scavenger + assignedWorkerJobs.logistics,
   };
 
   const updatedGeneral: GeneralPopulation = {
@@ -1908,8 +1918,12 @@ export function tickSettlementSimulation(
       // `selectedRecipeId`. A single-recipe facility always runs its one
       // recipe. With an explicit choice the crew runs ONLY that recipe — if
       // its inputs are short the building idles rather than silently swapping
-      // to something else. Legacy saves without a choice fall back to the
-      // first affordable recipe.
+      // to something else. WITHOUT a choice (multi-recipe building) the crew
+      // IDLES and the panel shows "Choose Production" — production NEVER
+      // auto-selects an arbitrary line, so an Arms Factory can't silently
+      // switch to another line when its preferred inputs run dry. (Legacy
+      // saves that predate recipe selection are stamped to their first recipe
+      // on load, so nothing that was running before this rule stops.)
       // §IFZ gear lines: a production line is gated by its own research node
       // (e.g. each Arms Factory firearm sits behind the weapon's research), so
       // research genuinely unlocks what the factory can manufacture — a locked
@@ -1928,11 +1942,8 @@ export function tickSettlementSimulation(
             ? chosen
             : null;
       } else {
-        recipe =
-          recipes.find((candidate) =>
-            researchOk(candidate) &&
-            candidate.inputs.every((inp) => getRes(inp.resource) >= inp.amountPerDay * dayFraction)
-          ) || null;
+        // No player choice → no production. "Choose Production" in the panel.
+        recipe = null;
       }
       if (!recipe) continue;
       let inputRatio = 1;

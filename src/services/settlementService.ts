@@ -38,6 +38,7 @@ import { createInitialMoraleState } from './moraleService';
 import { createInitialWeatherState } from './weatherService';
 import { getPrimaryHQ, isBuildingFullyLooted, isHQBuilding, isHQOperational, isBuildingOperational } from './buildingOperational';
 import { getStockpileUnits } from './stockpileCapacity';
+import { DAILY_WATER_PER_PERSON, STARTING_WATER_DAYS } from './waterService';
 
 /**
  * Baseline starting resources. Food and water are replaced with population-scaled
@@ -125,11 +126,15 @@ export function createInitialSettlementState(
   const namedCount = peopleLvl === 1 ? 1 : peopleLvl === 3 ? 3 : 2;
   const generalCount = peopleLvl === 1 ? 12 : peopleLvl === 3 ? 48 : 24;
 
-  // Each citizen consumes 0.5 food/day and 1.5 water/day. Start with exactly
-  // five food-days and seven water-days, independent of supply difficulty.
+  // Each citizen consumes 0.5 food/day and DAILY_WATER_PER_PERSON water/day
+  // (the water baseline lives in waterService — the demand model's source).
+  // Start with exactly five food-days and seven water-days, independent of
+  // supply difficulty.
   const startingPopulation = namedCount + generalCount;
   stockpile.food.canned_goods = Math.round(startingPopulation * 0.5 * 5);
-  stockpile.water.bottled_water = Math.round(startingPopulation * 1.5 * 7);
+  stockpile.water.bottled_water = Math.round(
+    startingPopulation * DAILY_WATER_PER_PERSON * STARTING_WATER_DAYS
+  );
 
   const starterNamedSurvivors = getStarterNamedSurvivors(namedCount);
   const children: import('../types/population').ChildCitizen[] = [];
@@ -376,8 +381,11 @@ export function recalculateSettlementStats(
     // physical footprint of the building it was established in, so settlement
     // storage is exactly 850 (plus warehouses etc.) once an HQ exists.
     storageCap = 850;
-    const hqAdaptedArea = primary.footprintAreaM2;
-    squadCapacity += Math.max(1, Math.floor(Math.sqrt(Math.max(1, hqAdaptedArea)) / 8)) + (hqDefinition.squadCapacity || 0);
+    // The primary HQ's squad complement is a fixed 2 slots regardless of the
+    // physical footprint of the building it was established in — like the
+    // vault, a large starting HQ must not confer an early-game squad-capacity
+    // advantage. Only additional HQs and Squad Quarters scale with size.
+    squadCapacity += hqDefinition.squadCapacity || 0;
     // HQ is the colony's primary shelter. Its functional capacity is computed
     // when it is established; use that value rather than a footprint-only
     // estimate so the warning and morale calculation agree with the HQ panel.
@@ -680,11 +688,12 @@ export function adaptBuilding(
     maxCapacity: scaledCapacity,
     currentUsage: 0,
     capacityUnit: stats.capacityUnit,
-    // Multi-recipe facilities start on their first recipe; expanding a partial
-    // conversion keeps whatever the player already selected.
-    selectedRecipeId:
-      existing?.selectedRecipeId ??
-      (def.recipes?.length ? def.recipes[0].id : undefined),
+    // §Production fallback: a multi-recipe facility starts UNASSIGNED — the
+    // player picks its line in the building panel ("Choose Production") and
+    // the crew idles until then rather than silently running an arbitrary
+    // recipe. Expanding a partial conversion keeps whatever the player already
+    // selected.
+    selectedRecipeId: existing?.selectedRecipeId ?? undefined,
     maxDurability: stats.maxDurability,
     currentDurability: stats.maxDurability,
     defenseRating: Math.round(stats.baseDefense * scale),
@@ -966,7 +975,9 @@ export function buildFreestanding(
     maxCapacity: Math.max(2, Math.floor(stats.maxCapacity * 0.7)),
     currentUsage: 0,
     capacityUnit: stats.capacityUnit,
-    selectedRecipeId: def.recipes?.length ? def.recipes[0].id : undefined,
+    // §Production fallback: new builds start unassigned; the player chooses
+    // the production line ("Choose Production") before the crew runs anything.
+    selectedRecipeId: undefined,
     maxDurability: stats.maxDurability,
     currentDurability: stats.maxDurability,
     defenseRating: stats.baseDefense,

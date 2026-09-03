@@ -27,6 +27,11 @@ function mkBuilding(id: string, cx: number, cz: number, levels = 3): BuildingPol
 }
 
 function mkLair(id: string, population: number, baselinePopulation: number): ZombieLair {
+  const escalation = 1;
+  const garrisonCeiling = Math.max(
+    baselinePopulation,
+    Math.round(baselinePopulation * (1 + 0.4 * escalation))
+  );
   return {
     id,
     buildingId: id, // id IS the building id here ("b_1")
@@ -35,10 +40,12 @@ function mkLair(id: string, population: number, baselinePopulation: number): Zom
     isCleared: false,
     population,
     baselinePopulation,
+    garrisonCeiling,
+    emergenceCapacity: Math.max(8, Math.round(garrisonCeiling * 0.35)),
     homeRadius: 40,
     spawnAccumSec: 0,
     lastActivity: Date.now(),
-    escalation: 1,
+    escalation,
     escalationAccumSec: 0,
     threatTier: 'high',
     replenishAccumSec: 0,
@@ -261,5 +268,79 @@ test('a large map generates MANY lairs, each with its real seeded garrison, spac
   for (const lair of result.lairs.values()) {
     const affiliated = result.seededZombies.filter((z) => z.lairId === lair.id);
     assert.equal(affiliated.length, lair.population, 'every head of the garrison is a real seeded zombie');
+    // The three-way population distinction is explicit from founding: the
+    // sustainable ceiling starts at the founding garrison (escalation 0), and
+    // the emergence capacity is a fraction of it — most of the nest stays
+    // INSIDE the building.
+    assert.equal(lair.garrisonCeiling, lair.population, 'garrison ceiling starts at the founding garrison');
+    assert.equal(
+      lair.emergenceCapacity,
+      Math.max(8, Math.round(lair.population * 0.35)),
+      'emergence capacity starts at a fraction of the garrison'
+    );
   }
+});
+
+test('garrisonCeiling + emergenceCapacity are synced EXPLICITLY every tick from the current escalation', () => {
+  const buildings = [mkBuilding('1', 0, 0)];
+  // Founding garrison 40, escalation 3 → ceiling = 40 × (1 + 0.4×3) = 88;
+  // emergence capacity = max(8, round(88 × 0.35)) = 31.
+  const lair = { ...mkLair('b_1', 40, 40), escalation: 3, spawnAccumSec: 0 };
+  const lairs = new Map<string | number, ZombieLair>([['b_1', lair]]);
+  const interior = Array.from({ length: 40 }, (_, i) => mkAffiliated(`in${i}`, 'b_1'));
+
+  const r = tickZombieLairs(lairs, interior, [], buildings, Date.now(), 1, true);
+  const after = r.updatedLairs.get('b_1')!;
+  assert.equal(after.garrisonCeiling, 88, 'sustainable ceiling synced to the escalation-grown ceiling');
+  assert.equal(after.emergenceCapacity, 31, 'emergence capacity synced from the ceiling');
+  assert.equal(after.baselinePopulation, 40, 'founding garrison untouched — a separate concept');
+});
+
+test('emergence pauses when EMERGENCE CAPACITY is reached — most of the garrison stays inside the building', () => {
+  // Building id must match the lair's buildingId so the footprint bbox is
+  // found (10 m half-extent) for the inside/outside accounting.
+  const buildings = [mkBuilding('b_1', 0, 0)];
+  // Escalation 1: ceiling = 40 × 1.4 = 56, emergence capacity = round(56×0.35) = 20.
+  // Population sits AT the baseline (40) so regrowth never fires, and below
+  // the garrison ceiling so the ONLY gate in play is the emergence capacity.
+  const lair = { ...mkLair('b_1', 40, 40), escalation: 1, spawnAccumSec: 1e9 };
+  const lairs = new Map<string | number, ZombieLair>([['b_1', lair]]);
+
+  // 20 affiliated infected ALREADY emerged outside the building (past the 10 m
+  // footprint) = the full emergence capacity; 20 sheltering inside.
+  const atCapacity = [
+    ...Array.from({ length: 20 }, (_, i) => {
+      const z = mkAffiliated(`out${i}`, 'b_1');
+      z.x = 30;
+      z.z = 0;
+      return z;
+    }),
+    ...Array.from({ length: 20 }, (_, i) => mkAffiliated(`in${i}`, 'b_1')),
+  ];
+
+  const r = tickZombieLairs(lairs, atCapacity, [], buildings, Date.now(), 300, true);
+  assert.equal(r.spawnedZombies.length, 0, 'at emergence capacity the nest stops emitting — no conjured infected');
+
+  // Control: only 12 outside → 12 + group of 3 (escalation 1) fits within the
+  // capacity of 20, so the nest CAN emerge again (all spawned outside the
+  // footprint).
+  const belowCapacity = [
+    ...Array.from({ length: 12 }, (_, i) => {
+      const z = mkAffiliated(`out${i}`, 'b_1');
+      z.x = 30;
+      z.z = 0;
+      return z;
+    }),
+    ...Array.from({ length: 28 }, (_, i) => mkAffiliated(`in${i}`, 'b_1')),
+  ];
+  const r2 = tickZombieLairs(
+    new Map([['b_1', { ...lair, spawnAccumSec: 1e9 }]]),
+    belowCapacity,
+    [],
+    buildings,
+    Date.now(),
+    300,
+    true
+  );
+  assert.equal(r2.spawnedZombies.length, 3, 'emergence resumes while below the emergence capacity');
 });

@@ -1,204 +1,338 @@
-import React, { useEffect, useState } from 'react';
-import { X, Globe, Shield, Code, Palette, Heart, Lock, ChevronDown } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { ArrowLeft } from 'lucide-react';
 import { soundService } from '../services/soundService';
+import hiLogo from '../assets/images/HILogo.png';
+import menuBgNight from '../assets/images/main_menu_night.jpg';
+import menuBgDusk from '../assets/images/main_menu_dusk.jpg';
+
+interface EmberSpec {
+  left: number;
+  size: number;
+  dur: number;
+  delay: number;
+  drift: number;
+  peak: number;
+  colour: string;
+}
+
+// Seeded field of drifting infection embers so the backdrop is lively without
+// regenerating random values on every credits tick. Warm ember hues echo the
+// burning-city art and the #EF4444 / #B31217 HUD accents.
+const EMBER_COLOURS = ['#fbbf24', '#fb923c', '#ef4444', '#f87171', '#f59e0b', '#fca5a5'];
+function makeEmbers(count: number, seed: number): EmberSpec[] {
+  const out: EmberSpec[] = [];
+  let s = seed;
+  const rnd = () => {
+    s = (s * 1664525 + 1013904223) % 4294967296;
+    return s / 4294967296;
+  };
+  for (let i = 0; i < count; i++) {
+    out.push({
+      left: rnd() * 100,
+      size: 2 + rnd() * 4,
+      dur: 9 + rnd() * 14,
+      delay: -(rnd() * 20),
+      drift: -60 + rnd() * 120,
+      peak: 0.35 + rnd() * 0.55,
+      colour: EMBER_COLOURS[Math.floor(rnd() * EMBER_COLOURS.length)],
+    });
+  }
+  return out;
+}
+const EMBERS = makeEmbers(34, 20260903);
+
+interface CreditSection {
+  section: string;
+  items: string[];
+}
 
 interface CreditsModalProps {
- isOpen: boolean;
- onClose: () => void;
+  isOpen: boolean;
+  onClose: () => void;
 }
 
 /**
- * Fullscreen cinematic end-credits roll (§0b), styled as a Terminus tactical
- * briefing. A column of credit cards scrolls upward from below the viewport,
- * then fades out. ESC, the X button, or a click anywhere dismisses it.
- * Structure adapted from the previous-project credits screen: studio identity,
- * development, art & design, and legal sections — re-themed for Terminus.
+ * Cinematic timed credits sequence — ported from the previous-project
+ * CreditsScreen so it looks and acts the same: the TERMINUS logo holds,
+ * then credit sections fly in from the left while their names cycle
+ * beneath, the last name of each section flies out right, and once all
+ * sections have played the sequence loops back to the logo. The back
+ * arrow (top-left) or ESC dismisses it.
  */
+// The studio & production roster for Terminus: the real AI engineering stack
+// that built the game, the Freebuff agent platform it was developed on, and
+// the open web technologies powering the simulation.
+const creditsData: CreditSection[] = [
+  { section: 'A HORSEMEN INTERACTIVE PRODUCTION', items: [] },
+  { section: 'ASSOCIATION', items: ['Horsemen Interactive'] },
+  { section: 'CREATIVE DIRECTOR', items: ['Daniel Stone'] },
+  {
+    section: 'AI ENGINEERING',
+    items: ['Google Gemini 3.8 Flash', 'Deepseek v4 Flash', 'ChatGPT 5.6 Luna', 'Claude Sonnet 5'],
+  },
+  { section: 'DEVELOPED WITH', items: ['Freebuff'] },
+  {
+    section: 'WEB TECHNOLOGIES',
+    items: [
+      'React & Three.js',
+      'TypeScript & Vite',
+      'Tailwind CSS & Lucide',
+      'Earcut Geometry',
+      'Web Audio API',
+      'OpenStreetMap & Overpass API',
+    ],
+  },
+  {
+    section: 'QUALITY ASSURANCE',
+    items: ['Aidan Godliman', 'Charlotte Thomas', 'Nikita Komkov', 'Brandon Corr', 'Cosmic Aspen'],
+  },
+  {
+    section: 'THANKS',
+    items: ['The OpenStreetMap Community', 'The Terminus Playtest Community'],
+  },
+];
+
 export const CreditsModal: React.FC<CreditsModalProps> = ({ isOpen, onClose }) => {
- const [hasRolled, setHasRolled] = useState(false);
 
- // Reset the roll state each time the modal opens.
- useEffect(() => {
-   if (isOpen) {
-     setHasRolled(false);
-     soundService.playStartGameImpact();
-   }
- }, [isOpen]);
+  const [currentSectionIndex, setCurrentSectionIndex] = useState(-1); // -1 = logo
+  const [currentNameIndex, setCurrentNameIndex] = useState(0);
+  const [isExiting, setIsExiting] = useState(false);
+  const exitTimerRef = useRef<number | null>(null);
 
- // ESC to close; auto-finish the roll once the animation completes.
- useEffect(() => {
-   if (!isOpen) return;
-   const handleKeyDown = (e: KeyboardEvent) => {
-     if (e.key === 'Escape') {
-       e.preventDefault();
-       onClose();
-     }
-   };
-   window.addEventListener('keydown', handleKeyDown);
-   return () => window.removeEventListener('keydown', handleKeyDown);
- }, [isOpen, onClose]);
+  const LOGO_ANIMATION_DURATION = 5000;
+  const CREDIT_HOLD_DURATION = 4500; // Time item stays on screen before advancing
+  const EXIT_ANIMATION_DURATION = 500; // Duration of the exit animations
 
- if (!isOpen) return null;
+  // Reset the sequence each time the modal opens.
+  useEffect(() => {
+    if (isOpen) {
+      setCurrentSectionIndex(-1);
+      setCurrentNameIndex(0);
+      setIsExiting(false);
+      soundService.playPanelOpen();
+    }
+  }, [isOpen]);
 
- return (
-   <div
-     className="fixed inset-0 z-[80] overflow-hidden select-none font-tactical text-[#E8E8E8] cursor-pointer"
-     onClick={onClose}
-   >
-     {/* Cinematic backdrop: tactical steel grid + deep vignette */}
-     <div className="absolute inset-0 bg-[#050607] bg-tactical-steel" />
-     <div className="absolute inset-0 bg-tactical-stripes opacity-25" />
-     <div className="absolute inset-0 bg-radial from-transparent via-[#0A0A0A]/45 to-[#040405]/95" />
-     <div className="absolute inset-0 bg-gradient-to-b from-[#0A0A0A]/80 via-transparent to-[#040405]/90" />
+  // Cleanup any pending exit timer when the component unmounts.
+  useEffect(() => {
+    return () => {
+      if (exitTimerRef.current) {
+        clearTimeout(exitTimerRef.current);
+      }
+    };
+  }, []);
 
-     {/* Skip / close */}
-     <button
-       onClick={(e) => {
-         e.stopPropagation();
-         soundService.playCombatActionSFX('assault_order');
-         onClose();
-       }}
-       className="absolute top-5 right-5 z-30 p-2 bg-[#0E1013]/90 hover:bg-[#1A2634] border border-[#262F3D] hover:border-[#EF4444] text-[#8C9BAE] hover:text-white transition-colors clip-tactical-bracket surface-bevel"
-       aria-label="Close credits"
-     >
-       <X className="w-5 h-5" />
-     </button>
+  // ESC dismisses the credits.
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
 
-     {/* Bottom skip hint */}
-     <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 text-[10px] font-tech uppercase tracking-widest text-[#5B6B7C]">
-       <ChevronDown className="w-3.5 h-3.5 animate-bounce" />
-       Click anywhere to skip
-     </div>
+  useEffect(() => {
+    if (!isOpen || isExiting) return; // Don't start a new timer while exiting
 
-     {/* Rolling credits column */}
-     <div className="absolute inset-0 flex justify-center overflow-hidden">
-       <div className="w-full max-w-2xl px-6 md:px-8">
-         <div
-           className="animate-credits-roll py-[12vh]"
-           onAnimationEnd={() => setHasRolled(true)}
-         >
-           {/* Studio opener */}
-           <div className="text-center mb-16">
-             <div className="inline-block px-5 py-2 border border-[#B31217]/60 text-[#EF4444] text-[10px] font-tech uppercase tracking-[0.3em] mb-8 clip-tactical-bracket">
-               A Horsemen Interactive Production
-             </div>
-             <div className="font-heading font-black text-5xl md:text-6xl tracking-[0.15em] uppercase text-white drop-shadow-[0_0_24px_rgba(179,18,23,0.55)] mb-3">
-               TERMINUS
-             </div>
-             <div className="text-xs md:text-sm font-tech text-[#8C9BAE] uppercase tracking-[0.25em]">
-               Real-World Survival Strategy
-             </div>
-           </div>
+    let timerDuration: number;
 
-           {/* Studio */}
-           <div className="text-center mb-16">
-             <div className="flex items-center justify-center gap-3 mb-5">
-               <Shield className="w-5 h-5 text-[#EF4444]" />
-               <h3 className="font-heading font-bold text-xl text-white uppercase tracking-widest">
-                 Horsemen Interactive
-               </h3>
-             </div>
-             <p className="text-xs md:text-sm text-[#A6B3C4] leading-relaxed max-w-md mx-auto mb-5">
-               Mapping the end of the world — and the fight to survive it. Terminus
-               is built on the real OpenStreetMap fabric of Earth, one city at a time.
-             </p>
-             <a
-               href="https://horsemen-interactive.web.app/"
-               target="_blank"
-               rel="noopener noreferrer"
-               onClick={(e) => e.stopPropagation()}
-               className="inline-flex items-center gap-1.5 text-[#EF4444] hover:text-[#F87171] text-[11px] font-tech uppercase tracking-widest"
-             >
-               <Globe className="w-3.5 h-3.5" /> Website
-             </a>
-           </div>
+    // Handle logo state
+    if (currentSectionIndex === -1) {
+      timerDuration = LOGO_ANIMATION_DURATION;
+    } else {
+      // Handle end of credits loop
+      if (currentSectionIndex >= creditsData.length) {
+        setCurrentSectionIndex(-1);
+        setCurrentNameIndex(0);
+        return; // Early exit to restart the loop
+      }
+      timerDuration = CREDIT_HOLD_DURATION;
+    }
 
-           {/* Development */}
-           <div className="bg-[#0E1013]/80 border border-[#1C283B] clip-tactical-bracket surface-bevel p-6 md:p-8 mb-8">
-             <div className="flex items-center gap-2 text-[#7DD3FC] mb-4">
-               <Code className="w-4 h-4" />
-               <h4 className="font-heading font-bold text-xs uppercase tracking-[0.2em]">
-                 Development
-               </h4>
-             </div>
-             <ul className="space-y-2.5 text-xs md:text-sm text-[#A6B3C4] font-tech leading-relaxed">
-               <li><span className="text-white">Core Engine:</span> React &amp; Three.js — real-world 3D WebGL tactical viewport</li>
-               <li><span className="text-white">Map Data:</span> OpenStreetMap / Overpass API — global building footprints, roads &amp; elevation</li>
-               <li><span className="text-white">Simulation:</span> Terminus persistent world sim — day/night, lairs, hordes, supply chains</li>
-               <li><span className="text-white">Audio:</span> Web Audio API — procedural synthesizers, spatial combat acoustics &amp; ambiance</li>
-             </ul>
-           </div>
+    const timer = setTimeout(() => {
+      if (currentSectionIndex === -1) {
+        // Transition from logo to first credit
+        setCurrentSectionIndex(0);
+        setCurrentNameIndex(0);
+      } else {
+        // Normal credit advancement
+        const currentSection = creditsData[currentSectionIndex];
+        const isLastName =
+          currentSection.items.length === 0 ||
+          currentNameIndex === currentSection.items.length - 1;
 
-           {/* Art & Design */}
-           <div className="bg-[#0E1013]/80 border border-[#1C283B] clip-tactical-bracket surface-bevel p-6 md:p-8 mb-8">
-             <div className="flex items-center gap-2 text-[#A78BFA] mb-4">
-               <Palette className="w-4 h-4" />
-               <h4 className="font-heading font-bold text-xs uppercase tracking-[0.2em]">
-                 Art &amp; Design
-               </h4>
-             </div>
-             <ul className="space-y-2.5 text-xs md:text-sm text-[#A6B3C4] font-tech leading-relaxed">
-               <li><span className="text-white">UI Design:</span> Horsemen Interactive — diegetic military HUD &amp; tactical overlays</li>
-               <li><span className="text-white">World Graphics:</span> Three.js procedural meshes, Earcut roof triangulation</li>
-               <li><span className="text-white">Illustrations:</span> AI Synthesis</li>
-               <li><span className="text-white">Sound Design:</span> Terminus Audio</li>
-             </ul>
-           </div>
+        if (isLastName) {
+          // Trigger exit animation for both section and last name
+          setIsExiting(true);
+          exitTimerRef.current = window.setTimeout(() => {
+            setIsExiting(false);
+            setCurrentSectionIndex((prev) => prev + 1);
+            setCurrentNameIndex(0);
+            exitTimerRef.current = null;
+          }, EXIT_ANIMATION_DURATION);
+        } else {
+          // Just advance to the next name in the same section
+          setCurrentNameIndex((prev) => prev + 1);
+        }
+      }
+    }, timerDuration);
 
-           {/* Legal */}
-           <div className="bg-[#0E1013]/80 border border-[#1C283B] clip-tactical-bracket surface-bevel p-6 md:p-8 mb-16">
-             <div className="flex items-center gap-2 text-[#F87171] mb-4">
-               <Lock className="w-4 h-4" />
-               <h4 className="font-heading font-bold text-xs uppercase tracking-[0.2em]">
-                 Legal Information
-               </h4>
-             </div>
-             <div className="space-y-3 text-[11px] md:text-xs text-[#8C9BAE] font-tech leading-relaxed">
-               <p>
-                 © 2026 Horsemen Interactive. All rights reserved. Terminus, the Horsemen
-                 Interactive logo, and all associated artistic assets are trademarks of
-                 Horsemen Interactive.
-               </p>
-               <p>
-                 Unauthorized duplication, modification, or distribution is prohibited. This
-                 software is provided "as is" without warranty of any kind, express or implied.
-               </p>
-               <div className="bg-[#080C14] border border-[#1C283B] p-4 clip-tactical-bracket">
-                 <p className="text-[10px] text-[#5B6B7C] uppercase font-bold mb-2 tracking-widest">
-                   Open Source &amp; Data Disclosure
-                 </p>
-                 <p className="text-[10px]">
-                   Earth data © OpenStreetMap contributors under the ODbL license. Built with
-                   React, Three.js, Tailwind CSS, Lucide, Earcut, Vite &amp; the Web Audio API.
-                 </p>
-               </div>
-             </div>
-           </div>
+    return () => clearTimeout(timer);
+  }, [currentSectionIndex, currentNameIndex, isExiting, creditsData.length, isOpen]);
 
-           {/* Closing */}
-           <div className="text-center mb-16">
-             <div className="font-heading font-bold text-white uppercase tracking-[0.3em] mb-2">
-               Thanks for playing
-             </div>
-             <div className="flex items-center justify-center gap-1.5 text-[#EF4444]">
-               Made with <Heart className="w-3 h-3 fill-[#EF4444]" /> by Horsemen Interactive
-             </div>
-             {hasRolled && (
-               <button
-                 onClick={(e) => {
-                   e.stopPropagation();
-                   soundService.playCombatActionSFX('assault_order');
-                   onClose();
-                 }}
-                 className="mt-8 px-6 py-2 bg-[#B31217] hover:bg-[#EF4444] border border-[#EF4444] text-white text-xs font-heading uppercase font-bold clip-tactical-bracket surface-bevel transition-colors"
-               >
-                 Return to Base
-               </button>
-             )}
-           </div>
-         </div>
-       </div>
-     </div>
-   </div>
- );
+  const handleClose = () => {
+    soundService.playPanelClose();
+    onClose();
+  };
+
+  if (!isOpen) return null;
+
+  const currentSectionData =
+    currentSectionIndex >= 0 && currentSectionIndex < creditsData.length
+      ? creditsData[currentSectionIndex]
+      : null;
+  const currentName = currentSectionData?.items[currentNameIndex];
+  const hasItems = !!currentSectionData && currentSectionData.items.length > 0;
+  const isLastName =
+    !!hasItems && currentNameIndex === (currentSectionData?.items.length ?? 0) - 1;
+
+  return (
+    <div className="fixed inset-0 z-[120] overflow-hidden select-none">
+      {/* Cinematic backdrop: slow Ken Burns drift over the AI city horizons.
+          The night layer is the dark base; the dusk layer breathes over it, so
+          the skyline never sits still while credits play. */}
+      <div className="absolute inset-0 overflow-hidden bg-[#04060A]">
+        {/* One shared slow zoom so both horizon layers stay perfectly aligned */}
+        <div className="absolute inset-0 animate-credits-kenburns will-change-transform">
+          {/* Night base */}
+          <img
+            src={menuBgNight}
+            alt=""
+            aria-hidden
+            referrerPolicy="no-referrer"
+            className="absolute inset-0 w-full h-full object-cover object-center"
+          />
+          {/* Dusk layer breathing over the night base */}
+          <img
+            src={menuBgDusk}
+            alt=""
+            aria-hidden
+            referrerPolicy="no-referrer"
+            className="absolute inset-0 w-full h-full object-cover object-center animate-credits-dusk"
+          />
+        </div>
+      </div>
+
+      {/* Tactical grid faintly over the skyline */}
+      <div className="absolute inset-0 bg-tactical-steel opacity-20" />
+      <div className="absolute inset-0 bg-tactical-stripes opacity-15" />
+
+      {/* Readability veils: centre stays clearest so section/name text pops;
+          edges and the very top/bottom carry the vignette. */}
+      <div className="absolute inset-0 bg-[#04060A]/25" />
+      <div className="absolute inset-0 bg-gradient-to-b from-[#03050A]/80 via-transparent to-[#03050A]/85" />
+      <div className="absolute inset-0 bg-radial from-transparent via-[#0A0F16]/35 to-[#03050A]/90" />
+
+      {/* Drifting infection embers float above the veils, below the text */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none" aria-hidden>
+        {EMBERS.map((e, i) => (
+          <span
+            key={i}
+            className="ember-particle"
+            style={
+              {
+                '--left': `${e.left}%`,
+                '--size': `${e.size}px`,
+                '--dur': `${e.dur}s`,
+                '--delay': `${e.delay}s`,
+                '--drift': `${e.drift}px`,
+                '--peak': String(e.peak),
+                '--colour': e.colour,
+              } as React.CSSProperties
+            }
+          />
+        ))}
+      </div>
+
+      {/* Screen body — mirrors the reference credits screen layout */}
+      <div className="relative flex flex-col h-full p-4 md:p-8 animate-fade-in overflow-hidden">
+        <button
+          id="back_credits"
+          onClick={handleClose}
+          aria-label="Back"
+          className="absolute top-4 left-4 md:top-8 md:left-8 text-[#64748B] hover:text-white transition-colors z-20"
+        >
+          <ArrowLeft className="w-12 h-12" />
+        </button>
+
+        <div className="flex-grow flex items-center justify-center relative">
+          {/* LOGO */}
+          {currentSectionIndex === -1 && (
+            <div key="logo-step" className="text-center animate-logo-fade">
+              <img
+                src={hiLogo}
+                alt="Horsemen Interactive"
+                className="h-20 md:h-24 object-contain mx-auto mb-8 opacity-90"
+              />
+              <h1 className="text-[72px] md:text-[108px] font-display font-bold tracking-[0.14em] text-[#E8E8E8] leading-none drop-shadow-[0_0_28px_rgba(179,18,23,0.5)]">
+                TERMINUS
+              </h1>
+              <div className="relative -mt-1 border-[4px] border-[#B31217] p-2 md:p-3 inline-block shadow-[0_0_18px_rgba(185,28,28,0.55)]">
+                <h2 className="text-2xl md:text-3xl font-heading font-bold tracking-[0.18em] text-[#EF4444]">
+                  REAL-WORLD SURVIVAL STRATEGY
+                </h2>
+                <div className="absolute w-1.5 h-4 bg-[#B31217] -bottom-4 right-[12%] rounded-b-full -skew-x-12" />
+              </div>
+            </div>
+          )}
+
+          {/* SECTION */}
+          {currentSectionData && (
+            <div
+              key={`section-${currentSectionIndex}`}
+              className={`absolute inset-x-0 bottom-1/2 mb-4 text-center ${
+                isExiting ? 'animate-fly-out-left' : 'animate-fly-in-left'
+              }`}
+            >
+              <h2 className="text-4xl md:text-5xl font-heading font-bold tracking-[0.08em] text-[#EF4444]">
+                {currentSectionData.section}
+              </h2>
+            </div>
+          )}
+
+          {/* NAME */}
+          {currentName && (
+            <div
+              key={`name-${currentSectionIndex}-${currentNameIndex}`}
+              className={`absolute inset-x-0 top-1/2 mt-4 text-center ${
+                isExiting && isLastName ? 'animate-fly-out-right' : 'animate-name-cycle'
+              }`}
+            >
+              <p className="text-3xl md:text-4xl font-tactical font-light text-[#D7DEE8]">
+                {currentName}
+              </p>
+            </div>
+          )}
+
+          {/* Sections with no items animate out cleanly too */}
+          {currentSectionData && !hasItems && isExiting && (
+            <div
+              key={`empty-exit-${currentSectionIndex}`}
+              className="absolute text-center animate-fly-out-right"
+            />
+          )}
+        </div>
+
+        <div className="text-center mt-4 flex-shrink-0 pb-2">
+          <p className="text-lg font-tactical text-[#64748B]">
+            © 2026 Horsemen Interactive
+          </p>
+        </div>
+      </div>
+    </div>
+  );
 };
