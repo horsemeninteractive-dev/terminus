@@ -818,6 +818,11 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                               return prev;
                             });
                           }}
+                          onSetRepairmenBands={(bands) => {
+                            // §IFZ Repairmen Shop: player-chosen repair bands
+                            // are settlement-wide (crews in every shop obey).
+                            setSettlement((prev) => ({ ...prev, automatedRepairConfig: bands }));
+                          }}
                         />
                       )}
     

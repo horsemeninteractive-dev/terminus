@@ -42,11 +42,16 @@ import {
 } from '../types/combat';
 import { getBuildingLockStatus } from '../services/researchService';
 import { getPrimaryHQ, isHQOperational } from '../services/buildingOperational';
-import { getDefaultHeadTitle, getPrioritizedConstructionSites } from '../services/populationService';
+import {
+  getAutomatedRepairConfig,
+  getDefaultHeadTitle,
+  getPrioritizedConstructionSites,
+} from '../services/populationService';
 import { BuildingPolygon } from '../types/map';
 import { HiddenSurvivorGroup } from '../types/population';
 import {
  AdaptedBuilding,
+ AutomatedRepairConfig,
  BuildingSection,
  FunctionalBuildingTypeId,
  SettlementState,
@@ -72,6 +77,8 @@ interface BuildingAdaptationDrawerProps {
  onExpandAdaptation?: (buildingId: string | number, targetPct: number) => void;
  onSetRecipe?: (buildingId: string | number, recipeId: string) => void;
  onSetFertilize?: (buildingId: string | number, enabled: boolean) => void;
+ /** §IFZ Repairmen Shop: which maintenance bands the crews may repair. */
+ onSetRepairmenBands?: (bands: AutomatedRepairConfig) => void;
  /** §7.1 split sections of this source building (IFZ footprint splitting). */
  buildingSections?: BuildingSection[];
  /** Per-section adaptations currently in the settlement (keyed by section id). */
@@ -106,6 +113,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  onExpandAdaptation,
  onSetRecipe,
  onSetFertilize,
+ onSetRepairmenBands,
  buildingSections = [],
  sectionAdaptations = [],
  onSplitBuilding,
@@ -455,6 +463,60 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  Construction Complete & Operational
  </div>
  )}
+
+ {/* §IFZ Repairmen Shop — player-chosen repair bands. The automated crews
+ repair only the structural categories the player enables; disabling a band
+ stops crews servicing those buildings (Emergency = HQ/gates/towers/
+ generators/hospitals, High = warehouse/water/research, Normal = production,
+ Low = housing). */}
+ {activeDef &&
+   adaptedInfo.typeId === 'repairmen_shop' &&
+   adaptedInfo.constructionStatus === 'completed' &&
+   onSetRepairmenBands && (
+   <div className="bg-[#0e1117] p-2.5 border border-[#202836] space-y-1.5 text-[11px]">
+    <div className="flex justify-between items-center">
+     <span className="text-[#9ca3af] font-semibold">Automated Repair Bands (§IFZ):</span>
+     <span className="text-[10px] text-[#6b7280]">CREWS SERVICE ENABLED BANDS ONLY</span>
+    </div>
+    {(() => {
+     const config = getAutomatedRepairConfig(settlement);
+     const bands: { key: keyof AutomatedRepairConfig; label: string; hint: string }[] = [
+       { key: 'emergency', label: 'EMERGENCY', hint: 'HQ · Gates · Towers · Generators · Hospital' },
+       { key: 'high', label: 'HIGH', hint: 'Warehouse · Cistern · Medbay · Research' },
+       { key: 'normal', label: 'NORMAL', hint: 'Production · Farming · Crafting' },
+       { key: 'low', label: 'LOW', hint: 'Housing & Civilian' },
+     ];
+     return (
+      <div className="grid grid-cols-2 gap-1.5">
+       {bands.map((band) => {
+        const on = config[band.key];
+        return (
+         <button
+          key={band.key}
+          onClick={() => onSetRepairmenBands({ ...config, [band.key]: !on })}
+          className={`p-2 border text-left transition-colors ${
+           on
+            ? 'bg-[#0c2f22] border-[#10b981] text-emerald-200'
+            : 'bg-[#12161d] border-[#28303c] text-slate-500 hover:border-[#38bdf8]'
+          }`}
+         >
+          <div className="flex items-center justify-between gap-1">
+           <span className="font-bold text-[10px]">{band.label}</span>
+           <span className={`text-[9px] font-bold ${on ? 'text-emerald-300' : 'text-[#6b7280]'}`}>{on ? 'REPAIR ✓' : 'OFF'}</span>
+          </div>
+          <div className="text-[8px] font-mono text-[#718096] mt-0.5 leading-tight">{band.hint}</div>
+         </button>
+        );
+       })}
+      </div>
+     );
+    })()}
+    <div className="text-[9px] text-[#6b7280]">
+     Crews prioritise the most damaged structure within enabled bands — disable
+     a band to leave those buildings unrepaired and conserve materials.
+    </div>
+   </div>
+  )}
 
  {/* §7.2 Production Recipe — multi-recipe facilities run the player's choice. */}
  {activeDef && (activeDef.recipes?.length || 0) > 1 &&

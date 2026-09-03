@@ -112,7 +112,7 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     name: 'Squad Quarters',
     category: 'basic',
     description:
-      'Dedicated tactical barracks and locker facilities. Extends settlement logistics to support +1 additional deployable squad in the field.',
+      'Dedicated tactical barracks and locker facilities. Extends settlement logistics with deployable squad slots that scale with the barracks footprint — a small annex fields +1 squad, a large converted hall quarters several.',
     iconName: 'Users',
     badgeColor: '#60a5fa',
     adaptationAllowed: true,
@@ -130,7 +130,8 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     squadCapacity: 1,
     baseDefense: 45,
     freestandingDefense: 25,
-    capacityLabel: 'Squads: +1 Active Field Squad slot',
+    // §IFZ: +1 squad per ~64 m² of fully-adapted barracks footprint.
+    capacityLabel: 'Squad Slots: 1 per ~64 m² barracks area',
     preferredOsmTypes: ['residential', 'police', 'civic'],
   },
   warehouse: {

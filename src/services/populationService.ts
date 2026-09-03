@@ -18,6 +18,7 @@ import {
 } from '../types/population';
 import {
   AdaptedBuilding,
+  AutomatedRepairConfig,
   ConstructionWorkOrder,
   FunctionalBuildingTypeId,
   FunctionalCategory,
@@ -271,6 +272,22 @@ export function reorderConstructionQueue(
     sites[i].constructionPriority = i;
   }
   return { success: true, newState: recalculateLaborDistribution(state) };
+}
+
+/** Default Repairmen Shop behaviour — every maintenance band enabled, which is
+ *  also what legacy saves (no `automatedRepairConfig`) behave as. */
+export const DEFAULT_AUTOMATED_REPAIR_CONFIG: AutomatedRepairConfig = {
+  emergency: true,
+  high: true,
+  normal: true,
+  low: true,
+};
+
+/** Resolves the settlement's Repairmen Shop band config (legacy saves = all on). */
+export function getAutomatedRepairConfig(
+  state: Pick<SettlementState, 'automatedRepairConfig'> | null | undefined
+): AutomatedRepairConfig {
+  return state?.automatedRepairConfig ?? DEFAULT_AUTOMATED_REPAIR_CONFIG;
 }
 
 export function getWorkerJobDemand(state: SettlementState): Record<WorkerJobTypeId, number> {
@@ -1343,8 +1360,19 @@ export function tickSettlementSimulation(
       if (['field', 'greenhouse', 'barn', 'cookhouse', 'cannery', 'tool_factory', 'sawmill', 'scrapyard', 'clay_pit', 'arms_factory', 'chemical_plant', 'vehicle_workshop', 'repairmen_shop'].includes(t)) return 2;
       return 3;
     };
+    // §IFZ Repairmen Shop player control: crews only repair the bands the
+    // player enables. A disabled band's buildings are skipped even when
+    // damaged (absent config on legacy saves = everything enabled).
+    const repairConfig = getAutomatedRepairConfig(state);
+    const bandEnabled = (b: { typeId: string }): boolean => {
+      const band = maintenanceBand(b);
+      if (band === 0) return repairConfig.emergency;
+      if (band === 1) return repairConfig.high;
+      if (band === 2) return repairConfig.normal;
+      return repairConfig.low;
+    };
     const automaticTargets = allBuildings
-      .filter((b) => b.typeId !== 'repairmen_shop' && b.currentDurability < b.maxDurability && !b.isUnderRepair)
+      .filter((b) => b.typeId !== 'repairmen_shop' && b.currentDurability < b.maxDurability && !b.isUnderRepair && bandEnabled(b))
       .sort((a, b) => {
         const bandDiff = maintenanceBand(a) - maintenanceBand(b);
         if (bandDiff !== 0) return bandDiff;

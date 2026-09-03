@@ -55,6 +55,8 @@ export function serializeSettlementState(state: SettlementState): any {
     trainingState: state.trainingState
       ? { ...state.trainingState, sessions: mapToEntries(state.trainingState.sessions) }
       : undefined,
+    // §IFZ Repairmen Shop band control (absent = every band enabled on load).
+    automatedRepairConfig: state.automatedRepairConfig || undefined,
     buildingSearches: mapToEntries(state.buildingSearches),
     hiddenGroups: mapToEntries(state.hiddenGroups),
     deconstructionJobs: mapToEntries(state.deconstructionJobs),
@@ -183,6 +185,7 @@ export function deserializeSettlementState(data: any): SettlementState {
     waterState: data.waterState
       ? { ...data.waterState, cisterns: toMap(data.waterState.cisterns) }
       : createEmptyWaterState(),
+    automatedRepairConfig: data.automatedRepairConfig || undefined,
     powerState: data.powerState
       ? {
           ...data.powerState,

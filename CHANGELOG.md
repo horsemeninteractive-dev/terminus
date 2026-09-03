@@ -66,6 +66,21 @@ Releasing:
   the squad.
 
 ### Changed
+- **Repairmen Shop now obeys the player (audit #38).** The automated repair
+  crews are no longer locked to the internal importance hierarchy — the
+  Repairmen Shop's inspector exposes four **Automated Repair Bands**
+  (Emergency = HQ/gates/towers/generators/hospital, High = warehouse/water/
+  research, Normal = production, Low = housing). Disabling a band leaves those
+  buildings unrepaired and conserves materials; crews still prioritise the
+  most damaged structure within enabled bands. The config is settlement-wide,
+  saved/loaded explicitly, and legacy saves without it behave exactly as
+  before (all bands enabled).
+- **Squad Quarters squad slots scale with barracks size (audit #2).** A fully
+  converted Squad Quarters previously added a flat +1 squad regardless of
+  size. It now uses the same footprint formula as the HQ — roughly one
+  deployable squad per 64 m² of barracks (√area/8 × the type bonus) — so a
+  small annex keeps the classic +1 while a large converted hall quarters
+  several squads. Partial conversions still grant nothing.
 - **Economy-fidelity corrections from the building audit (P1).** The **Bar** now
   matches IFZ: no research requirement (previously gated behind Fermentation)
   and the efficient 1 Grain → 8 Beer recipe (previously 4 → 4). The

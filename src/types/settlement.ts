@@ -318,6 +318,19 @@ export interface FunctionalBuildingDefinition {
 // 3. Adapted Building Instance in World
 // ==========================================
 
+/**
+ * Player-facing Repairmen Shop control (§IFZ): which structural-importance
+ * bands the automated maintenance crews may repair. Each flag maps to one
+ * band of the internal priority hierarchy (Emergency → High → Normal → Low).
+ * When a band is disabled its buildings are ignored, even when damaged.
+ */
+export interface AutomatedRepairConfig {
+  emergency: boolean;
+  high: boolean;
+  normal: boolean;
+  low: boolean;
+}
+
 export interface AdaptedBuilding {
   buildingId: string | number;
   typeId: FunctionalBuildingTypeId;
@@ -634,6 +647,10 @@ export interface SettlementState {
   morale?: SettlementMoraleState;
   // Laws & Policy System (§IFZ Major Update #5) — enacted via the Gathering Place
   laws?: LawsState;
+  // Repairmen Shop (§IFZ): which maintenance bands the automated repair crews
+  // may service. Absent on legacy saves = every band enabled (the original
+  // automatic priority behaviour).
+  automatedRepairConfig?: AutomatedRepairConfig;
   // Expeditions (§IFZ) — off-map scavenging areas revealed through the Antenna
   expeditions?: ExpeditionState;
   // Building Occupations (§IFZ) — infected take over UNADAPTED structures

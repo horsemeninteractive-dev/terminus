@@ -412,11 +412,16 @@ export function recalculateSettlementStats(
     }
     // A squad slot is all-or-nothing: a partially adapted Squad Quarters does
     // not field half a squad, so only a fully converted building grants the slot.
+    // §IFZ: the contribution scales with the barracks' physical size exactly
+    // like the HQ formula — roughly one squad per 64 m² of footprint (√area/8)
+    // times the type's per-squad bonus. A small annex keeps the classic +1;
+    // a huge converted hall quarters several squads.
     if (
       SQUAD_CAPACITY_TYPES.includes(bldg.typeId) &&
       (bldg.adaptationPercentage ?? 100) >= 100
     ) {
-      squadCapacity += FUNCTIONAL_BUILDING_DEFINITIONS[bldg.typeId]?.squadCapacity || 1;
+      const areaSlots = Math.max(1, Math.floor(Math.sqrt(Math.max(1, bldg.footprintAreaM2)) / 8));
+      squadCapacity += areaSlots * (FUNCTIONAL_BUILDING_DEFINITIONS[bldg.typeId]?.squadCapacity || 1);
     }
   }
 
