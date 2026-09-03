@@ -1087,7 +1087,12 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
   {/* Shooting Range (§Terminus) — ammo-into-proficiency training */}
   {adaptedInfo.typeId === 'shooting_range' && (() => {
     const powered = (settlement.powerState?.poweredBuildingIds || []).includes(String(adaptedInfo.buildingId));
+    const staffed = (adaptedInfo.assignedWorkers || 0) > 0;
+    const rangeWorkers = Math.max(0, adaptedInfo.assignedWorkers || 0);
     const sessions = settlement.trainingState?.sessions || new Map();
+    const lanesInUse = [...sessions.values()].filter(
+      (sess: any) => String(sess.rangeBuildingId) === String(adaptedInfo.buildingId)
+    ).length;
     return (
       <div className="bg-[#0e1117] p-2.5 border border-[#3F2E0E] space-y-2">
         <div className="flex items-center justify-between text-[11px]">
@@ -1095,14 +1100,21 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
             <Crosshair className="w-3.5 h-3.5 text-orange-400" />
             Combat Training
           </span>
-          <span className={`text-[9px] px-1.5 py-0.5 border font-bold uppercase ${powered ? 'bg-orange-950 text-orange-300 border-orange-800' : 'bg-slate-950 text-slate-400 border-slate-800'}`}>
-            {powered ? 'Powered' : 'No Power'}
+          <span
+            className={`text-[9px] px-1.5 py-0.5 border font-bold uppercase ${
+              powered && staffed
+                ? 'bg-orange-950 text-orange-300 border-orange-800'
+                : 'bg-slate-950 text-slate-400 border-slate-800'
+            }`}
+          >
+            {!powered ? 'No Power' : staffed ? `${rangeWorkers} Officer${rangeWorkers === 1 ? '' : 's'} · ${lanesInUse}/${rangeWorkers} Lanes` : 'No Staff'}
           </span>
         </div>
         <div className="text-[9px] font-mono text-[#718096]">
           TRAINING DRAWS AMMUNITION AND GRANTS A PERMANENT TIER: UNTRAINED → BASIC
           → TRAINED → VETERAN → EXPERT. HIGHER TIERS TAKE LONGER. THE RANGE MUST
-          STAY POWERED — AN UNPOWERED RANGE DRILLS NOBODY.
+          STAY POWERED AND STAFFED — RANGE OFFICERS RUN THE LANES, AND EACH EXTRA
+          OFFICER SPEEDS UP ACTIVE COURSES. AN UNSTAFFED RANGE DRILLS NOBODY.
         </div>
         {(settlement.squads || []).slice(0, 4).map((sq) => {
           const tier = sq.trainingTier ?? 0;
@@ -1129,9 +1141,17 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
               ) : (
                 <button
                   onClick={() => onStartTraining && onStartTraining(sq.id)}
-                  disabled={!onStartTraining || !powered}
+                  disabled={!onStartTraining || !powered || !staffed || lanesInUse >= rangeWorkers}
                   className="px-2 py-1 bg-orange-950/60 hover:bg-orange-900 border border-orange-700/60 text-orange-300 font-bold text-[10px] cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                  title={powered ? 'Start the next training course' : 'The range needs power'}
+                  title={
+                    !powered
+                      ? 'The range needs power'
+                      : !staffed
+                      ? 'Assign range officers to open training lanes'
+                      : lanesInUse >= rangeWorkers
+                      ? 'All training lanes are busy'
+                      : 'Start the next training course'
+                  }
                 >
                   Train
                 </button>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
  AlertTriangle,
  FolderOpen,
@@ -25,72 +25,177 @@ import { TerminusLogo } from './TerminusLogo';
 // readout is always the actual CHANGELOG.md, never a stale hand-written blurb.
 import changelogRaw from '../../CHANGELOG.md?raw';
 
-/** Minimal markdown renderer for the changelog subset we write. */
-function renderChangelog(md: string): React.ReactNode {
-  const lines = md.split('\n');
-  const out: React.ReactNode[] = [];
-  let key = 0;
-  let started = false;
-  // Tokenize one inline segment: `code`, **bold**, *italic* — in that order.
-  const inline = (text: string): React.ReactNode[] => {
-    const parts: React.ReactNode[] = [];
-    const tokens = text.split(/(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g);
-    let t = 0;
-    for (const tok of tokens) {
-      if (!tok) continue;
-      const k = t++;
-      if (tok.startsWith('`') && tok.endsWith('`')) {
-        parts.push(<code key={k} className="text-[#7DD3FC] bg-white/5 px-1 rounded">{tok.slice(1, -1)}</code>);
-      } else if (tok.startsWith('**') && tok.endsWith('**')) {
-        parts.push(<strong key={k} className="text-[#E8E8E8]">{tok.slice(2, -2)}</strong>);
-      } else if (tok.startsWith('*') && tok.endsWith('*')) {
-        parts.push(<em key={k} className="italic text-[#A5B4FC]">{tok.slice(1, -1)}</em>);
-      } else {
-        parts.push(<span key={k}>{tok}</span>);
-      }
-    }
-    return parts;
-  };
+type ChangelogItem = { kind: 'bullet' | 'note'; text: string };
+interface ChangelogCategory { name: string; items: ChangelogItem[]; }
+interface ChangelogRelease {
+  title: string;
+  date: string;
+  intro: ChangelogItem[];
+  categories: ChangelogCategory[];
+}
 
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    // Skip everything before the first `## ` heading (title/intro text).
-    if (!started) {
-      if (line.startsWith('## ')) started = true;
-      else continue;
-    }
-    // Skip definition footnotes ([Unreleased]: https://...).
-    if (/^\[[^\]]+\]:/.test(line)) continue;
-    if (line.startsWith('### ')) {
-      out.push(
-        <div key={key++} className="mt-3 mb-1 font-heading font-bold text-[11px] uppercase tracking-wider text-[#38bdf8]">
-          {line.slice(4)}
-        </div>
-      );
-    } else if (line.startsWith('## ')) {
-      out.push(
-        <div key={key++} className="mt-4 mb-1 font-heading font-bold text-sm text-[#E8E8E8]">
-          {line.slice(3)}
-        </div>
-      );
-    } else if (line === '---') {
-      out.push(<div key={key++} className="my-2 h-px bg-[#262F3D]" />);
-    } else if (line.startsWith('- ')) {
-      out.push(
-        <div key={key++} className="flex gap-1.5 text-[#8C9BAE]">
-          <span className="text-[#B31217] shrink-0">▸</span>
-          <span>{inline(line.slice(2))}</span>
-        </div>
-      );
-    } else if (line) {
-      out.push(
-        <div key={key++} className="text-[#8C9BAE]">
-          {inline(line)}
-        </div>
-      );
+// Tokenize one inline segment: `code`, **bold**, *italic* — in that order.
+function inlineMarkup(text: string): React.ReactNode[] {
+  const parts: React.ReactNode[] = [];
+  const tokens = text.split(/(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g);
+  let t = 0;
+  for (const tok of tokens) {
+    if (!tok) continue;
+    const k = t++;
+    if (tok.startsWith('`') && tok.endsWith('`')) {
+      parts.push(<code key={k} className="text-[#7DD3FC] bg-white/5 px-1 rounded">{tok.slice(1, -1)}</code>);
+    } else if (tok.startsWith('**') && tok.endsWith('**')) {
+      parts.push(<strong key={k} className="text-[#E8E8E8]">{tok.slice(2, -2)}</strong>);
+    } else if (tok.startsWith('*') && tok.endsWith('*')) {
+      parts.push(<em key={k} className="italic text-[#A5B4FC]">{tok.slice(1, -1)}</em>);
+    } else {
+      parts.push(<span key={k}>{tok}</span>);
     }
   }
-  return <>{out}</>;
+  return parts;
+}
+
+/**
+ * Parse the changelog subset we write into releases → categories → items.
+ * Bullet continuation lines (wrapped markdown) fold back into their bullet so
+ * each entry renders as one readable paragraph instead of many stray lines.
+ */
+function parseChangelog(md: string): ChangelogRelease[] {
+  const releases: ChangelogRelease[] = [];
+  let current: ChangelogRelease | null = null;
+  let currentCat: ChangelogCategory | null = null;
+  let blankPending = false;
+
+  const target = (): ChangelogItem[] =>
+    currentCat ? currentCat.items : current ? current.intro : [];
+  const append = (item: ChangelogItem) => target().push(item);
+
+  for (const raw of md.split('\n')) {
+    const line = raw.trim();
+    // Skip definition footnotes ([0.2.0]: https://...).
+    if (/^\[[^\]]+\]:/.test(line)) continue;
+    if (line.startsWith('## ')) {
+      const title = line.slice(3).trim().replace(/^\[([^\]]+)\]/, '$1');
+      const m = title.match(/^(\S+)\s*[–-]\s*(.+)$/);
+      current = { title: m ? m[1] : title, date: m ? m[2] : '', intro: [], categories: [] };
+      releases.push(current);
+      currentCat = null;
+      blankPending = false;
+      continue;
+    }
+    if (!current) continue; // skip preamble until the first release heading
+    if (line.startsWith('### ')) {
+      currentCat = { name: line.slice(4).trim(), items: [] };
+      current.categories.push(currentCat);
+      blankPending = false;
+      continue;
+    }
+    if (line === '---' || !line) {
+      blankPending = !line;
+      continue;
+    }
+    const items = target();
+    const last = items[items.length - 1];
+    if (line.startsWith('- ')) {
+      append({ kind: 'bullet', text: line.slice(2) });
+    } else if (last && !blankPending && last.kind === 'note') {
+      // continuation of a plain (non-bulleted) paragraph
+      last.text += ' ' + line;
+    } else if (last && !blankPending && last.kind === 'bullet') {
+      // wrapped continuation of a bullet entry
+      last.text += ' ' + line;
+    } else {
+      append({ kind: 'note', text: line });
+    }
+    blankPending = false;
+  }
+  return releases.filter((r) => r.intro.length > 0 || r.categories.length > 0);
+}
+
+const CATEGORY_ACCENTS: Record<string, string> = {
+  Added: 'border-[#22C55E]/60 text-[#4ADE80]',
+  Changed: 'border-[#38BDF8]/60 text-[#7DD3FC]',
+  Fixed: 'border-[#EF4444]/60 text-[#F87171]',
+  Deprecated: 'border-[#FACC15]/60 text-[#FDE047]',
+  Removed: 'border-[#EF4444]/60 text-[#F87171]',
+  Security: 'border-[#A78BFA]/60 text-[#C4B5FD]',
+};
+
+/** Structured, readable rendering of the release notes with version tabs. */
+function ChangelogReleaseNotes() {
+  const releases = useMemo(() => parseChangelog(changelogRaw), []);
+  const [activeIdx, setActiveIdx] = useState(0);
+  const active = releases[Math.min(activeIdx, releases.length - 1)];
+  if (!releases.length) return null;
+
+  return (
+    <div>
+      {/* Version tabs: newest release first */}
+      <div className="flex items-center gap-1.5 mb-3 flex-wrap">
+        <span className="font-heading font-bold text-[#EF4444] text-[11px] uppercase tracking-wider mr-1">
+          RELEASE NOTES
+        </span>
+        {releases.map((r, i) => (
+          <button
+            key={r.title}
+            onClick={() => setActiveIdx(i)}
+            className={`px-2.5 py-1 text-[10px] font-heading uppercase tracking-wider border clip-tactical-bracket transition-colors ${
+              i === activeIdx
+                ? 'bg-[#B31217] border-[#EF4444] text-white'
+                : 'bg-[#14171C] border-[#262F3D] text-[#8C9BAE] hover:text-white hover:border-[#8C9BAE]'
+            }`}
+          >
+            v{r.title}
+          </button>
+        ))}
+      </div>
+
+      <div className="max-h-[52vh] overflow-y-auto pr-1.5 space-y-3">
+        <div className="flex items-baseline gap-2">
+          <div className="font-heading font-bold text-sm text-[#E8E8E8]">Version {active.title}</div>
+          {active.date && (
+            <div className="text-[10px] font-tech text-[#8C9BAE] uppercase tracking-widest">
+              Released {active.date}
+            </div>
+          )}
+        </div>
+
+        {active.intro.length > 0 && (
+          <div className="text-[#A6B3C4] text-[11px] leading-relaxed pl-1">
+            {active.intro.map((n, i) => (
+              <p key={i} className={i > 0 ? 'mt-1' : ''}>{inlineMarkup(n.text)}</p>
+            ))}
+          </div>
+        )}
+
+        {active.categories.map((cat) => {
+          const accent = CATEGORY_ACCENTS[cat.name] || 'border-[#8C9BAE]/40 text-[#A6B3C4]';
+          return (
+            <div key={cat.name}>
+              <div className={`flex items-center gap-1.5 mb-1.5 border-l-2 pl-2 font-heading font-bold text-[10px] uppercase tracking-[0.15em] ${accent}`}>
+                {cat.name}
+                <span className="text-[#5B6B7C] font-normal tracking-normal">({cat.items.length})</span>
+              </div>
+              <div className="space-y-2">
+                {cat.items.map((item, i) =>
+                  item.kind === 'bullet' ? (
+                    <div key={i} className="flex gap-1.5 pl-1">
+                      <span className="text-[#B31217] shrink-0 leading-snug">▸</span>
+                      <p className="text-[#A6B3C4] text-[11px] leading-relaxed min-w-0">{inlineMarkup(item.text)}</p>
+                    </div>
+                  ) : (
+                    <p key={i} className="text-[#8C9BAE] text-[11px] leading-relaxed pl-1">
+                      {inlineMarkup(item.text)}
+                    </p>
+                  )
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 interface MainMenuProps {
@@ -466,14 +571,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
  </div>
  )}
 
- {activeExtrasModal === 'updates' && (
- <div>
- <div className="font-heading font-bold text-[#EF4444] mb-2 text-sm">VERSION {__APP_VERSION__} — RELEASE NOTES</div>
- <div className="max-h-[55vh] overflow-y-auto pr-1 space-y-0.5">
- {renderChangelog(changelogRaw)}
- </div>
- </div>
- )}
+ {activeExtrasModal === 'updates' && <ChangelogReleaseNotes />}
 
  {activeExtrasModal === 'map_editor' && (
  <p>

@@ -22,7 +22,7 @@ import {
   getWeaponDefinition,
   pickSurvivorFaceUrl,
 } from '../types/combat';
-import { AdaptedBuilding, SettlementState } from '../types/settlement';
+import { AdaptedBuilding, SettlementState, SettlementStockpile } from '../types/settlement';
 import { isResearchUnlocked } from './researchService';
 import { FUNCTIONAL_BUILDING_DEFINITIONS, getCanonicalDefenseDef } from '../data/functionalBuildings';
 import { getPrimaryAdaptedEntry, getPrimaryHQ, isBuildingOperational } from './buildingOperational';
@@ -2037,6 +2037,30 @@ export function tickCombatSimulation(
     updatedHostileHumans,
     capturedSquadIds,
     ammoConsumed,
+  };
+}
+
+// ==========================================
+// §IFZ Scrapyard economy — spent ammunition brass.
+// ==========================================
+/** Fraction of fired ammunition whose spent brass/casings become scrap metal
+ *  (the physical shell is reusable — a staffed Scrapyard recycles it). */
+export const SPENT_AMMO_SCRAP_RATIO = 0.15;
+
+/** Returns the stockpile with the fired round's brass added as scrap. Waste
+ *  accumulates regardless of organized storage — it is rubbish in the yard. */
+export function recycleSpentAmmoToScrap(
+  stockpile: SettlementStockpile,
+  ammoConsumed: number
+): SettlementStockpile {
+  const brass = Math.floor(ammoConsumed * SPENT_AMMO_SCRAP_RATIO);
+  if (brass <= 0) return stockpile;
+  return {
+    ...stockpile,
+    materials: {
+      ...stockpile.materials,
+      scrap: (stockpile.materials.scrap || 0) + brass,
+    },
   };
 }
 

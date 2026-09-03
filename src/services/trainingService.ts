@@ -27,19 +27,55 @@ export function getSquadTrainingBonus(tier: number): {
   };
 }
 
-/** True when an operational Shooting Range is receiving power. */
-export function findPoweredRange(state: SettlementState): { buildingId: string | number; name: string } | null {
+/**
+ * True when an operational Shooting Range is receiving power AND staffed by
+ * range officers. §IFZ: the building's workers open the firing lanes — an
+ * unstaffed range cannot drill anybody, no matter how much power it has.
+ */
+export function findPoweredRange(state: SettlementState): {
+  buildingId: string | number;
+  name: string;
+  workerCount: number;
+} | null {
   const powered = getPoweredBuildingIds(state);
   const all = [
     ...Array.from(state.adaptedBuildings.values()),
     ...(state.freestandingBuildings || []),
   ];
   for (const b of all) {
-    if (b.typeId === 'shooting_range' && isBuildingOperational(b) && powered.has(String(b.buildingId))) {
-      return { buildingId: b.buildingId, name: b.name || 'Shooting Range' };
+    if (
+      b.typeId === 'shooting_range' &&
+      isBuildingOperational(b) &&
+      powered.has(String(b.buildingId)) &&
+      (b.assignedWorkers ?? 0) > 0
+    ) {
+      return {
+        buildingId: b.buildingId,
+        name: b.name || 'Shooting Range',
+        workerCount: Math.max(1, b.assignedWorkers ?? 1),
+      };
     }
   }
   return null;
+}
+
+/** Resolve the exact range building a session trains at (operational + powered). */
+function findRangeBuilding(
+  state: SettlementState,
+  buildingId: string | number
+): { workerCount: number; powered: boolean; staffed: boolean } | null {
+  const powered = getPoweredBuildingIds(state);
+  const all = [
+    ...Array.from(state.adaptedBuildings.values()),
+    ...(state.freestandingBuildings || []),
+  ];
+  const b = all.find((x) => String(x.buildingId) === String(buildingId) && x.typeId === 'shooting_range');
+  if (!b || !isBuildingOperational(b)) return null;
+  return {
+    workerCount: Math.max(0, b.assignedWorkers ?? 0),
+    powered: powered.has(String(b.buildingId)),
+    staffed: (b.assignedWorkers ?? 0) > 0,
+  };
 }
 
 export interface StartTrainingResult {
@@ -64,7 +100,10 @@ export function startSquadTraining(
   if (sessions.has(squadId)) return { ok: false, error: 'This squad is already in training.' };
   const range = findPoweredRange(state);
   if (!range) {
-    return { ok: false, error: 'No powered Shooting Range is available — build one and keep its generator running.' };
+    return {
+      ok: false,
+      error: 'No powered, staffed Shooting Range is available — build one, staff range officers, and keep its generator running.',
+    };
   }
   const currentTier = squad.trainingTier ?? 0;
   const nextTier = Math.min(4, currentTier + 1) as TrainingTier;
@@ -72,6 +111,18 @@ export function startSquadTraining(
   const ammoNeeded = TRAINING_TIER_AMMO[nextTier];
   if ((state.stockpile?.ammo?.sharedPool || 0) < ammoNeeded) {
     return { ok: false, error: `Not enough ammunition for the ${TRAINING_TIER_LABELS[nextTier]} course (${ammoNeeded} needed).` };
+  }
+
+  // §IFZ lanes: each staffed range officer runs one firing lane, so a range
+  // can only host as many concurrent sessions as it has workers.
+  const lanesAtRange = [...sessions.values()].filter(
+    (sess) => String(sess.rangeBuildingId) === String(range.buildingId)
+  ).length;
+  if (lanesAtRange >= range.workerCount) {
+    return {
+      ok: false,
+      error: `All ${range.workerCount} training lane${range.workerCount === 1 ? ' is' : 's are'} busy — assign more range officers to open lanes.`,
+    };
   }
 
   return {
@@ -118,7 +169,6 @@ export function tickSquadTraining(state: SettlementState, effectiveDeltaSec: num
     ? new Map(state.trainingState.sessions)
     : new Map<string, SquadTrainingSession>();
   if (sessions.size === 0) return { newState: state, events };
-  const poweredIds = getPoweredBuildingIds(state);
   const dayFraction = effectiveDeltaSec / 600;
   const ammoPool = state.stockpile?.ammo;
   let totalAmmoSpent = state.trainingState?.totalAmmoSpent ?? 0;
@@ -133,9 +183,12 @@ export function tickSquadTraining(state: SettlementState, effectiveDeltaSec: num
     }
     let s = { ...session };
 
-    // The range must exist, stay operational, and stay powered.
-    const rangePowered = poweredIds.has(String(s.rangeBuildingId));
-    if (!rangePowered) continue;
+    // §IFZ staffing: the session's range must exist, stay operational, stay
+    // powered, AND stay staffed by range officers. An unstaffed range drills
+    // nobody — the course holds exactly where it was (no ammo draw, no
+    // progress) until officers are assigned again.
+    const range = findRangeBuilding(state, s.rangeBuildingId);
+    if (!range || !range.powered || !range.staffed) continue;
 
     // Draw the tier's ammo up-front is done at start; ongoing sessions draw a
     // steady trickle so a session actually costs ammunition over time.
@@ -148,9 +201,14 @@ export function tickSquadTraining(state: SettlementState, effectiveDeltaSec: num
     totalAmmoSpent += ammoCost;
     s.ammoConsumed += ammoCost;
 
+    // Range officers supervise lanes: each extra officer (past the first)
+    // speeds the course by 25%, capped at 2× so a huge staff can never turn
+    // training into an instant fountain.
+    const staffMultiplier = Math.min(2, 1 + 0.25 * (range.workerCount - 1));
+
     const nextTier = Math.min(4, s.tier + 1) as TrainingTier;
     const targetSec = TRAINING_TIER_SEC[nextTier];
-    s.progressSec += effectiveDeltaSec;
+    s.progressSec += effectiveDeltaSec * staffMultiplier;
     if (s.progressSec >= targetSec) {
       s.tier = nextTier;
       s.progressSec = 0;

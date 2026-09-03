@@ -84,6 +84,8 @@ export interface SaveLoadRuntime {
   setSatelliteQuality: Dispatch<SetStateAction<SatelliteQuality>>;
   setSelectedBuilding: Dispatch<SetStateAction<BuildingPolygon | null>>;
   setSelectedSquadId: Dispatch<SetStateAction<string | null>>;
+  /** §IFZ CTRL+drag multi-select: deselect clears the whole group, not just the primary. */
+  setSelectedSquadIds: Dispatch<SetStateAction<string[]>>;
   setSelectedVehicleId: Dispatch<SetStateAction<string | null>>;
   setDescentProgress: Dispatch<SetStateAction<number>>;
   setDescentAltitudeKm: Dispatch<SetStateAction<number>>;
@@ -154,6 +156,7 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
     setSatelliteQuality,
     setSelectedBuilding,
     setSelectedSquadId,
+    setSelectedSquadIds,
     setSelectedVehicleId,
     setScavengeQueue,
     setDescentProgress,
@@ -557,7 +560,11 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
           if (selectedBuilding) {
             setSelectedBuilding(null);
           } else if (selectedSquadId) {
+            // §IFZ multi-select: ESC closes the whole selection, not just the
+            // primary — otherwise the box set survives in the scene and orders
+            // keep fanning out to squads with no visible command card.
             setSelectedSquadId(null);
+            setSelectedSquadIds([]);
           } else if (selectedVehicleId) {
             setSelectedVehicleId(null);
           } else {
@@ -608,7 +615,7 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [viewMode, selectedBuilding, selectedSquadId, selectedVehicleId, handleQuickSave, handleQuickLoad]);
+  }, [viewMode, selectedBuilding, selectedSquadId, selectedVehicleId, handleQuickSave, handleQuickLoad, setSelectedSquadIds]);
 
   // Restart after total extinction (§7.5)
   const handleRestartGame = () => {

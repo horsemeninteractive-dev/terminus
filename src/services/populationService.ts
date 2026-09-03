@@ -56,6 +56,7 @@ export const ALL_WORKER_JOB_TYPES: WorkerJobTypeId[] = [
   'factory',
   'scientist',
   'nurse',
+  'trainer',
 ];
 
 export const DEFAULT_WORKER_PRIORITIES: Record<WorkerJobTypeId, WorkerPriorityLevel> = {
@@ -67,6 +68,7 @@ export const DEFAULT_WORKER_PRIORITIES: Record<WorkerJobTypeId, WorkerPriorityLe
   factory: 2,
   scientist: 2,
   nurse: 3,
+  trainer: 3,
 };
 
 export const DEFAULT_WORKER_LIMITS: Record<WorkerJobTypeId, number> = {
@@ -78,6 +80,7 @@ export const DEFAULT_WORKER_LIMITS: Record<WorkerJobTypeId, number> = {
   factory: 9999,
   scientist: 9999,
   nurse: 9999,
+  trainer: 9999,
 };
 
 export const WORKER_JOB_METADATA: Record<
@@ -92,6 +95,7 @@ export const WORKER_JOB_METADATA: Record<
   factory: { name: 'FACTORY WORKER', iconName: 'Factory', category: 'Industry' },
   scientist: { name: 'SCIENTIST', iconName: 'FlaskConical', category: 'Research' },
   nurse: { name: 'NURSE', iconName: 'HeartPulse', category: 'Medical' },
+  trainer: { name: 'RANGE OFFICER', iconName: 'Crosshair', category: 'Military' },
 };
 
 /**
@@ -164,7 +168,10 @@ const BUILDING_JOB_MAP: Partial<Record<FunctionalBuildingTypeId, WorkerJobTypeId
   // NB: floodlight_tower intentionally absent — it is powered illumination,
   // not a garrison, so it falls through to the guardable gate below (null).
   guard_watchtower: 'guard',
-  shooting_range: 'guard',
+  // §IFZ Shooting Range — staff are RANGE OFFICERS running training lanes, not
+  // guards manning a firing post. The range's workers open training lanes and
+  // accelerate courses (see trainingService).
+  shooting_range: 'trainer',
   wooden_gate: 'guard',
   metal_gate: 'guard',
   fortified_gate: 'guard',
@@ -300,6 +307,7 @@ export function getWorkerJobDemand(state: SettlementState): Record<WorkerJobType
     factory: 0,
     scientist: 0,
     nurse: 0,
+    trainer: 0,
   };
 
   if (!state.isInitialized || !getPrimaryHQ(state)) {
@@ -684,6 +692,7 @@ export function recalculateLaborDistribution(state: SettlementState): Settlement
     factory: 0,
     scientist: 0,
     nurse: 0,
+    trainer: 0,
   };
 
   // If HQ is not established yet, all workers remain unassigned

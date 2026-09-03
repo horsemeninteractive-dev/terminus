@@ -19,6 +19,7 @@ import {
   Lock,
   MoreHorizontal,
   MousePointer2,
+  Crosshair,
   Pickaxe,
   Plus,
   Radio,
@@ -172,6 +173,7 @@ const JOB_ICONS: Record<WorkerJobTypeId, LucideIcon> = {
   factory: Factory,
   scientist: FlaskConical,
   nurse: Plus,
+  trainer: Crosshair,
 };
 
 export const TacticalActionBar: React.FC<TacticalActionBarProps> = ({

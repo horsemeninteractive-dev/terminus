@@ -22,7 +22,11 @@ Releasing:
 ---
 
 ## [Unreleased]
+
+## [0.2.0] – 2026-09-03
+
 ### Added
+
 - The Arms Factory and Protective Gear Factory now have **real, selectable
   production lines** that end in actual equipment, instead of research tree
   unlocks pointing at factories that could not manufacture the items (P0). The
@@ -65,176 +69,6 @@ Releasing:
   through the normal backpack + depot-unload flow, so gear is never lost with
   the squad.
 
-### Changed
-- **Forester's Hut and Sawmill now do real spatial tree work (audit #12/#13).**
-  A new forestry stage runs between the economy and gathering stages of the
-  simulation pipeline. Staffed **Forester's Huts** manage the actual wood
-  `ResourceNode`s inside a 40 m working radius: depleted trees are replanted
-  as saplings and regrow (the crew's growth budget is split across the trees
-  it tends — constant throughput), and when the radius runs thin it plants
-  brand-new saplings on clear ground (clear of buildings, roads, water, and
-  other trees) at an average one-per-45 s cadence — making wood a renewable
-  resource instead of a depletable map read. Staffed **Sawmills** auto-cut the
-  nearest mature tree inside a 30 m working area straight into wood through
-  the capacity-aware deposit path (a full stockpile pauses the saw rather than
-  felling timber it cannot store). Both are crew jobs only — unstaffed or
-  under-construction buildings do nothing, and crews shelter at night and
-  during alarms like the gatherers. The logs→lumber recipe chain is retained
-  as the documented Terminus extension on top of the real mechanic, and the
-  two defs' copy/labels now describe the working radii. Newly planted trees
-  carry `source: 'forester'` and render like ordinary trees.
-- **Research Centers cost 1 Scientific Material to establish (audit #34, P1).**
-  IFZ requires 1 Scientific Material to build a Research Center; Terminus now
-  charges it as a flat, one-time `constructionSurcharge` on both adaptation
-  and freestanding construction — never volume- or percentage-scaled, so a
-  huge converted lab and a tiny freestanding one both cost exactly 1. It rides
-  the existing progressive-construction material flow (the crew consumes it
-  alongside wood/metal/bricks as work progresses), is charged once per
-  facility (expanding a half-converted center does not double-charge), blocks
-  the build with a clear `1 SciMat` error when the stockpile lacks it, and is
-  surfaced in the freestanding modal's material breakdown, the building
-  inspector's exact-cost line, and `getAdaptedCost`. Material pools,
-  affordability checks, and the construction grant loop now understand the
-  `scientific_materials` key end to end.
-- **Expedition Center re-roled as the strategic logistics HQ (audit #40, P0/P1).**
-  It is no longer a scavenging-speed buff: the +30%/+30% powered search-speed
-  multiplier is gone from the scavenging sim, and the building is now the
-  gateway to long-range inter-colony operations. Each operational Expedition
-  Center at the origin colony grants caravan coordination bonuses — **+12%
-  convoy speed and −10% fuel per 100 km** (capped at three) — and dispatching a
-  caravan on a **long-range route (≥150 km) now requires an operational
-  Expedition Center** at the origin, surfacing a logistics error otherwise.
-  The Caravan modal's telemetry card shows the expedition status (HQ active /
-  required / local route), and the building copy, functions, and capacity
-  labels now read as the logistics HQ (Expedition Logistics, Caravan
-  Coordination, Long-Range Route Planning) instead of recon/scavenge buffs.
-- **Repairmen Shop now obeys the player (audit #38).** The automated repair
-  crews are no longer locked to the internal importance hierarchy — the
-  Repairmen Shop's inspector exposes four **Automated Repair Bands**
-  (Emergency = HQ/gates/towers/generators/hospital, High = warehouse/water/
-  research, Normal = production, Low = housing). Disabling a band leaves those
-  buildings unrepaired and conserves materials; crews still prioritise the
-  most damaged structure within enabled bands. The config is settlement-wide,
-  saved/loaded explicitly, and legacy saves without it behave exactly as
-  before (all bands enabled).
-- **Squad Quarters squad slots scale with barracks size (audit #2).** A fully
-  converted Squad Quarters previously added a flat +1 squad regardless of
-  size. It now uses the same footprint formula as the HQ — roughly one
-  deployable squad per 64 m² of barracks (√area/8 × the type bonus) — so a
-  small annex keeps the classic +1 while a large converted hall quarters
-  several squads. Partial conversions still grant nothing.
-- **Economy-fidelity corrections from the building audit (P1).** The **Bar** now
-  matches IFZ: no research requirement (previously gated behind Fermentation)
-  and the efficient 1 Grain → 8 Beer recipe (previously 4 → 4). The
-  **Chemical Plant** exposes all four IFZ reference lines with the reference
-  ratios — 2 Wood → 1 Fertilizer, 1 Fuel → 3 Fertilizer, 6 Wood → 1 Fuel, and
-  3 Fertilizer → 1 Fuel — replacing the invented ratios and adding the missing
-  fertilizer→fuel direction (selectable lines like the Cookhouse). The
-  **Gathering Place** law-forum threshold follows current IFZ and drops from
-  200 to **100 citizens**. An operational **House** now delivers the +15% mood
-  boost its description advertises: the morale engine adds a Quality Family
-  Housing factor scaled by the share of the population that can actually sleep
-  in upgraded Houses (from +3 up to the full +15), so a token single House is
-  no longer pure decoration. (Research Center's 1-Scientific-Material
-  construction cost remains a separate pending item.)
-- **Defences & towers now match their §IFZ roles (P1 audit).** Passive barriers
-  are no longer staffed firing posts: `barbed_wire`, `wooden_palisade`,
-  `metal_fence`, `brick_wall`, `fortified_wall`, and `floodlight_tower` are
-  now `guardable: false`, so workers can no longer be assigned to stand on a
-  palisade run — and the combat sim's defensive-fire loop only ever engages
-  mannable structures (towers via `weaponMountable`, gates via
-  `allowsFriendlyPassage` + guardable). Previously every wall/fence/wire that
-  had a worker assigned silently fired 20-damage "gate shots" at 35m, and
-  guard-labour demand treated the whole perimeter as firing posts
-  (`getBuildingJobForType` now consults the guardable flag instead of the
-  category, and the explicit job map no longer routes floodlight towers to
-  guard). Guard labour now concentrates where it belongs: towers and gates.
-  Defensive combat also **honours each tower's declared `attackRangeM`**
-  (120 m wooden / 160 m metal / 200 m fortified) instead of the hardcoded
-  50–65 m that applied to every tower regardless of type; gates keep their
-  35 m built-in shot. The Fortified Gatehouse's `sentryCapacity` is corrected
-  to the IFZ six-worker garrison, and the Floodlight Tower — powered
-  illumination, not a garrison or a weapon platform — is now freestanding-only
-  (`adaptationAllowed: false`, matching the Cistern/Generator infra
-  philosophy).
-- The 14 legacy alias buildings (`shelter_bunkhouse`, `storage_depot`,
-  `greenhouse_hydro`, `food_pantry`, `workshop_forge`, `timber_mill`,
-  `scrap_smelter`, `guard_watchtower`, `barricade_gatehouse`, `armory_cache`,
-  `infirmary_clinic`, `community_hall`, `comms_relay`, `research_lab`) are now
-  a single shared registry (`LEGACY_ALIAS_BUILDING_TYPE_IDS` in
-  `functionalBuildings.ts`) consumed by every picker instead of a private list
-  inside one component. They stay fully functional for save compatibility but
-  are hidden everywhere a player chooses a facility, so each building appears
-  exactly once under its IFZ name: the Buildings panel, the freestanding
-  construction modal (category tiles, locked count, and category-switch
-  default now start at the canonical Shelter instead of the alias), the
-  sidebar freestanding catalog, the research-tree unlock map, and the
-  structure-inspector adaptation list. That inspector list is no longer a
-  stale hard-coded alias roster — it is the data-driven canonical adaptation
-  roster (every `adaptationAllowed` facility, sorted by category), with
-  research-locked blueprints shown dimmed with their required research instead
-  of erroring on click. Purpose-built infrastructure (`water_cistern`,
-  `generator_station`, `battery_bank`, `floodlight_tower`) is explicitly not
-  aliased. Regression tests pin the registry to the defs themselves: any new
-  body-aliased definition must be registered or the suite fails.
-
-### Fixed
-- Inactive settlements no longer live in permanent daytime (P0). The offline
-  catch-up previously ran every step with a frozen `hour: 12, isNight: false`
-  clock, so a colony simulated for days experienced perpetual noon — never
-  night production shutdown, worker return, or day/night-dependent
-  agriculture/research. `simulateSettlementOffline` now back-dates the colony's
-  clock from the live universal clock (the moment it was last simulated) and
-  rolls day/hour/minute/phase/isNight forward every step with the same
-  `advanceGameClock` the active loop uses; each step feeds the real night flag
-  into the economy/gathering/research stages, so a colony that is offline
-  through the night genuinely pauses construction, production, medbay output,
-  and research while its workers shelter.
-
-### Fixed
-- Barbed wire is now a proper §7.1 hazard instead of a hard wall (P0). It no
-  longer sits in the wall obstacle set with `blocksMovement: true`: the
-  pathfinder rasterizes it as fully passable terrain while exposing a hazard
-  channel (`slowsInfectedPct: 60`, `damageOnContact: 15` on the def). Infected
-  path straight through wire — slowed to 40% speed and bleeding ~15 HP/sec
-  while in contact (with floating WIRE damage numbers and death FX) — while
-  friendlies pass freely and palisades/brick walls still block hostiles
-  outright. Vehicle routing still treats wire as impassable.
-
-### Fixed
-- Deconstruction no longer corrupts settlement statistics (P0). The demolition
-  completion path in `populationService` carried its own secondary stat
-  calculation that only recognised `storage_depot` / `shelter_bunkhouse` /
-  `squad_quarters` — demolishing any unrelated building could silently wipe
-  the storage of Warehouses, the living capacity of Shelters/Houses, extra HQ
-  vaults, and more. It now calls the single authoritative
-  `recalculateSettlementStats()` that every construction/adaptation path uses,
-  and that central calculation additionally counts defensive value only for
-  operational structures (§7.1) — a breached or under-construction building
-  no longer contributes its defense rating.
-
-### Fixed
-- Scavenging squads no longer trek home to a full depot and strand their haul
-  (IFZ storage gate). A squad now checks whether the settlement stockpile can
-  actually accept its loot BEFORE returning: if storage is full it simply does
-  not return — it holds the haul in its backpack out in the field
-  (`holdHaul`), gets one STORAGE FULL — SQUAD HOLDS HAUL warning, and
-  auto-returns to deposit the moment storage frees (no manual order needed).
-  Vehicle expeditions with a full cargo bay get the same gate before driving
-  home, and any fresh player order overrides the hold.
-
-### Fixed
-- Defensive structures are no longer classified by type-id string matching
-  (§7.1). Wooden palisades and bastion walls were being treated like gates in
-  the combat/perimeter layer (`type.includes('palisade' || 'bastion')`); every
-  defensive building now carries explicit `blocksMovement`,
-  `allowsFriendlyPassage`, `guardable`, and `weaponMountable` flags that the
-  sim and the alarm readouts consume directly. Alias defs that reuse another
-  type's body (`guard_watchtower` → `wooden_tower`, `barricade_gatehouse` →
-  `wooden_gate`) resolve through a canonical-definition lookup so no subsystem
-  falls back to name inference.
-
-### Added
 - The Vehicle Workshop is now a real mechanic, not a definition (§8): vehicles
   parked inside a staffed workshop can be queued for time-based REPAIR
   (mechanics restore HP over mechanic-hours, consuming metal per HP healed —
@@ -339,7 +173,143 @@ Releasing:
   facility, or appear in scavenge queues/loot pins; a building only becomes
   adaptable once its search is complete **and** fully cleared of leftover loot.
 - Freestanding build placements now correctly check and display the full cost
-  (including tools); legacy saves missing a `tools` key are normalized on load.### Changed
+  (including tools); legacy saves missing a `tools` key are normalized on load.
+
+### Changed
+
+- **The Scrapyard is now a genuine recycling yard fed by real colony waste
+  (audit #15).** Scrap no longer comes from nowhere: **used food cans** return
+  as scrap metal (25% of every canned ration actually eaten — the tin does not
+  vanish) and **spent ammunition brass** is reclaimed (15% of every round
+  fired, added by the combat pipeline alongside the ammo deduction), joining
+  scavenged scrap and dismantled vehicle hulks in the stockpile. The staffed
+  Scrapyard then recycles that accumulated scrap into refined Metal
+  (10 → 14/day, unchanged), and its description/functions now describe the
+  consumption-debris loop instead of an abstract smelter.
+- **Forester's Hut and Sawmill now do real spatial tree work (audit #12/#13).**
+  A new forestry stage runs between the economy and gathering stages of the
+  simulation pipeline. Staffed **Forester's Huts** manage the actual wood
+  `ResourceNode`s inside a 40 m working radius: depleted trees are replanted
+  as saplings and regrow (the crew's growth budget is split across the trees
+  it tends — constant throughput), and when the radius runs thin it plants
+  brand-new saplings on clear ground (clear of buildings, roads, water, and
+  other trees) at an average one-per-45 s cadence — making wood a renewable
+  resource instead of a depletable map read. Staffed **Sawmills** auto-cut the
+  nearest mature tree inside a 30 m working area straight into wood through
+  the capacity-aware deposit path (a full stockpile pauses the saw rather than
+  felling timber it cannot store). Both are crew jobs only — unstaffed or
+  under-construction buildings do nothing, and crews shelter at night and
+  during alarms like the gatherers. The logs→lumber recipe chain is retained
+  as the documented Terminus extension on top of the real mechanic, and the
+  two defs' copy/labels now describe the working radii. Newly planted trees
+  carry `source: 'forester'` and render like ordinary trees.
+- **Research Centers cost 1 Scientific Material to establish (audit #34, P1).**
+  IFZ requires 1 Scientific Material to build a Research Center; Terminus now
+  charges it as a flat, one-time `constructionSurcharge` on both adaptation
+  and freestanding construction — never volume- or percentage-scaled, so a
+  huge converted lab and a tiny freestanding one both cost exactly 1. It rides
+  the existing progressive-construction material flow (the crew consumes it
+  alongside wood/metal/bricks as work progresses), is charged once per
+  facility (expanding a half-converted center does not double-charge), blocks
+  the build with a clear `1 SciMat` error when the stockpile lacks it, and is
+  surfaced in the freestanding modal's material breakdown, the building
+  inspector's exact-cost line, and `getAdaptedCost`. Material pools,
+  affordability checks, and the construction grant loop now understand the
+  `scientific_materials` key end to end.
+- **Expedition Center re-roled as the strategic logistics HQ (audit #40, P0/P1).**
+  It is no longer a scavenging-speed buff: the +30%/+30% powered search-speed
+  multiplier is gone from the scavenging sim, and the building is now the
+  gateway to long-range inter-colony operations. Each operational Expedition
+  Center at the origin colony grants caravan coordination bonuses — **+12%
+  convoy speed and −10% fuel per 100 km** (capped at three) — and dispatching a
+  caravan on a **long-range route (≥150 km) now requires an operational
+  Expedition Center** at the origin, surfacing a logistics error otherwise.
+  The Caravan modal's telemetry card shows the expedition status (HQ active /
+  required / local route), and the building copy, functions, and capacity
+  labels now read as the logistics HQ (Expedition Logistics, Caravan
+  Coordination, Long-Range Route Planning) instead of recon/scavenge buffs.
+- **Repairmen Shop now obeys the player (audit #38).** The automated repair
+  crews are no longer locked to the internal importance hierarchy — the
+  Repairmen Shop's inspector exposes four **Automated Repair Bands**
+  (Emergency = HQ/gates/towers/generators/hospital, High = warehouse/water/
+  research, Normal = production, Low = housing). Disabling a band leaves those
+  buildings unrepaired and conserves materials; crews still prioritise the
+  most damaged structure within enabled bands. The config is settlement-wide,
+  saved/loaded explicitly, and legacy saves without it behave exactly as
+  before (all bands enabled).
+- **Squad Quarters squad slots scale with barracks size (audit #2).** A fully
+  converted Squad Quarters previously added a flat +1 squad regardless of
+  size. It now uses the same footprint formula as the HQ — roughly one
+  deployable squad per 64 m² of barracks (√area/8 × the type bonus) — so a
+  small annex keeps the classic +1 while a large converted hall quarters
+  several squads. Partial conversions still grant nothing.
+- **Shooting Range training is now wired to the building and its staff
+  (audit #39).** Range workers are no longer generic guard labour: the
+  Shooting Range maps to a dedicated **Range Officer** job role (military
+  category, its own priority/limits tier). Starting a course requires a
+  powered range **with assigned officers** (a dark or ghost-town range returns
+  a clear error), each officer opens **one firing lane** — a range can host at
+  most as many concurrent squad sessions as it has officers — and officers
+  scale course pace +25% per extra officer past the first (capped at 2×, so
+  staffing can never make training an instant XP fountain). If officers walk
+  off mid-course the session **pauses exactly where it is** — no progress, no
+  ammo draw — and resumes when staff return, so the ammo-consuming skill
+  trainer is genuinely tied to the building's crew.
+- **Economy-fidelity corrections from the building audit (P1).** The **Bar** now
+  matches IFZ: no research requirement (previously gated behind Fermentation)
+  and the efficient 1 Grain → 8 Beer recipe (previously 4 → 4). The
+  **Chemical Plant** exposes all four IFZ reference lines with the reference
+  ratios — 2 Wood → 1 Fertilizer, 1 Fuel → 3 Fertilizer, 6 Wood → 1 Fuel, and
+  3 Fertilizer → 1 Fuel — replacing the invented ratios and adding the missing
+  fertilizer→fuel direction (selectable lines like the Cookhouse). The
+  **Gathering Place** law-forum threshold follows current IFZ and drops from
+  200 to **100 citizens**. An operational **House** now delivers the +15% mood
+  boost its description advertises: the morale engine adds a Quality Family
+  Housing factor scaled by the share of the population that can actually sleep
+  in upgraded Houses (from +3 up to the full +15), so a token single House is
+  no longer pure decoration. (Research Center's 1-Scientific-Material
+  construction cost remains a separate pending item.)
+- **Defences & towers now match their §IFZ roles (P1 audit).** Passive barriers
+  are no longer staffed firing posts: `barbed_wire`, `wooden_palisade`,
+  `metal_fence`, `brick_wall`, `fortified_wall`, and `floodlight_tower` are
+  now `guardable: false`, so workers can no longer be assigned to stand on a
+  palisade run — and the combat sim's defensive-fire loop only ever engages
+  mannable structures (towers via `weaponMountable`, gates via
+  `allowsFriendlyPassage` + guardable). Previously every wall/fence/wire that
+  had a worker assigned silently fired 20-damage "gate shots" at 35m, and
+  guard-labour demand treated the whole perimeter as firing posts
+  (`getBuildingJobForType` now consults the guardable flag instead of the
+  category, and the explicit job map no longer routes floodlight towers to
+  guard). Guard labour now concentrates where it belongs: towers and gates.
+  Defensive combat also **honours each tower's declared `attackRangeM`**
+  (120 m wooden / 160 m metal / 200 m fortified) instead of the hardcoded
+  50–65 m that applied to every tower regardless of type; gates keep their
+  35 m built-in shot. The Fortified Gatehouse's `sentryCapacity` is corrected
+  to the IFZ six-worker garrison, and the Floodlight Tower — powered
+  illumination, not a garrison or a weapon platform — is now freestanding-only
+  (`adaptationAllowed: false`, matching the Cistern/Generator infra
+  philosophy).
+- The 14 legacy alias buildings (`shelter_bunkhouse`, `storage_depot`,
+  `greenhouse_hydro`, `food_pantry`, `workshop_forge`, `timber_mill`,
+  `scrap_smelter`, `guard_watchtower`, `barricade_gatehouse`, `armory_cache`,
+  `infirmary_clinic`, `community_hall`, `comms_relay`, `research_lab`) are now
+  a single shared registry (`LEGACY_ALIAS_BUILDING_TYPE_IDS` in
+  `functionalBuildings.ts`) consumed by every picker instead of a private list
+  inside one component. They stay fully functional for save compatibility but
+  are hidden everywhere a player chooses a facility, so each building appears
+  exactly once under its IFZ name: the Buildings panel, the freestanding
+  construction modal (category tiles, locked count, and category-switch
+  default now start at the canonical Shelter instead of the alias), the
+  sidebar freestanding catalog, the research-tree unlock map, and the
+  structure-inspector adaptation list. That inspector list is no longer a
+  stale hard-coded alias roster — it is the data-driven canonical adaptation
+  roster (every `adaptationAllowed` facility, sorted by category), with
+  research-locked blueprints shown dimmed with their required research instead
+  of erroring on click. Purpose-built infrastructure (`water_cistern`,
+  `generator_station`, `battery_bank`, `floodlight_tower`) is explicitly not
+  aliased. Regression tests pin the registry to the defs themselves: any new
+  body-aliased definition must be registered or the suite fails.
+
 - Freestanding facilities now have their own PREDEFINED module footprints
   instead of a generic 8×8 box (§IFZ): adaptations take their size from the
   existing building, but every freestanding type places a fixed, purpose-built
@@ -485,6 +455,61 @@ Releasing:
 
 ### Fixed
 
+- Inactive settlements no longer live in permanent daytime (P0). The offline
+  catch-up previously ran every step with a frozen `hour: 12, isNight: false`
+  clock, so a colony simulated for days experienced perpetual noon — never
+  night production shutdown, worker return, or day/night-dependent
+  agriculture/research. `simulateSettlementOffline` now back-dates the colony's
+  clock from the live universal clock (the moment it was last simulated) and  rolls day/hour/minute/phase/isNight forward every step with the same
+  `advanceGameClock` the active loop uses; each step feeds the real night flag
+  into the economy/gathering/research stages, so a colony that is offline
+  through the night genuinely pauses construction, production, medbay output,
+  and research while its workers shelter.
+- **Deselecting a CTRL+drag multi-squad selection now clears the whole group
+  (P2).** ESC and the command card's X button previously cleared only the
+  primary `selectedSquadId`, leaving the stale box-selection set active inside
+  the world scene — the selected squads stayed highlighted and right-click
+  orders kept fanning out to every squad in the (now invisible) group after the
+  panel closed. Both paths now route through the same selection handler that
+  empties `selectedSquadIds` alongside the primary id.
+
+- Barbed wire is now a proper §7.1 hazard instead of a hard wall (P0). It no
+  longer sits in the wall obstacle set with `blocksMovement: true`: the
+  pathfinder rasterizes it as fully passable terrain while exposing a hazard
+  channel (`slowsInfectedPct: 60`, `damageOnContact: 15` on the def). Infected
+  path straight through wire — slowed to 40% speed and bleeding ~15 HP/sec
+  while in contact (with floating WIRE damage numbers and death FX) — while
+  friendlies pass freely and palisades/brick walls still block hostiles
+  outright. Vehicle routing still treats wire as impassable.
+- Deconstruction no longer corrupts settlement statistics (P0). The demolition
+  completion path in `populationService` carried its own secondary stat
+  calculation that only recognised `storage_depot` / `shelter_bunkhouse` /
+  `squad_quarters` — demolishing any unrelated building could silently wipe
+  the storage of Warehouses, the living capacity of Shelters/Houses, extra HQ
+  vaults, and more. It now calls the single authoritative
+  `recalculateSettlementStats()` that every construction/adaptation path uses,
+  and that central calculation additionally counts defensive value only for
+  operational structures (§7.1) — a breached or under-construction building
+  no longer contributes its defense rating.
+
+- Scavenging squads no longer trek home to a full depot and strand their haul
+  (IFZ storage gate). A squad now checks whether the settlement stockpile can
+  actually accept its loot BEFORE returning: if storage is full it simply does
+  not return — it holds the haul in its backpack out in the field
+  (`holdHaul`), gets one STORAGE FULL — SQUAD HOLDS HAUL warning, and
+  auto-returns to deposit the moment storage frees (no manual order needed).
+  Vehicle expeditions with a full cargo bay get the same gate before driving
+  home, and any fresh player order overrides the hold.
+- Defensive structures are no longer classified by type-id string matching
+  (§7.1). Wooden palisades and bastion walls were being treated like gates in
+  the combat/perimeter layer (`type.includes('palisade' || 'bastion')`); every
+  defensive building now carries explicit `blocksMovement`,
+  `allowsFriendlyPassage`, `guardable`, and `weaponMountable` flags that the
+  sim and the alarm readouts consume directly. Alias defs that reuse another
+  type's body (`guard_watchtower` → `wooden_tower`, `barricade_gatehouse` →
+  `wooden_gate`) resolve through a canonical-definition lookup so no subsystem
+  falls back to name inference.
+
 - Building a tower (and other freestanding structures) at game start failing
   with "not enough resources": `canAffordCost` treated a missing `tools`
   stockpile key as `undefined >= 0 === false`, blocking every build.
@@ -546,5 +571,5 @@ infection.
 
 - (No prior release to compare against — this is the baseline.)
 
-[Unreleased]: https://github.com/OWNER/terminus/compare/v0.1.0...HEAD
+[0.2.0]: https://github.com/OWNER/terminus/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/OWNER/terminus/releases/tag/v0.1.0

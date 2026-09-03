@@ -169,6 +169,126 @@ test('tiers compound into combat bonuses and cap at Expert', () => {
   assert.match(r.error || '', /Expert/i);
 });
 
+test('a range with no range officers cannot start training', () => {
+  const unstaffed = {
+    ...poweredRange(mkState()),
+    adaptedBuildings: new Map([
+      [
+        'range',
+        {
+          buildingId: 'range',
+          typeId: 'shooting_range',
+          name: 'Shooting Range',
+          constructionStatus: 'completed',
+          currentDurability: 100,
+          isUnderRepair: false,
+          assignedWorkers: 0,
+        } as any,
+      ],
+    ]),
+  };
+  const r = startSquadTraining(unstaffed, 'sq1', 0);
+  assert.equal(r.ok, false);
+  assert.match(r.error || '', /staffed|range officer/i);
+});
+
+test('an unstaffed range pauses an active session: no progress, no ammo draw', () => {
+  let state = poweredRange(mkState());
+  const started = startSquadTraining(state, 'sq1', 0);
+  assert.equal(started.ok, true);
+  state = {
+    ...state,
+    trainingState: { sessions: new Map([[started.session!.squadId, started.session!]]), totalAmmoSpent: 0 },
+  };
+
+  // Officers walk off the job mid-course.
+  const ghosted = {
+    ...state,
+    adaptedBuildings: new Map([
+      [
+        'range',
+        {
+          buildingId: 'range',
+          typeId: 'shooting_range',
+          name: 'Shooting Range',
+          constructionStatus: 'completed',
+          currentDurability: 100,
+          isUnderRepair: false,
+          assignedWorkers: 0,
+        } as any,
+      ],
+    ]),
+  };
+  const r = tickSquadTraining(ghosted, DAY, 600);
+  const session = r.newState.trainingState!.sessions.get('sq1')!;
+  assert.equal(session.progressSec, 0, 'no progress while the range is unstaffed');
+  assert.equal(r.newState.stockpile.ammo.sharedPool, 100, 'no ammo drawn while the range is unstaffed');
+});
+
+test('each range officer opens one firing lane: concurrent sessions cap at staffing', () => {
+  const twoSquads = {
+    ...poweredRange(mkState()),
+    squads: [
+      { id: 'sq1', name: 'Alpha', trainingTier: 0 } as any,
+      { id: 'sq2', name: 'Bravo', trainingTier: 0 } as any,
+    ],
+  };
+
+  // One officer → only one lane.
+  const single = {
+    ...twoSquads,
+    adaptedBuildings: new Map([
+      [
+        'range',
+        {
+          buildingId: 'range',
+          typeId: 'shooting_range',
+          name: 'Shooting Range',
+          constructionStatus: 'completed',
+          currentDurability: 100,
+          isUnderRepair: false,
+          assignedWorkers: 1,
+        } as any,
+      ],
+    ]),
+  };
+  const first = startSquadTraining(single, 'sq1', 0);
+  assert.equal(first.ok, true);
+  const withSession = {
+    ...single,
+    trainingState: {
+      sessions: new Map([[first.session!.squadId, first.session!]]),
+      totalAmmoSpent: 0,
+    },
+  };
+  const second = startSquadTraining(withSession, 'sq2', 0);
+  assert.equal(second.ok, false);
+  assert.match(second.error || '', /lane/i);
+
+  // Three officers → both squads drill concurrently.
+  const triple = {
+    ...twoSquads,
+    adaptedBuildings: new Map([
+      [
+        'range',
+        {
+          buildingId: 'range',
+          typeId: 'shooting_range',
+          name: 'Shooting Range',
+          constructionStatus: 'completed',
+          currentDurability: 100,
+          isUnderRepair: false,
+          assignedWorkers: 3,
+        } as any,
+      ],
+    ]),
+  };
+  const a = startSquadTraining(triple, 'sq1', 0);
+  const b = startSquadTraining(triple, 'sq2', 0);
+  assert.equal(a.ok, true);
+  assert.equal(b.ok, true);
+});
+
 test('stopping training refunds the session and a day of training draws ~TRAINING_BASE_AMMO_PER_DAY', () => {
   let state = poweredRange(mkState());
   const started = startSquadTraining(state, 'sq1', 0);

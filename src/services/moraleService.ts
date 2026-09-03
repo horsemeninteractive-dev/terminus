@@ -738,6 +738,13 @@ export function tickMoraleAndGrowthSimulation(
   let remainingFoodCost = foodToConsume;
   const newFood = { ...currentStock.food };
 
+  // §IFZ Scrapyard economy — used cans are real waste: the metal a canned
+  // ration arrived in does not vanish when the food is eaten. Every unit of
+  // canned_goods actually consumed returns as scrap metal (the tin), which
+  // a staffed Scrapyard later recycles into refined metal.
+  const USED_CANS_TO_SCRAP_RATIO = 0.25;
+  let cannedConsumed = 0;
+
   if (newFood.fresh_harvest > 0) {
     const take = Math.min(newFood.fresh_harvest, remainingFoodCost);
     newFood.fresh_harvest -= take;
@@ -751,6 +758,7 @@ export function tickMoraleAndGrowthSimulation(
   if (remainingFoodCost > 0 && newFood.canned_goods > 0) {
     const take = Math.min(newFood.canned_goods, remainingFoodCost);
     newFood.canned_goods -= take;
+    cannedConsumed += take;
     remainingFoodCost -= take;
   }
   if (remainingFoodCost > 0 && newFood.mre_rations > 0) {
@@ -781,9 +789,21 @@ export function tickMoraleAndGrowthSimulation(
     state = addWaterToStockpile(state, { purified_water: 20 }, fractionOfDay);
   }
 
+  // Commit the day's canned-tin waste alongside the consumed food.
+  const tinWaste = Math.floor(cannedConsumed * USED_CANS_TO_SCRAP_RATIO);
+  const stockpileWithWaste = tinWaste > 0
+    ? {
+        ...state.stockpile,
+        materials: {
+          ...state.stockpile.materials,
+          scrap: (state.stockpile.materials.scrap || 0) + tinWaste,
+        },
+      }
+    : state.stockpile;
+
   const intermediateSettlement: SettlementState = {
     ...state,
-    stockpile: { ...state.stockpile, food: newFood },
+    stockpile: { ...stockpileWithWaste, food: newFood },
   };
 
   // 3. Re-calculate Morale State

@@ -43,7 +43,8 @@ export type WorkerJobTypeId =
   | 'guard'
   | 'factory'
   | 'scientist'
-  | 'nurse';
+  | 'nurse'
+  | 'trainer';
 
 export type WorkerPriorityLevel = 0 | 1 | 2 | 3 | 4; // 0: Disabled, 1: Low (v), 2: Normal (=), 3: High (^), 4: Urgent (^^)
 

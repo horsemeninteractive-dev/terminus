@@ -670,7 +670,7 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                         onDismountVehicle={
                           selectedMountedVehicle ? () => handleDismountVehicle(selectedMountedVehicle.id) : undefined
                         }
-                        onDeselect={() => setSelectedSquadId(null)}
+                        onDeselect={() => handleSelectSquad(null)}
                         onChangeStance={handleChangeSquadStance}
                         onOrderFallbackHQ={handleOrderSquadRecall}
                         onRecallAll={handleOrderAllSquadsRecall}

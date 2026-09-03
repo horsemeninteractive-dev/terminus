@@ -351,6 +351,7 @@ export default function App() {
     setSatelliteQuality,
     setSelectedBuilding,
     setSelectedSquadId,
+    setSelectedSquadIds,
     setSelectedVehicleId,
     setScavengeQueue,
     setDescentProgress,

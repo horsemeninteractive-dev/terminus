@@ -484,7 +484,7 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     name: 'Scrapyard',
     category: 'production',
     description:
-      'Hydraulic cutters and magnetic sorting cranes. Breaks down abandoned vehicle hulks, street lampposts, and ruins into refined Metal.',
+      'Hydraulic cutters and magnetic sorting cranes — the colony recycling yard. Every used food can, spent ammunition case, scrap pile, and dismantled vehicle hulk in the stockpile accumulates here and is re-smelted into refined Metal, so the colony\'s own consumption becomes an industrial resource.',
     researchRequirement: 'recycling',
     iconName: 'Layers',
     badgeColor: '#64748b',
@@ -498,11 +498,11 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     adaptationCost: { wood: 30, metal: 50, bricks: 25, tools: 2 },
     freestandingCost: { wood: 90, metal: 140, bricks: 70, tools: 3 },
     durability: { adaptationBase: 500, freestandingBase: 320 },
-    functions: ['Metal Debris Processing', 'Scrap Recycling', 'Ingot Refinement'],
-    recipes: [{ id: 'scrap_to_metal', name: 'Scrap to Metal', inputs: [{ resource: 'scrap', amountPerDay: 10 }], outputs: [{ resource: 'metal', amountPerDay: 14 }] }],
+    functions: ['Used Can & Ammo Recycling', 'Metal Debris Sorting', 'Ingot Refinement'],
+    recipes: [{ id: 'scrap_to_metal', name: 'Recycle Scrap to Metal', inputs: [{ resource: 'scrap', amountPerDay: 10 }], outputs: [{ resource: 'metal', amountPerDay: 14 }] }],
     baseDefense: 40,
     freestandingDefense: 20,
-    capacityLabel: 'Recycling: 10 Scrap → 14 Metal/day',
+    capacityLabel: 'Recycles: 10 Scrap → 14 Metal/day',
     preferredOsmTypes: ['industrial', 'warehouse', 'commercial'],
   },
   arms_factory: {

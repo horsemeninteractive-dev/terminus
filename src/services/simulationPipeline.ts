@@ -12,7 +12,7 @@ import { tickPowerGrid } from './powerService';
 import { tickSquadTraining } from './trainingService';
 import { tickResourceGathering } from './resourceGatheringService';
 import { tickForestryWork } from './forestryService';
-import { tickCombatSimulation } from './combatService';
+import { recycleSpentAmmoToScrap, tickCombatSimulation } from './combatService';
 import { tickVehicleWorkshops } from './vehicleWorkshopService';
 import { getPrimaryHQ } from './buildingOperational';
 import { updateVehiclesTick } from './vehicleService';
@@ -204,8 +204,13 @@ export function runSimulationPipeline(args: {
     zombieLairs: lairs.updatedLairs,
     rivalHideouts: hideouts.updatedHideouts,
     occupiedBuildings: occupation.newState.occupiedBuildings,
+    // Firing costs ammunition from the shared pool; the spent brass returns as
+    // scrap metal for the Scrapyard (§IFZ recycling economy).
     stockpile: combat.ammoConsumed > 0
-      ? { ...infection.newState.stockpile, ammo: { ...infection.newState.stockpile.ammo, sharedPool: Math.max(0, infection.newState.stockpile.ammo.sharedPool - combat.ammoConsumed) } }
+      ? recycleSpentAmmoToScrap(
+          { ...infection.newState.stockpile, ammo: { ...infection.newState.stockpile.ammo, sharedPool: Math.max(0, infection.newState.stockpile.ammo.sharedPool - combat.ammoConsumed) } },
+          combat.ammoConsumed
+        )
       : infection.newState.stockpile,
   };
   // §IFZ Expeditions — off-map areas revealed through the Antenna. Travel,
