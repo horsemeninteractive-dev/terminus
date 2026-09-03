@@ -46,28 +46,6 @@ const i = (kind: SquadLootItem['kind'], label: string, itemId: string, weight: n
   itemId,
 });
 
-/**
- * Scavenge/expedition coordination speed: 1.0 base, +30% per operational
- * Expedition Center, and another +30% when that center is on the power grid.
- */
-export function getScavengeSpeedMultiplier(state: SettlementState): number {
-  const poweredIds = new Set<string>(state.powerState?.poweredBuildingIds || []);
-  let mult = 1.0;
-  for (const b of state.adaptedBuildings.values()) {
-    if (b.typeId === 'expedition_center' && isBuildingOperational(b)) {
-      mult += 0.3;
-      if (poweredIds.has(String(b.buildingId))) mult += 0.3;
-    }
-  }
-  for (const b of state.freestandingBuildings || []) {
-    if (b.typeId === 'expedition_center' && isBuildingOperational(b)) {
-      mult += 0.3;
-      if (poweredIds.has(String(b.buildingId))) mult += 0.3;
-    }
-  }
-  return mult;
-}
-
 export function createEmptySquadInventory(capacity = DEFAULT_CAPACITY): SquadInventory {
   return { capacity, used: 0, items: [] };
 }
@@ -435,11 +413,9 @@ export function tickBuildingScavengeProgress(
   const totalItemsCount = search.loot.length;
   const previouslyResolvedCount = Math.max(0, totalItemsCount - unlooted.length);
 
-  // §Terminus: an operational Expedition Center coordinates the search (+30%
-  // speed each; a powered one coordinates even harder — another +30%). The
-  // squad physically searches faster, so progress accrues quicker per second.
-  const scavengeSpeed = getScavengeSpeedMultiplier(state);
-  let elapsed = (search.elapsedDurationSec || 0) + deltaSec * scavengeSpeed;
+  // Scavenging is a squad effort; the Expedition Center is a strategic
+  // logistics HQ (caravan coordination), not a search-speed buff.
+  let elapsed = (search.elapsedDurationSec || 0) + deltaSec;
   let progress = Math.min(100, Math.round((elapsed / totalDuration) * 100));
 
   // Determine newly unlocked items this tick based on progress milestones

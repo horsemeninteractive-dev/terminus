@@ -1285,7 +1285,7 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     name: 'Expedition Center',
     category: 'utility',
     description:
-      'Scouting planning room and overland map archive. Increases squad scavenging speed, loot discovery rates, and vehicle carrying capacities.',
+      'Strategic logistics headquarters for inter-colony operations. Coordinates long-distance caravans, settlement-to-settlement expeditions, and overland route planning.',
     iconName: 'Maximize2',
     badgeColor: '#14b8a6',
     adaptationAllowed: true,
@@ -1298,10 +1298,10 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     adaptationCost: { wood: 35, metal: 25, bricks: 20 },
     freestandingCost: { wood: 95, metal: 70, bricks: 60 },
     durability: { adaptationBase: 380, freestandingBase: 240 },
-    functions: ['Scouting Coordination', 'Scavenge Speed (+30%)', 'Map Reconnaissance'],
+    functions: ['Expedition Logistics', 'Caravan Coordination', 'Long-Range Route Planning'],
     baseDefense: 35,
     freestandingDefense: 18,
-    capacityLabel: 'Recon: Scavenge & Expedition Buffs',
+    capacityLabel: 'Logistics: Caravan & Expedition HQ',
     preferredOsmTypes: ['civic', 'commercial', 'school'],
   },
 
@@ -2115,7 +2115,7 @@ export function calculateBuildingStats(
       break;
     case 'expedition_center':
       maxCapacity = Math.max(2, Math.floor(totalFloorArea / 20));
-      capacityUnit = 'Scouting Tables';
+      capacityUnit = 'Logistics Stations';
       break;
     case 'kindergarten':
       maxCapacity = Math.max(10, Math.floor(totalFloorArea / 10));

@@ -8,6 +8,7 @@ import {
  DollarSign,
  Fuel,
  Info,
+ Map,
  MapPin,
  Package,
  Plus,
@@ -20,7 +21,13 @@ import {
  X,
  Zap,
 } from 'lucide-react';
-import { calculateGeographicDistanceKm, calculateCaravanSpeedAndDuration, dispatchTradeCaravan } from '../services/caravanService';
+import {
+  calculateGeographicDistanceKm,
+  calculateCaravanSpeedAndDuration,
+  dispatchTradeCaravan,
+  getExpeditionCenterCount,
+  LONG_RANGE_EXPEDITION_KM,
+} from '../services/caravanService';
 import { CaravanDispatchConfig, SettlementRecord, TradeCaravan } from '../types/caravan';
 import { SettlementStockpile } from '../types/settlement';
 
@@ -89,6 +96,10 @@ export const CaravanTradeModal: React.FC<CaravanTradeModalProps> = ({
 
  const availableFuel = (origin?.state.stockpile.fuel.gasoline || 0) + (origin?.state.stockpile.fuel.diesel || 0);
  const hasEnoughFuel = availableFuel >= metrics.fuelRequired;
+
+ const expeditionCenterCount = origin ? getExpeditionCenterCount(origin.state) : 0;
+ const isLongRange = distanceKm >= LONG_RANGE_EXPEDITION_KM;
+ const expeditionReady = !isLongRange || expeditionCenterCount >= 1;
 
  const handleUpdateCargo = (category: keyof SettlementStockpile, item: string, value: number) => {
  setCargo((prev: any) => ({
@@ -290,6 +301,25 @@ export const CaravanTradeModal: React.FC<CaravanTradeModalProps> = ({
  </span>
  <span className={`font-bold ${hasEnoughFuel ? 'text-white' : 'text-[#ef4444]'}`}>
  {metrics.fuelRequired}L / {availableFuel}L available
+ </span>
+ </div>
+ <div
+ className={`flex justify-between items-center text-[11px] border-t border-[#222731] pt-1.5 ${
+ isLongRange ? (expeditionReady ? 'text-[#4ade80]' : 'text-[#ef4444]') : 'text-[#9ca3af]'
+ }`}
+ >
+ <span className="flex items-center gap-1">
+ <Map className="w-3.5 h-3.5" />
+ <span>Expedition Logistics:</span>
+ </span>
+ <span className="font-bold">
+ {isLongRange
+ ? expeditionReady
+ ? `ACTIVE (${expeditionCenterCount} HQ${expeditionCenterCount > 1 ? 's' : ''})`
+ : 'REQUIRED — NO HQ'
+ : expeditionCenterCount > 0
+ ? `HQ READY (+${Math.min(3, expeditionCenterCount) * 12}% speed, -${Math.min(3, expeditionCenterCount) * 10}% fuel)`
+ : 'Local route (no HQ needed)'}
  </span>
  </div>
  </div>

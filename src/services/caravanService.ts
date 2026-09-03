@@ -1,7 +1,7 @@
 import { GeoPoint } from '../types/map';
 import { NamedSurvivor, Squad } from '../types/population';
 import { SettlementState, SettlementStockpile } from '../types/settlement';
-import { getPrimaryHQ } from './buildingOperational';
+import { getPrimaryHQ, isBuildingOperational } from './buildingOperational';
 import { depositWithinCapacity, countStockpileUnits } from './stockpileCapacity';
 import { WorldVehicle } from '../types/vehicle';
 import {
@@ -107,6 +107,14 @@ export function calculateCaravanSpeedAndDuration(
     fuelPer100Km *= 0.85; // -15% fuel consumption
   }
 
+  // §Expedition Center: each operational logistics HQ at the origin improves
+  // route planning — +12% convoy speed and -10% fuel per 100km (capped at 3).
+  const centerCount = Math.min(3, getExpeditionCenterCount(originSettlement));
+  if (centerCount > 0) {
+    baseSpeedKmh *= 1 + 0.12 * centerCount;
+    fuelPer100Km *= 1 - 0.1 * centerCount;
+  }
+
   // Calculate scaled game duration (balanced for compelling gameplay pace: 50km ≈ 25s at 1x speed)
   // Distance is scaled logarithmically so very far continents take 60-120s while local cities take 15-30s
   const baseSeconds = 12 + Math.pow(distanceKm, 0.55) * 2.2;
@@ -119,6 +127,39 @@ export function calculateCaravanSpeedAndDuration(
     durationSeconds,
     fuelRequired,
   };
+}
+
+/**
+ * Count operational Expedition Centers in a settlement (adapted + freestanding).
+ * §Expedition Center: the strategic logistics HQ that coordinates long-distance
+ * caravans and settlement-to-settlement expeditions.
+ */
+export function getExpeditionCenterCount(state: SettlementState): number {
+  let count = 0;
+  for (const b of state.adaptedBuildings.values()) {
+    if (b.typeId === 'expedition_center' && isBuildingOperational(b)) count += 1;
+  }
+  for (const b of state.freestandingBuildings || []) {
+    if (b.typeId === 'expedition_center' && isBuildingOperational(b)) count += 1;
+  }
+  return count;
+}
+
+/**
+ * Long-distance caravans (> LONG_RANGE_EXPEDITION_KM) are strategic
+ * expeditions: they require an operational Expedition Center at the origin.
+ * Returns an error string when the requirement is unmet, else null.
+ */
+export const LONG_RANGE_EXPEDITION_KM = 150;
+
+export function validateExpeditionRequirement(
+  originState: SettlementState,
+  distanceKm: number
+): string | null {
+  if (distanceKm >= LONG_RANGE_EXPEDITION_KM && getExpeditionCenterCount(originState) < 1) {
+    return 'Long-distance expedition requires an operational Expedition Center at the origin colony (Logistics HQ).';
+  }
+  return null;
 }
 
 // ==========================================
@@ -163,6 +204,13 @@ export function dispatchTradeCaravan(
     origin.placement.center,
     destination.placement.center
   );
+
+  // §Expedition Center: long-range convoys are strategic expeditions that
+  // require the logistics HQ at the origin colony.
+  const expeditionError = validateExpeditionRequirement(origin.state, distanceKm);
+  if (expeditionError) {
+    return { success: false, error: expeditionError, updatedSettlements: settlements };
+  }
 
   const { speedKmh, durationSeconds, fuelRequired } = calculateCaravanSpeedAndDuration(
     distanceKm,

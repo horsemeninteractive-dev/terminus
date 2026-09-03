@@ -66,6 +66,18 @@ Releasing:
   the squad.
 
 ### Changed
+- **Expedition Center re-roled as the strategic logistics HQ (audit #40, P0/P1).**
+  It is no longer a scavenging-speed buff: the +30%/+30% powered search-speed
+  multiplier is gone from the scavenging sim, and the building is now the
+  gateway to long-range inter-colony operations. Each operational Expedition
+  Center at the origin colony grants caravan coordination bonuses — **+12%
+  convoy speed and −10% fuel per 100 km** (capped at three) — and dispatching a
+  caravan on a **long-range route (≥150 km) now requires an operational
+  Expedition Center** at the origin, surfacing a logistics error otherwise.
+  The Caravan modal's telemetry card shows the expedition status (HQ active /
+  required / local route), and the building copy, functions, and capacity
+  labels now read as the logistics HQ (Expedition Logistics, Caravan
+  Coordination, Long-Range Route Planning) instead of recon/scavenge buffs.
 - **Repairmen Shop now obeys the player (audit #38).** The automated repair
   crews are no longer locked to the internal importance hierarchy — the
   Repairmen Shop's inspector exposes four **Automated Repair Bands**
