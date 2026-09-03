@@ -2,6 +2,9 @@ import { MapData, Point2D } from '../types/map';
 import { SettlementState } from '../types/settlement';
 import { ResourceWorkOrder } from '../types/resourceGathering';
 import { PathGrid, stepAlongPath } from './pathfindingService';
+import { getPrimaryHQ } from './buildingOperational';
+import { depositWithinCapacity, countStockpileUnits, type StockpileAddition } from './stockpileCapacity';
+import { strandMaterialsAt } from './strandedLootService';
 
 const dist = (a: Point2D, b: Point2D) => Math.hypot(a.x - b.x, a.z - b.z);
 
@@ -13,7 +16,7 @@ export function getWorkerShelterLocation(
   workerPos: Point2D,
   map?: MapData | null
 ): { center: Point2D; name: string } {
-  let bestPos = state.hq?.center || { x: 0, z: 0 };
+  let bestPos = getPrimaryHQ(state)?.center || { x: 0, z: 0 };
   let bestDist = dist(workerPos, bestPos);
   let bestName = 'Colony HQ';
 
@@ -87,7 +90,7 @@ export function assignResourceGatherers(
     resourceType: node.type,
     workerCount: c,
     state: 'moving_to_node',
-    position: { ...(state.hq?.center || node.position) },
+    position: { ...(getPrimaryHQ(state)?.center || node.position) },
     carried: 0,
     createdAt: Date.now(),
   };
@@ -106,7 +109,7 @@ export function tickResourceGathering(
   alarmActive: boolean = false,
   grid?: PathGrid | null
 ) {
-  if (!state.hq || !state.resourceWorkOrders.length) {
+  if (!getPrimaryHQ(state) || !state.resourceWorkOrders.length) {
     return { newState: state, mapData: map };
   }
 
@@ -114,6 +117,36 @@ export function tickResourceGathering(
   const by = new Map(nodes.map((n) => [n.id, n]));
   const stock = structuredClone(state.stockpile);
   const next: ResourceWorkOrder[] = [];
+  // Units that could not fit because the storage ceiling was full — surfaced
+  // by the header's overflow warning. The load is stranded as a field-loot
+  // pile at the worksite so a squad can physically recover it later (nothing
+  // is silently lost, held past the ceiling, or dumped into storage).
+  let overflowAccrued = 0;
+  let fieldLootPiles = state.fieldLootPiles || [];
+  const strandCarried = (o: ResourceWorkOrder, at: Point2D) => {
+    const carried = o.carried;
+    if (carried <= 0) return;
+    // Finite stockpile: deposit only what fits; whatever doesn't fit is
+    // stranded at the node (the gatherers' worksite) as a recoverable pile.
+    const carry = { materials: { [o.resourceType]: carried } } as StockpileAddition;
+    const { overflow } = depositWithinCapacity(stock, state.totalStorageCapacity ?? Infinity, carry);
+    const overflowUnits = countStockpileUnits(overflow);
+    if (overflowUnits > 0) {
+      fieldLootPiles = strandMaterialsAt(
+        fieldLootPiles,
+        at,
+        { [o.resourceType]: overflowUnits },
+        'gatherer'
+      );
+      if (!o.depositBlocked) {
+        o.depositBlocked = true;
+        overflowAccrued += overflowUnits;
+      }
+    } else {
+      o.depositBlocked = false;
+    }
+    o.carried = 0;
+  };
 
   for (const src of state.resourceWorkOrders) {
     const o: ResourceWorkOrder = { ...src, position: { ...src.position } };
@@ -131,13 +164,11 @@ export function tickResourceGathering(
       o.position.z = stepRes.z;
       o.pathState = stepRes.state;
       if (stepRes.arrived) {
-        // Deposited at shelter/HQ, wait sheltered
-        if (o.carried > 0) {
-          if (o.resourceType === 'wood') stock.materials.wood += o.carried;
-          if (o.resourceType === 'metal') stock.materials.metal += o.carried;
-          if (o.resourceType === 'bricks') stock.materials.bricks += o.carried;
-          o.carried = 0;
-        }
+        // Deposited at shelter/HQ, wait sheltered. The deposit is
+        // capacity-aware: a full storage ceiling strands the load at the
+        // worksite (recoverable by a squad) instead of overflowing the
+        // stockpile.
+        strandCarried(o, n.position);
         o.state = 'returning';
       } else {
         o.state = 'returning';
@@ -180,11 +211,10 @@ export function tickResourceGathering(
       o.position.z = stepRes.z;
       o.pathState = stepRes.state;
       if (stepRes.arrived) {
-        const amount = o.carried;
-        if (o.resourceType === 'wood') stock.materials.wood += amount;
-        if (o.resourceType === 'metal') stock.materials.metal += amount;
-        if (o.resourceType === 'bricks') stock.materials.bricks += amount;
-        o.carried = 0;
+        strandCarried(o, n.position);
+        // A full storage ceiling strands the excess at the node (depositBlocked
+        // stays live for the warning counter); the crew is free to gather again
+        // rather than idling at the depot holding the load.
         if (n.amount > 0) o.state = 'moving_to_node';
         else continue;
       }
@@ -194,7 +224,13 @@ export function tickResourceGathering(
   }
 
   return {
-    newState: { ...state, stockpile: stock, resourceWorkOrders: next },
+    newState: {
+      ...state,
+      stockpile: stock,
+      resourceWorkOrders: next,
+      overflowLootUnits: (state.overflowLootUnits || 0) + overflowAccrued,
+      fieldLootPiles,
+    },
     mapData: { ...map, resourceNodes: nodes },
   };
 }

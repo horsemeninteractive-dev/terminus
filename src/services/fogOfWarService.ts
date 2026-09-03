@@ -3,6 +3,7 @@ import { MapData, Point2D } from '../types/map';
 import { HiddenSurvivorGroup } from '../types/population';
 import { RivalHideout } from '../types/rivalFaction';
 import { AdaptedBuilding, DeconstructionJob, FogOfWarState, SettlementState } from '../types/settlement';
+import { getPrimaryHQ } from './buildingOperational';
 import { WorldVehicle } from '../types/vehicle';
 
 // Per-source vision radii (§3.5). Squads scout the furthest; buildings reveal a
@@ -108,10 +109,11 @@ export function computeVisionSources(
   }
 
   // 3. Colony Headquarters reveals a large, crystal-clear defensive perimeter
-  if (settlement.hq?.center) {
+  const primaryHQ = getPrimaryHQ(settlement);
+  if (primaryHQ?.center) {
     sources.push({
-      x: settlement.hq.center.x,
-      z: settlement.hq.center.z,
+      x: primaryHQ.center.x,
+      z: primaryHQ.center.z,
       radius: VISION_RADII.hq,
       kind: 'hq',
     });

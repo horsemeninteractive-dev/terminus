@@ -5,6 +5,8 @@ import { TacticalHeaderStrip } from './TacticalHeaderStrip';
 import { AudioSettingsModal } from './AudioSettingsModal';
 import { TacticalSquadSelectorStrip } from './TacticalSquadSelectorStrip';
 import { SquadManagementModal } from './SquadManagementModal';
+import { LawPolicyModal } from './LawPolicyModal';
+import { ExpeditionModal } from './ExpeditionModal';
 import { TacticalSquadHUD } from './TacticalSquadHUD';
 import { BuildingAdaptationDrawer } from './BuildingAdaptationDrawer';
 import { VehicleTacticalDrawer } from './VehicleTacticalDrawer';
@@ -25,11 +27,17 @@ import type { AppViewMode } from '../App';
 import { soundService, ToastMessage } from '../services/soundService';
 import { FUNCTIONAL_BUILDING_DEFINITIONS } from '../data/functionalBuildings';
 import { getHiddenGroupValues } from '../lib/scavengeQueueHelpers';
-import { isSquadInsideBuilding } from '../services/scavengingService';
+import { isPointInsidePolygon, isSquadInsideBuilding } from '../services/scavengingService';
+import { polygonCentroid } from '../services/adaptationGeometry';
 import { calculateGlobalNetworkStats } from '../services/caravanService';
-import { updateWorkerJobLimit, updateWorkerJobPriority, setWorkerJobToZero, setWorkerJobToMax } from '../services/populationService';
+import { countSettlementSurvivors } from '../services/settlementLifecycleService';
+import { getLawsUnlockInfo } from '../services/lawService';
+import { isAntennaOperational } from '../services/expeditionService';
+import { getPrimaryHQ, isHQOperational, getPrimaryAdaptedEntry, getAdaptedEntriesForBuilding } from '../services/buildingOperational';
+import { reorderConstructionQueue, updateWorkerJobLimit, updateWorkerJobPriority, setWorkerJobToZero, setWorkerJobToMax } from '../services/populationService';
 import type { WorldScene, FreestandingPlacementPoint } from '../render/WorldScene';
 import type { GameClockState, NoiseEvent, TacticalSquadUnit, ZombieUnit, WeaponItemId, ArmorItemId } from '../types/combat';
+import type { LawId } from '../types/laws';
 import type { BuildingPolygon, MapData, Point2D, ResourceNode } from '../types/map';
 import type { SettlementState, FunctionalBuildingTypeId } from '../types/settlement';
 import type { HiddenSurvivorGroup } from '../types/population';
@@ -43,6 +51,7 @@ export interface TacticalWorldSceneProps {
   activeRansomHideoutId: string | number | null;
   activeRecruitmentGroup: HiddenSurvivorGroup | null;
   activeSidebarTab: ActiveSidebarTab | null;
+  activeSettlementId: string;
   alerts: TacticalAlert[];
   caravans: TradeCaravan[];
   combatSquads: TacticalSquadUnit[];
@@ -52,10 +61,24 @@ export interface TacticalWorldSceneProps {
   disableElevation: boolean;
   elevationExaggeration: number;
   gameClock: GameClockState;
-  handleAdaptBuilding: (bldg: BuildingPolygon, typeId: FunctionalBuildingTypeId) => void;
+  handleAdaptBuilding: (
+    bldg: BuildingPolygon,
+    typeId: FunctionalBuildingTypeId,
+    adaptation?: number | Point2D[]
+  ) => void;
+  /** Removes a building/section adaptation, freeing the structure again. */
+  handleDeadaptBuilding: (buildingId: string | number) => void;
+  /** Adapts ONE split section of a building into a facility (§7.1). */
+  handleAdaptBuildingSection: (bldg: BuildingPolygon, sectionId: string, typeId: FunctionalBuildingTypeId) => void;
+  /** Splits a large building into independently adaptable sections (§7.1). */
+  handleSplitBuilding: (bldg: BuildingPolygon, parts: 2 | 3 | 4) => void;
+  /** Shooting Range: order/cancel a squad's training course. */
+  handleStartTraining: (squadId: string) => void;
+  handleStopTraining: (squadId: string) => void;
   handleAppointHead: (buildingId: string | number, survivorId: string) => void;
   handleAssignArmor: (squadId: string, memberId: string, armorId: ArmorItemId | null) => void;
   handleAssignWeapon: (squadId: string, memberId: string, weaponId: WeaponItemId | null) => void;
+  handleAssignTowerWeapon: (buildingId: string | number, weaponId: WeaponItemId | null) => void;
   handleBuildFreestanding: (typeId: FunctionalBuildingTypeId, pos: Point2D, rotationDeg?: number) => void;
   handleBuildFreestandingRun: (typeId: FunctionalBuildingTypeId, placements: WorldScenePlacement[]) => void;
   handleChangeSquadStance: (squadId: string, stance: 'aggressive' | 'defensive' | 'hold_fire') => void;
@@ -75,6 +98,7 @@ export interface TacticalWorldSceneProps {
   handleOrderSquadAttack: (squadId: string, zombieId: string) => void;
   handleOrderSquadMove: (squadId: string, pos: Point2D, targetBuildingId?: string | number, targetBuildingName?: string) => void;
   handleOrderSquadRecall: (squadId: string) => void;
+  handleOrderAllSquadsRecall: () => void;
   handleOrderVehicleExtraction: (vehicle: WorldVehicle) => void;
   handlePayRansom: (hideoutId: string | number) => void;
   handleRecruitGroup: (buildingId: string | number, persuasionLeaderId?: string) => void;
@@ -84,6 +108,7 @@ export interface TacticalWorldSceneProps {
   handleSearchBuilding: (building: BuildingPolygon, squadIdOverride?: string) => void;
   handleSelectExistingSettlement: (id: string) => void;
   handleSelectSquad: (squadId: string | null) => void;
+  handleSelectSquads?: (squadIds: string[]) => void;
   handleSelectVehicle: (vehicleId: string | null) => void;
   handleSetClockSpeed: (speed: 0 | 1 | 2 | 4) => void;
   handleStartSquadScavengeArea: (squadId: string) => void;
@@ -109,6 +134,7 @@ export interface TacticalWorldSceneProps {
   sceneRef: React.MutableRefObject<WorldScene | null>;
   selectedBuilding: BuildingPolygon | null;
   selectedSquadId: string | null;
+  selectedSquadIds?: string[];
   selectedVehicleId: string | null;
   setActiveGatherType: React.Dispatch<React.SetStateAction<GatherResourceType | null>>;
   setActiveRadioTransmission: React.Dispatch<React.SetStateAction<RadioTransmission | null>>;
@@ -122,6 +148,13 @@ export interface TacticalWorldSceneProps {
   setIsFreestandingModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setIsHideUi: React.Dispatch<React.SetStateAction<boolean>>;
   setIsMoraleModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsLawModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  isLawModalOpen: boolean;
+  handleEnactLaw: (lawId: LawId) => void;
+  setIsExpeditionModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  isExpeditionModalOpen: boolean;
+  handleDispatchExpedition: (siteId: string, squadId: string) => void;
+  handleRecallExpedition: (squadId: string) => void;
   setIsPauseMenuOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setIsPopulationModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setIsQuestListOpen: React.Dispatch<React.SetStateAction<boolean>>;
@@ -139,11 +172,13 @@ export interface TacticalWorldSceneProps {
   setScavengeFilterType: React.Dispatch<React.SetStateAction<string | null>>;
   setSelectedBuilding: React.Dispatch<React.SetStateAction<BuildingPolygon | null>>;
   setSelectedResourceNode: React.Dispatch<React.SetStateAction<ResourceNode | null>>;
+  setSettlements: React.Dispatch<React.SetStateAction<Record<string, SettlementRecord>>>;
   setSelectedSquadId: React.Dispatch<React.SetStateAction<string | null>>;
   setSelectedVehicleId: React.Dispatch<React.SetStateAction<string | null>>;
   setSettlement: any;
   setShowBuildingEdges: React.Dispatch<React.SetStateAction<boolean>>;
   setShowLanduse: React.Dispatch<React.SetStateAction<boolean>>;
+  setShowPowerGrid: React.Dispatch<React.SetStateAction<boolean>>;
   setShowSatelliteOverlay: React.Dispatch<React.SetStateAction<boolean>>;
   setSatelliteQuality: React.Dispatch<React.SetStateAction<import('../types/saveGame').SatelliteQuality>>;
   setShowStreetLabels: React.Dispatch<React.SetStateAction<boolean>>;
@@ -159,6 +194,7 @@ export interface TacticalWorldSceneProps {
   showLanduse: boolean;
   showMetal: boolean;
   showRoads: boolean;
+  showPowerGrid: boolean;
   showSatelliteOverlay: boolean;
   satelliteQuality: import('../types/saveGame').SatelliteQuality;
   showStreetLabels: boolean;
@@ -175,6 +211,7 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
     activeRansomHideoutId,
     activeRecruitmentGroup,
     activeSidebarTab,
+    activeSettlementId,
     alerts,
     caravans,
     combatSquads,
@@ -185,9 +222,15 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
     elevationExaggeration,
     gameClock,
     handleAdaptBuilding,
+    handleAdaptBuildingSection,
+    handleSplitBuilding,
+    handleDeadaptBuilding,
+    handleStartTraining,
+    handleStopTraining,
     handleAppointHead,
     handleAssignArmor,
     handleAssignWeapon,
+    handleAssignTowerWeapon,
     handleBuildFreestanding,
     handleBuildFreestandingRun,
     handleChangeSquadStance,
@@ -207,6 +250,7 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
     handleOrderSquadAttack,
     handleOrderSquadMove,
     handleOrderSquadRecall,
+    handleOrderAllSquadsRecall,
     handleOrderVehicleExtraction,
     handlePayRansom,
     handleRecruitGroup,
@@ -216,6 +260,7 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
     handleSearchBuilding,
     handleSelectExistingSettlement,
     handleSelectSquad,
+  handleSelectSquads,
     handleSelectVehicle,
     handleSetClockSpeed,
     handleStartSquadScavengeArea,
@@ -241,6 +286,7 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
     sceneRef,
     selectedBuilding,
     selectedSquadId,
+  selectedSquadIds,
     selectedVehicleId,
     setActiveGatherType,
     setActiveRadioTransmission,
@@ -254,6 +300,13 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
     setIsFreestandingModalOpen,
     setIsHideUi,
     setIsMoraleModalOpen,
+    setIsLawModalOpen,
+    isLawModalOpen,
+    handleEnactLaw,
+    setIsExpeditionModalOpen,
+    isExpeditionModalOpen,
+    handleDispatchExpedition,
+    handleRecallExpedition,
     setIsPauseMenuOpen,
     setIsPopulationModalOpen,
     setIsQuestListOpen,
@@ -274,8 +327,10 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
     setSelectedSquadId,
     setSelectedVehicleId,
     setSettlement,
+    setSettlements,
     setShowBuildingEdges,
     setShowLanduse,
+    setShowPowerGrid,
     setShowSatelliteOverlay,
     setSatelliteQuality,
     setShowStreetLabels,
@@ -290,6 +345,7 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
     showBuildings,
     showLanduse,
     showMetal,
+    showPowerGrid,
     showRoads,
     showSatelliteOverlay,
     satelliteQuality,
@@ -300,6 +356,30 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
     viewMode,
     zombies,
   } = props;
+
+  // Reorder a queued construction site: promote/demote within the build queue
+  // so the player controls which structure completes first.
+  // `headquarters` is the authoritative HQ collection; the primary command
+  // center is the entry matching primaryHQId. A breached command center
+  // commands nothing — treated as absent until a new HQ is established.
+  const primaryHQ = getPrimaryHQ(settlement);
+  const hqOperational = isHQOperational(primaryHQ);
+  const lawsUnlock = getLawsUnlockInfo(settlement);
+  const antennaOperational = isAntennaOperational(settlement);
+
+  // §7.1 IFZ-style drag adaptation: conversions select a physical portion by
+  // pressing on a building and dragging across its own footprint — the swept
+  // band is clipped to the real building (see GameCanvas onAdaptArea). A plain
+  // click converts the whole structure.
+
+  const handleReorderConstruction = (buildingId: string | number, direction: 'up' | 'down') => {
+    const r = reorderConstructionQueue(settlement, buildingId, direction);
+    if (r.success) {
+      setSettlement(r.newState);
+      soundService.playClick();
+    }
+  };
+
   return (
     <>
               <GameCanvas
@@ -317,11 +397,31 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                 showBricks={showBricks}
                 showLanduse={showLanduse}
                 showSatelliteOverlay={showSatelliteOverlay}
+                showPowerGrid={showPowerGrid}
                 selectedSquadId={selectedSquadId}
                 selectedVehicleId={selectedVehicleId}
                 pendingFreestandingType={pendingFreestandingType}
+                pendingAdaptType={pendingAdaptType}
+                onAdaptArea={(typeId, bldg, polygon) => {
+                  setPendingAdaptType(null);
+                  if (settlement.buildingSections?.get(bldg.id)?.length) {
+                    // §7.1 split buildings: route the dragged area to the
+                    // section containing the selection centroid so each region
+                    // adapts independently.
+                    const centroid = polygonCentroid(polygon);
+                    const sections = settlement.buildingSections?.get(bldg.id) || [];
+                    const target =
+                      sections.find((s) => isPointInsidePolygon(centroid, s.polygon)) ||
+                      sections[0];
+                    if (target) {
+                      handleAdaptBuildingSection(bldg, target.id, typeId);
+                    }
+                  } else {
+                    handleAdaptBuilding(bldg, typeId, polygon);
+                  }
+                }}
                 onSelectBuilding={(bldg) => {
-                  if (!settlement.hq && !isHQSelectionUnlocked) {
+                  if (!hqOperational && !isHQSelectionUnlocked) {
                     setToastMessage({
                       title: 'INCOMING TRANSMISSION PENDING',
                       desc: 'Press PUSH TO TALK to receive your operational mandate before designating an HQ.',
@@ -372,17 +472,21 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                       type: 'success',
                     });
                   }
-                  // §7.2 pick-type-then-click flow: a facility type chosen from the
-                  // bottom-left Build/Convert dropdown is applied to the next clicked
-                  // structure (the adapted facility panel then opens on it).
+                  // §7.1 IFZ-style drag adaptation: the armed conversion type is
+                  // applied by painting across the building's own footprint in
+                  // the 3D scene (GameCanvas onAdaptArea). The click here only
+                  // selects and disarms.
                   if (pendingAdaptType) {
-                    const typeId = pendingAdaptType;
                     setPendingAdaptType(null);
-                    handleAdaptBuilding(bldg, typeId);
+                    setToastMessage({
+                      title: 'PAINT TO CONVERT',
+                      desc: `Press on ${bldg.name || 'the structure'} and drag across its footprint to paint the exact area to convert — the fill shows your coverage. A plain click converts the whole building.`,
+                      type: 'info',
+                    });
                   }
                 }}
                 onHoverBuilding={(bldg) => {
-                  if (isHQSelectionUnlocked || settlement.hq) {
+                  if (isHQSelectionUnlocked || hqOperational) {
                     setHoveredBuilding(bldg);
                   }
                 }}
@@ -396,12 +500,19 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                 }}
                 onPlaceFreestandingRun={(typeId, placements) => handleBuildFreestandingRun(typeId, placements)}
                 onSelectSquad={handleSelectSquad}
+                onSelectSquads={handleSelectSquads}
                 onOrderSquadMove={handleOrderSquadMove}
                 onOrderSquadAttack={handleOrderSquadAttack}
                 onSelectVehicle={handleSelectVehicle}
                 onMountVehicle={handleMountVehicle}
                 onSceneReady={(s) => {
                   sceneRef.current = s;
+                  // Seed the freshly-built world with the settlement's current
+                  // weather & moon phase so visuals match the simulation from
+                  // the first frame (rain, snow, cloud cover, lightning, phase).
+                  if (settlement?.weather) {
+                    s.setWeather(settlement.weather.currentWeather, settlement.weather.moonPhase);
+                  }
                 }}
                 onMapRendered={() => {
                   // The 3D map has been built and drawn — safe to reveal the world.
@@ -442,13 +553,18 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                     onOpenGlobe={() => setViewMode('globe')}
                     questTrackerVisible={isQuestListOpen}
                     onToggleQuestTracker={() => setIsQuestListOpen((v) => !v)}
-                    hasHQ={!!settlement.hq}
+                    hasHQ={hqOperational}
                     onOpenAudioSettings={() => setIsAudioModalOpen(true)}
                     onOpenPauseMenu={() => setIsPauseMenuOpen(true)}
                     onOpenTechTree={() => setIsResearchModalOpen(true)}
                     onOpenMoraleModal={() => setIsMoraleModalOpen(true)}
                     onOpenWeatherModal={() => setIsWeatherModalOpen(true)}
                     onOpenPopulationModal={() => setIsPopulationModalOpen(true)}
+                    onOpenLawModal={() => setIsLawModalOpen(true)}
+                    lawsUnlocked={lawsUnlock.unlocked}
+                    lawsUnlockReason={lawsUnlock.reason}
+                    onOpenExpeditionModal={() => setIsExpeditionModalOpen(true)}
+                    antennaOperational={antennaOperational}
                     onOpenRadio={() => {
                       const unread =
                         radioDirectiveState?.transmissionLog?.find((t) => !t.isRead) ||
@@ -510,6 +626,26 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                     onDisbandSquad={handleDisbandSquad}
                   />
     
+                  {/* Laws & Policy (§IFZ Major Update #5) — Gathering Place forum */}
+                  <LawPolicyModal
+                    isOpen={isLawModalOpen}
+                    onClose={() => setIsLawModalOpen(false)}
+                    settlement={settlement}
+                    today={gameClock.day}
+                    onEnactLaw={handleEnactLaw}
+                  />
+    
+                  {/* Expeditions (§IFZ) — off-map scavenging revealed via the Antenna */}
+                  <ExpeditionModal
+                    isOpen={isExpeditionModalOpen}
+                    onClose={() => setIsExpeditionModalOpen(false)}
+                    settlement={settlement}
+                    squads={combatSquads}
+                    selectedSquadId={selectedSquadId}
+                    onDispatch={handleDispatchExpedition}
+                    onRecall={handleRecallExpedition}
+                  />
+    
                   {/* Selection Info Dock — squad / building / vehicle info panels share one
                       slot with the same size & position as the squad panel, and stack
                       vertically (each scrollable) when several selections are open. */}
@@ -530,12 +666,14 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                       <TacticalSquadHUD
                         squad={selectedSquadObj}
                         mountedVehicle={selectedMountedVehicle}
+                        selectedCount={selectedSquadIds?.length || 1}
                         onDismountVehicle={
                           selectedMountedVehicle ? () => handleDismountVehicle(selectedMountedVehicle.id) : undefined
                         }
                         onDeselect={() => setSelectedSquadId(null)}
                         onChangeStance={handleChangeSquadStance}
                         onOrderFallbackHQ={handleOrderSquadRecall}
+                        onRecallAll={handleOrderAllSquadsRecall}
                         onStartScavengeArea={() => handleStartSquadScavengeArea(selectedSquadId || selectedSquadObj?.squadId || '')}
                         isScavengeAreaActive={activeGatherType === 'scavenge'}
                         inventory={selectedSquadId ? settlement.squadInventories?.[selectedSquadId] : undefined}
@@ -551,14 +689,29 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                         <BuildingAdaptationDrawer
                           building={selectedBuilding}
                           adaptedInfo={
-                            settlement.adaptedBuildings?.get(selectedBuilding.id) ||
                             settlement.freestandingBuildings?.find(
                               (f) => String(f.buildingId) === String(selectedBuilding.id)
+                            ) ||
+                            getPrimaryAdaptedEntry(settlement.adaptedBuildings, selectedBuilding.id)
+                          }
+                          buildingSections={
+                            settlement.buildingSections?.get(selectedBuilding.id) || []
+                          }
+                          sectionAdaptations={
+                            getAdaptedEntriesForBuilding(settlement.adaptedBuildings, selectedBuilding.id).filter(
+                              (a) => String(a.buildingId) !== String(selectedBuilding.id)
                             )
                           }
+                          onSplitBuilding={handleSplitBuilding}
+                          onStartTraining={handleStartTraining}
+                          onStopTraining={handleStopTraining}
+                          onAdaptSection={(bldg, sectionId, typeId) =>
+                            handleAdaptBuildingSection(bldg, sectionId, typeId)
+                          }
+                          onDeadaptSection={(sectionId) => handleDeadaptBuilding(sectionId)}
                           isHQ={
-                            !!settlement.hq &&
-                            String(settlement.hq.buildingId) === String(selectedBuilding.id)
+                            !!primaryHQ &&
+                            String(primaryHQ.buildingId) === String(selectedBuilding.id)
                           }
                           settlement={settlement}
                           hiddenGroup={
@@ -577,7 +730,94 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                             if (group) setActiveRecruitmentGroup(group);
                           }}
                           onRepairBuilding={handleRepairBuilding}
+                          onAssignTowerWeapon={handleAssignTowerWeapon}
                           onSearchInfestedBuilding={handleSearchBuilding}
+                          onReorderConstruction={handleReorderConstruction}
+                          onExpandAdaptation={(buildingId, targetPct) => {
+                            // §7.1 expanding a partial conversion — reuses the
+                            // existing building's type and advances its coverage.
+                            if (!selectedBuilding) return;
+                            const info =
+                              settlement.adaptedBuildings?.get(buildingId) ||
+                              settlement.freestandingBuildings?.find(
+                                (f) => String(f.buildingId) === String(buildingId)
+                              );
+                            if (!info || info.isFreestanding || info.constructionStatus !== 'completed') return;
+                            handleAdaptBuilding(selectedBuilding, info.typeId, Math.min(100, targetPct));
+                          }}
+                          onSetRecipe={(buildingId, recipeId) => {
+                            // §7.2 the crew runs only the recipe the player
+                            // selects (persisted per building).
+                            const id = String(buildingId);
+                            setSettlement((prev) => {
+                              const adapted = prev.adaptedBuildings?.get(buildingId);
+                              if (adapted) {
+                                const next = new Map(prev.adaptedBuildings || []);
+                                next.set(buildingId, { ...adapted, selectedRecipeId: recipeId } as never);
+                                return { ...prev, adaptedBuildings: next };
+                              }
+                              const fs = prev.freestandingBuildings?.find(
+                                (f) => String(f.buildingId) === id
+                              );
+                              if (fs) {
+                                return {
+                                  ...prev,
+                                  freestandingBuildings: prev.freestandingBuildings?.map((f) =>
+                                    String(f.buildingId) === id
+                                      ? { ...f, selectedRecipeId: recipeId }
+                                      : f
+                                  ),
+                                };
+                              }
+                              return prev;
+                            });
+                          }}
+                          nearbyWounded={(() => {
+                            // §5.3 wounded squad members inside this
+                            // building's treatment radius (mirrors the sim).
+                            const center = selectedBuilding?.center;
+                            if (!center) return 0;
+                            return (combatSquads || []).reduce((sum, sq) => {
+                              if (!sq || typeof sq.x !== 'number' || typeof sq.z !== 'number') return sum;
+                              if (Math.hypot(sq.x - (center.x ?? 0), sq.z - (center.z ?? 0)) >= 18) return sum;
+                              return (
+                                sum +
+                                (sq.members || []).filter(
+                                  (m) => m.isAlive && m.currentHp < m.maxHp
+                                ).length
+                              );
+                            }, 0);
+                          })()}
+                          onSetFertilize={(buildingId, enabled) => {
+                            // §7.2 fertilizing is a per-plot choice — it
+                            // consumes fertilizer each cycle, never a passive
+                            // aura while any fertilizer exists.
+                            const id = String(buildingId);
+                            setSettlement((prev) => {
+                              const patch = (b: { buildingId: string | number }) => ({
+                                ...b,
+                                isFertilized: enabled,
+                              });
+                              const adapted = prev.adaptedBuildings?.get(buildingId);
+                              if (adapted) {
+                                const next = new Map(prev.adaptedBuildings || []);
+                                next.set(buildingId, patch(adapted) as never);
+                                return { ...prev, adaptedBuildings: next };
+                              }
+                              const fs = prev.freestandingBuildings?.find(
+                                (f) => String(f.buildingId) === id
+                              );
+                              if (fs) {
+                                return {
+                                  ...prev,
+                                  freestandingBuildings: prev.freestandingBuildings?.map((f) =>
+                                    String(f.buildingId) === id ? patch(f) : f
+                                  ),
+                                };
+                              }
+                              return prev;
+                            });
+                          }}
                         />
                       )}
     
@@ -635,17 +875,16 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                   <TacticalActionBar
                     settlement={settlement}
                     onSelectAdaptationType={(typeId) => {
-                      if (selectedBuilding) {
-                        handleAdaptBuilding(selectedBuilding, typeId);
-                      } else {
-                        // Arm the conversion: the next structure clicked becomes this facility.
-                        setPendingAdaptType(typeId);
-                        setToastMessage({
-                          title: 'SELECT BUILDING',
-                          desc: 'Click a structure on the map to convert it into this facility.',
-                          type: 'info',
-                        });
-                      }
+                      // Arm the conversion: the player presses on a building and
+                      // drags across its OWN footprint to paint the portion to
+                      // convert (IFZ); the live fill shows the coverage.
+                      setPendingAdaptType(typeId);
+                      setSelectedBuilding(null);
+                      setToastMessage({
+                        title: 'CONVERSION ARMED',
+                        desc: 'Press on a building and drag across its footprint to paint the portion to convert — the fill shows your % coverage. A plain click converts the whole building; drag the full length for 100%.',
+                        type: 'info',
+                      });
                       soundService.playClick();
                     }}
                     onSelectFreestandingBlueprint={(typeId) => {
@@ -690,19 +929,19 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                   {/* Bottom-Right Unified Building Info Mini-Panel & Radar Minimap */}
                   <TacticalMinimapWidget
                     selectedBuilding={selectedBuilding}
-                    adaptedBuildingInfo={selectedBuilding ? settlement.adaptedBuildings?.get(selectedBuilding.id) || null : null}
+                    adaptedBuildingInfo={selectedBuilding ? getPrimaryAdaptedEntry(settlement.adaptedBuildings, selectedBuilding.id) || null : null}
                     buildings={mapData?.buildings || []}
                     landuse={mapData?.landuse || []}
                     squads={combatSquads}
                     zombies={zombies.filter((z) => z.state !== 'dead')}
                     vehicles={settlement.vehicles || []}
-                    hqBuildingId={settlement.hq?.buildingId || null}
+                    hqBuildingId={primaryHQ?.buildingId || null}
                     mapRadius={mapData?.radius || 4000}
                     cameraPosition={sceneRef.current?.cameraController?.target || { x: 0, z: 0 }}
                     onPanTo={handleMinimapPanTo}
                     onCenterHQ={() => {
-                      if (settlement.hq) {
-                        const bldg = mapData?.buildings.find((b) => b.id === settlement.hq?.buildingId);
+                      if (primaryHQ) {
+                        const bldg = mapData?.buildings.find((b) => b.id === primaryHQ?.buildingId);
                         if (bldg) handleMinimapPanTo(bldg.center);
                       }
                     }}
@@ -744,6 +983,16 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                         const next = !prev;
                         if (sceneRef.current) {
                           sceneRef.current.setSatelliteOverlay(next, satelliteQuality);
+                        }
+                        return next;
+                      });
+                    }}
+                    showPowerGrid={showPowerGrid}
+                    onTogglePowerGrid={() => {
+                      setShowPowerGrid((prev) => {
+                        const next = !prev;
+                        if (sceneRef.current) {
+                          sceneRef.current.setPowerGridOverlay(next, settlement || null);
                         }
                         return next;
                       });
@@ -814,7 +1063,7 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
     
     
                   {/* Phase 1 HQ Selection Card (shown ONLY after initial radio communication has been confirmed AND no HQ is selected yet) */}
-                  {!settlement.hq && isHQSelectionUnlocked && (
+                  {!hqOperational && isHQSelectionUnlocked && (
                     <HQSelectionCard
                       selectedBuilding={selectedBuilding}
                       onConfirmHQ={handleConfirmHQ}
@@ -849,9 +1098,34 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                 <ColonyOverrunModal
                   isOpen={!!overrunSettlement && !isExtinct}
                   destroyedSettlement={overrunSettlement}
+                  survivorsRemaining={countSettlementSurvivors(overrunSettlement.state || settlement)}
                   operationalSettlements={(Object.values(settlements) as SettlementRecord[]).filter(
                     (s) => s.status === 'operational'
                   )}
+                  onStartReclaim={() => {
+                    // §7.5 local reclamation: survivors abandon the ruined
+                    // command post and designate a fresh one — the founding
+                    // HQ-selection flow takes over on this map.
+                    setSettlement((prev) => ({
+                      ...prev,
+                      headquarters: [],
+                      primaryHQId: null,
+                      isInitialized: false,
+                    }));
+                    setSettlements((registry) => ({
+                      ...registry,
+                      [activeSettlementId]: {
+                        ...registry[activeSettlementId],
+                        status: 'reclaiming',
+                      },
+                    }));
+                    setOverrunSettlement(null);
+                    setToastMessage({
+                      title: 'RECLAMATION UNDERWAY',
+                      desc: 'Secure the sector — designate a new command post as HQ to make the colony operational again.',
+                      type: 'info',
+                    });
+                  }}
                   onOpenGlobe={() => {
                     setOverrunSettlement(null);
                     setViewMode('globe');

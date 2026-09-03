@@ -22,9 +22,10 @@ import { VEHICLE_DEFINITIONS, WorldVehicle } from '../types/vehicle';
 import { getVehicleInventoryCapacity } from '../services/vehicleService';
 import {
  dismountSquadFromVehicle,
- refuelVehicle,
- repairVehicle,
+ pickFuelCarrierSquad,
+ startManualFuelDelivery,
 } from '../services/vehicleService';
+import { createVehicleWorkshopOrder } from '../services/vehicleWorkshopService';
 import { TacticalSquadUnit } from '../types/combat';
 
 interface VehicleTacticalDrawerProps {
@@ -49,6 +50,7 @@ export const VehicleTacticalDrawer: React.FC<VehicleTacticalDrawerProps> = ({
  onOrderVehicleExtraction,
 }) => {
  const [isMinimized, setIsMinimized] = useState(false);
+ const [refuelError, setRefuelError] = useState<string | null>(null);
 
  if (!vehicle) return null;
 
@@ -58,32 +60,41 @@ export const VehicleTacticalDrawer: React.FC<VehicleTacticalDrawerProps> = ({
  const isArmed = vehicle.type === 'armed_truck';
  const isVan = vehicle.type === 'cargo_van';
 
- const handleQuickRefuel = () => {
- const res = refuelVehicle(settlement, vehicle, 25);
- if (!res.success) return;
-
- const updatedVehicles = settlement.vehicles.map((v) =>
- v.id === vehicle.id ? res.updatedVehicle : v
+ const deliverySquad = combatSquads.find(
+   (s) => s.pendingFuelDeliveryVehicleId === vehicle.id
  );
- onUpdateSettlement({
- ...settlement,
- stockpile: res.updatedStockpile,
- vehicles: updatedVehicles,
- });
+
+ // IFZ manual refuel: a squad must CARRY a fuel item to the vehicle. Fuel is
+ // withdrawn from the stockpile into the squad's backpack and poured into the
+ // tank when the squad arrives — it is never teleported by a button press.
+ const handleQuickRefuel = () => {
+ setRefuelError(null);
+ const carrier = pickFuelCarrierSquad(settlement, vehicle, combatSquads);
+ if (!carrier) {
+   setRefuelError('No squad with a free backpack slot is available to carry fuel to this vehicle.');
+   return;
+ }
+ const res = startManualFuelDelivery(settlement, vehicle, carrier, 25);
+ if (!res.success || !res.newState || !res.updatedSquad) {
+   setRefuelError(res.error || 'Refuel dispatch failed.');
+   return;
+ }
+ onUpdateSettlement(res.newState);
+ onUpdateCombatSquads(
+   combatSquads.map((s) =>
+     s.squadId === carrier.squadId ? res.updatedSquad! : s
+   )
+ );
  };
 
- const handleQuickRepair = () => {
- const res = repairVehicle(settlement, vehicle);
- if (!res.success) return;
-
- const updatedVehicles = settlement.vehicles.map((v) =>
- v.id === vehicle.id ? res.updatedVehicle : v
- );
- onUpdateSettlement({
- ...settlement,
- stockpile: res.updatedStockpile,
- vehicles: updatedVehicles,
+ const handleWorkshopRepair = () => {
+ // §8 — repairs happen at a staffed Vehicle Workshop over time, consuming
+ // metal as HP is restored. The instant full-repair button is gone.
+ const res = createVehicleWorkshopOrder(settlement, {
+ type: 'repair',
+ vehicleId: vehicle.id,
  });
+ if (res.success && res.newState) onUpdateSettlement(res.newState);
  };
 
  const handleDismount = () => {
@@ -236,12 +247,35 @@ export const VehicleTacticalDrawer: React.FC<VehicleTacticalDrawerProps> = ({
  </span>
  <button
  onClick={handleQuickRefuel}
- disabled={settlement.stockpile.fuel[vehicle.fuelType] < 5}
+ disabled={
+   settlement.stockpile.fuel[vehicle.fuelType] < 5 || !!deliverySquad
+ }
+ title={
+   deliverySquad
+     ? `${deliverySquad.name} is carrying fuel to this vehicle`
+     : 'Withdraws fuel into a squad backpack and dispatches them to carry it here'
+ }
  className="px-2 py-0.5 bg-amber-600/30 hover:bg-amber-600/60 disabled:opacity-40 border border-amber-500/50 text-amber-200 font-bold text-[10px] transition-colors cursor-pointer"
  >
  +25L Refuel
  </button>
  </div>
+
+ {deliverySquad && (
+ <div className="flex items-center justify-between mt-2 text-[10px] bg-amber-950/40 border border-amber-700/40 px-2 py-1">
+ <span className="text-amber-300 font-bold uppercase">
+ Fuel en route
+ </span>
+ <span className="text-slate-300">
+ {deliverySquad.name} carrying {vehicle.fuelType} to tank
+ </span>
+ </div>
+ )}
+ {refuelError && (
+ <div className="mt-2 text-[10px] text-red-300 bg-red-950/40 border border-red-800/50 px-2 py-1 leading-snug">
+ {refuelError}
+ </div>
+ )}
  </div>
 
  {/* Armor & Durability */}
@@ -265,14 +299,19 @@ export const VehicleTacticalDrawer: React.FC<VehicleTacticalDrawerProps> = ({
 
  <div className="flex justify-between items-center pt-1 text-[10px]">
  <span className="text-slate-400">Kills: {vehicle.killCount}</span>
- {vehicle.currentHp < vehicle.maxHp && (
+ {vehicle.currentHp < vehicle.maxHp && !vehicle.workshopJobId && (
  <button
- onClick={handleQuickRepair}
- disabled={settlement.stockpile.materials.metal < def.repairMetalCost}
- className="px-2 py-0.5 bg-[#334155]/30 hover:bg-[#334155]/60 disabled:opacity-40 border border-[#475569]/50 text-[#E8E8E8] font-bold text-[10px] transition-colors cursor-pointer"
+ onClick={handleWorkshopRepair}
+ className="px-2 py-0.5 bg-[#334155]/30 hover:bg-[#334155]/60 border border-[#475569]/50 text-[#E8E8E8] font-bold text-[10px] transition-colors cursor-pointer"
+ title="Queues a bay at the nearest staffed Vehicle Workshop — metal is consumed as HP is restored over time."
  >
- Repair ({def.repairMetalCost} Metal)
+ Workshop Repair
  </button>
+ )}
+ {vehicle.workshopJobId && (
+ <span className="text-cyan-300 font-bold uppercase">
+ In workshop bay
+ </span>
  )}
  </div>
  </div>

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { MoonPhase } from '../types/weather';
 
 export interface CelestialLightingData {
   sunDirection: THREE.Vector3;
@@ -233,36 +234,21 @@ export class SkyAtmosphere {
     return sprite;
   }
 
+  private moonPhase: MoonPhase = 'full';
+  private moonPhaseBrightness = 1.0; // full = brightest, new = nearly dark
+  private starVisibilityScale = 1.0; // bright moon washes out stars, new moon reveals them
+  private moonCanvas: HTMLCanvasElement;
+  private moonTexture: THREE.CanvasTexture;
+
   private createMoonSprite(): THREE.Sprite {
-    const canvas = document.createElement('canvas');
-    canvas.width = 256;
-    canvas.height = 256;
-    const ctx = canvas.getContext('2d')!;
+    this.moonCanvas = document.createElement('canvas');
+    this.moonCanvas.width = 256;
+    this.moonCanvas.height = 256;
+    this.moonTexture = new THREE.CanvasTexture(this.moonCanvas);
+    this.redrawMoonTexture();
 
-    // Moon body with soft outer glow and crescent shading
-    const grad = ctx.createRadialGradient(128, 128, 12, 128, 128, 110);
-    grad.addColorStop(0.0, 'rgba(240, 246, 255, 1.0)');
-    grad.addColorStop(0.25, 'rgba(210, 230, 255, 0.85)');
-    grad.addColorStop(0.45, 'rgba(160, 195, 240, 0.4)');
-    grad.addColorStop(0.75, 'rgba(120, 165, 220, 0.12)');
-    grad.addColorStop(1.0, 'rgba(90, 140, 200, 0.0)');
-
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(128, 128, 110, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Subtle moon craters
-    ctx.fillStyle = 'rgba(180, 200, 225, 0.35)';
-    ctx.beginPath();
-    ctx.arc(115, 110, 14, 0, Math.PI * 2);
-    ctx.arc(140, 135, 18, 0, Math.PI * 2);
-    ctx.arc(122, 148, 11, 0, Math.PI * 2);
-    ctx.fill();
-
-    const tex = new THREE.CanvasTexture(canvas);
     const mat = new THREE.SpriteMaterial({
-      map: tex,
+      map: this.moonTexture,
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
@@ -272,6 +258,102 @@ export class SkyAtmosphere {
     sprite.scale.set(120, 120, 1);
     sprite.name = 'MoonSprite';
     return sprite;
+  }
+
+  /**
+   * Renders one frame of the lunar cycle onto the moon canvas: the lit region
+   * faces the sun, so a waxing moon is lit on the right and a waning moon on the
+   * left. New moons are almost invisible; full moons are the brightest.
+   */
+  private redrawMoonTexture() {
+    const ctx = this.moonCanvas.getContext('2d')!;
+    ctx.clearRect(0, 0, 256, 256);
+    const cx = 128;
+    const cy = 128;
+    const R = 104;
+
+    // Soft outer glow — strongest at full, weakest at new.
+    const glowA = this.moonPhase === 'full' ? 0.45 : this.moonPhase === 'new' ? 0.05 : 0.22;
+    const glow = ctx.createRadialGradient(cx, cy, 8, cx, cy, 150);
+    glow.addColorStop(0.0, `rgba(215, 232, 255, ${glowA})`);
+    glow.addColorStop(0.6, `rgba(170, 205, 245, ${glowA * 0.45})`);
+    glow.addColorStop(1.0, 'rgba(140, 185, 235, 0.0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 150, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (this.moonPhase === 'new') {
+      // New moon: only a faint sliver of reflected earthshine.
+      const sliver = ctx.createRadialGradient(cx, cy, 4, cx, cy, R);
+      sliver.addColorStop(0.0, 'rgba(150, 175, 205, 0.22)');
+      sliver.addColorStop(1.0, 'rgba(120, 150, 190, 0.0)');
+      ctx.fillStyle = sliver;
+      ctx.beginPath();
+      ctx.arc(cx, cy, R, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      // Lit moon body.
+      const body = ctx.createRadialGradient(cx - 12, cy - 12, 6, cx, cy, R);
+      body.addColorStop(0.0, 'rgba(250, 252, 255, 1.0)');
+      body.addColorStop(0.55, 'rgba(216, 230, 250, 0.92)');
+      body.addColorStop(0.85, 'rgba(172, 200, 238, 0.7)');
+      body.addColorStop(1.0, 'rgba(140, 178, 224, 0.0)');
+      ctx.fillStyle = body;
+      ctx.beginPath();
+      ctx.arc(cx, cy, R, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Craters
+      ctx.fillStyle = 'rgba(150, 175, 210, 0.35)';
+      ctx.beginPath();
+      ctx.arc(115, 108, 14, 0, Math.PI * 2);
+      ctx.arc(140, 135, 18, 0, Math.PI * 2);
+      ctx.arc(122, 148, 11, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (this.moonPhase !== 'full') {
+        // Carve the dark (night) side: overlay a shaded disc whose centre is
+        // offset toward the lit edge so the lit crescent remains on that side.
+        // Waxing lit on the right -> shadow centre shifted right; waning lit on
+        // the left -> shadow centre shifted left.
+        const litOnRight = this.moonPhase === 'waxing';
+        const offset = litOnRight ? R * 0.62 : -R * 0.62;
+        const night = ctx.createRadialGradient(cx + offset * 0.7, cy, 4, cx + offset * 0.3, cy, R * 1.05);
+        night.addColorStop(0.0, 'rgba(6, 10, 18, 0.96)');
+        night.addColorStop(0.75, 'rgba(10, 15, 26, 0.9)');
+        night.addColorStop(1.0, 'rgba(8, 12, 22, 0.45)');
+        ctx.fillStyle = night;
+        ctx.beginPath();
+        ctx.arc(cx + offset, cy, R, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    this.moonTexture.needsUpdate = true;
+  }
+
+  /**
+   * Connect the visual lunar phase to the simulation's moon cycle (§6.1).
+   */
+  public setMoonPhase(phase: MoonPhase) {
+    this.moonPhase = phase;
+    switch (phase) {
+      case 'full':
+        this.moonPhaseBrightness = 1.0;
+        this.starVisibilityScale = 0.4;
+        break;
+      case 'waxing':
+      case 'waning':
+        this.moonPhaseBrightness = 0.62;
+        this.starVisibilityScale = 0.85;
+        break;
+      case 'new':
+        this.moonPhaseBrightness = 0.18;
+        this.starVisibilityScale = 1.35;
+        break;
+    }
+    this.redrawMoonTexture();
   }
 
   /**
@@ -317,14 +399,17 @@ export class SkyAtmosphere {
     this.sunSprite.material.opacity = sunVis;
     this.sunSprite.visible = sunVis > 0.01;
 
+    // Moon phase controls how bright the moon sprite is and how strongly it
+    // washes out the stars (a full moon dims the starfield, a new moon reveals
+    // it) (§6.1 lunar cycle).
     const moonVis = Math.max(0, Math.min(1.0, (moonY + 80) / 220));
-    this.moonSprite.material.opacity = moonVis * 0.9;
-    this.moonSprite.visible = moonVis > 0.01;
+    this.moonSprite.material.opacity = moonVis * 0.9 * this.moonPhaseBrightness;
+    this.moonSprite.visible = moonVis > 0.01 && this.moonPhaseBrightness > 0.05;
 
     // Starfield visibility (fade in when sun drops below horizon)
     const nightFactor = Math.max(0, Math.min(1.0, (-sunY + 80) / 260));
     const starMat = this.starsPoints.material as THREE.ShaderMaterial;
-    starMat.uniforms.uNightAlpha.value = nightFactor;
+    starMat.uniforms.uNightAlpha.value = nightFactor * this.starVisibilityScale;
     starMat.uniforms.uTime.value = timeElapsed;
 
     // Update sky dome shader uniforms
@@ -332,6 +417,12 @@ export class SkyAtmosphere {
     this.skyMaterial.uniforms.uMoonDir.value.copy(this.scratchMoonDir);
     this.skyMaterial.uniforms.uSunElevation.value = sunElevation;
     this.skyMaterial.uniforms.uTime.value = timeElapsed;
+  }
+
+  /** Current moon brightness factor (1 full, ~0.2 new) — used by WorldScene to
+   * scale ambient night light so a full moon visibly brightens the colony. */
+  public getMoonPhaseBrightness(): number {
+    return this.moonPhaseBrightness;
   }
 
   public setSkyColors(top: THREE.Color, horizon: THREE.Color, sunColor: THREE.Color, moonColor: THREE.Color) {

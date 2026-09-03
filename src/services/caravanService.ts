@@ -1,6 +1,8 @@
 import { GeoPoint } from '../types/map';
 import { NamedSurvivor, Squad } from '../types/population';
 import { SettlementState, SettlementStockpile } from '../types/settlement';
+import { getPrimaryHQ } from './buildingOperational';
+import { depositWithinCapacity, countStockpileUnits } from './stockpileCapacity';
 import { WorldVehicle } from '../types/vehicle';
 import {
   CaravanAmbushEvent,
@@ -252,6 +254,7 @@ export function dispatchTradeCaravan(
       wood: originStock.materials.wood - c.materials.wood,
       metal: originStock.materials.metal - c.materials.metal,
       bricks: originStock.materials.bricks - c.materials.bricks,
+      tools: originStock.materials.tools - (c.materials.tools || 0),
     },
   };
 
@@ -475,6 +478,7 @@ export function tickCaravansSimulation(
               wood: Math.floor(updatedCargo.materials.wood * 0.8),
               metal: Math.floor(updatedCargo.materials.metal * 0.8),
               bricks: Math.floor(updatedCargo.materials.bricks * 0.8),
+              tools: Math.floor((updatedCargo.materials.tools || 0) * 0.8),
             },
           };
         }
@@ -496,45 +500,23 @@ export function tickCaravansSimulation(
 
       if (destSettlement) {
         const destStock = destSettlement.state.stockpile;
-        const mergedStockpile: SettlementStockpile = {
-          food: {
-            canned_goods: destStock.food.canned_goods + updatedCargo.food.canned_goods,
-            mre_rations: destStock.food.mre_rations + updatedCargo.food.mre_rations,
-            dried_rations: destStock.food.dried_rations + updatedCargo.food.dried_rations,
-            fresh_harvest: destStock.food.fresh_harvest + updatedCargo.food.fresh_harvest,
-          },
-          water: {
-            bottled_water: destStock.water.bottled_water + updatedCargo.water.bottled_water,
-            purified_water: destStock.water.purified_water + updatedCargo.water.purified_water,
-            rainwater: destStock.water.rainwater + updatedCargo.water.rainwater,
-          },
-          medical: {
-            first_aid_kits: destStock.medical.first_aid_kits + updatedCargo.medical.first_aid_kits,
-            sterile_bandages: destStock.medical.sterile_bandages + updatedCargo.medical.sterile_bandages,
-            antibiotics: destStock.medical.antibiotics + updatedCargo.medical.antibiotics,
-            painkillers: destStock.medical.painkillers + updatedCargo.medical.painkillers,
-          },
-          fuel: {
-            gasoline: destStock.fuel.gasoline + updatedCargo.fuel.gasoline,
-            diesel: destStock.fuel.diesel + updatedCargo.fuel.diesel,
-            biofuel: destStock.fuel.biofuel + updatedCargo.fuel.biofuel,
-          },
-          ammo: {
-            sharedPool: destStock.ammo.sharedPool + updatedCargo.ammo.sharedPool,
-          },
-          materials: {
-            wood: destStock.materials.wood + updatedCargo.materials.wood,
-            metal: destStock.materials.metal + updatedCargo.materials.metal,
-            bricks: destStock.materials.bricks + updatedCargo.materials.bricks,
-          },
-        };
+        // Finite stockpile: deposit only what fits under the destination's
+        // totalStorageCapacity. The overflow is reported as overflow units so
+        // the player sees cargo stranded instead of storage silently busting
+        // its ceiling (or cargo vanishing).
+        const { stockpile: mergedStockpile, overflow } = depositWithinCapacity(
+          structuredClone(destStock),
+          destSettlement.state.totalStorageCapacity ?? Infinity,
+          updatedCargo
+        );
+        const overflowUnits = countStockpileUnits(overflow);
 
         // Merge Squad & Vehicle into destination colony
         const arrivingVehicle: WorldVehicle = {
           ...updatedVehicle,
           isParkedAtHQ: true,
           isMoving: false,
-          position: destSettlement.state.hq?.center || { x: 0, z: 0 },
+          position: getPrimaryHQ(destSettlement.state)?.center || { x: 0, z: 0 },
         };
 
         const arrivingSquad: Squad = {
@@ -568,6 +550,7 @@ export function tickCaravansSimulation(
         const updatedDestState: SettlementState = {
           ...destSettlement.state,
           stockpile: mergedStockpile,
+          overflowLootUnits: (destSettlement.state.overflowLootUnits || 0) + overflowUnits,
           vehicles: [...destSettlement.state.vehicles, arrivingVehicle],
           squads: [...destSettlement.state.squads, arrivingSquad],
           namedSurvivors: Array.from(uniqueNamedMap.values()),
@@ -588,6 +571,14 @@ export function tickCaravansSimulation(
           progress: 1.0,
           currentGeoPoint: caravan.destinationGeo,
         });
+
+        if (overflowUnits > 0) {
+          notifications.push({
+            title: `STORAGE FULL: ${destSettlement.name}`,
+            desc: `${overflowUnits} cargo units could not fit in the colony's stockpile and were stranded. Free up storage to receive full caravans.`,
+            type: 'warn',
+          });
+        }
 
         if (wasDestroyed) {
           notifications.push({
@@ -650,12 +641,20 @@ export function calculateGlobalNetworkStats(
   for (const s of Object.values(settlements)) {
     if (s.status === 'operational') {
       totalOperational++;
-      const namedCount = s.state.namedSurvivors.filter((surv) => surv.stats).length;
-      const genCount = s.state.generalPopulation?.total || 0;
-      totalSurvivors += namedCount + genCount;
     } else {
       totalDestroyed++;
     }
+    // Survivors are tallied across ALL colonies — operational and destroyed.
+    // People still holding out in a fallen sector are a recovery opportunity,
+    // not extinction. Extinction means zero survivors anywhere.
+    const namedCount = Array.isArray(s.state?.namedSurvivors)
+      ? s.state.namedSurvivors.filter((surv) => surv.stats).length
+      : 0;
+    const genCount =
+      typeof s.state?.generalPopulation === 'number'
+        ? s.state.generalPopulation
+        : s.state?.generalPopulation?.total || 0;
+    totalSurvivors += namedCount + genCount;
   }
 
   let inTransitCount = 0;

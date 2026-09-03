@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import {
+ ArrowDown,
+ ArrowUp,
  Award,
  Check,
  ChevronDown,
@@ -7,27 +9,46 @@ import {
  Crosshair,
  Flame,
  Hammer,
+ HeartPulse,
+ ListOrdered,
  Maximize2,
  RotateCcw,
+ Scissors,
  Search,
  Shield,
  ShieldAlert,
+ Sprout,
  Trash2,
- UserPlus,
- Users,
- X,
+ UserPlus,  Users,
+  X,
+  Droplets,
+  Sun,
+  Zap,
+  BatteryCharging,
 } from 'lucide-react';
+import { CISTERN_WEATHER_MULT } from '../services/waterService';
 import {
  calculatePolygonArea,
  FUNCTIONAL_BUILDING_DEFINITIONS,
+ getCanonicalDefenseDef,
 } from '../data/functionalBuildings';
 import { CATEGORY_COLORS } from '../render/BuildingRenderer';
 import { calculateBuildingRepairCost } from '../services/combatService';
-import { getDefaultHeadTitle } from '../services/populationService';
+import {
+  WeaponItemId,
+  WEAPON_CATALOG,
+  getArmorDefinition,
+  getWeaponDefinition,
+} from '../types/combat';
+import { getBuildingLockStatus } from '../services/researchService';
+import { getPrimaryHQ, isHQOperational } from '../services/buildingOperational';
+import { getDefaultHeadTitle, getPrioritizedConstructionSites } from '../services/populationService';
 import { BuildingPolygon } from '../types/map';
 import { HiddenSurvivorGroup } from '../types/population';
 import {
  AdaptedBuilding,
+ BuildingSection,
+ FunctionalBuildingTypeId,
  SettlementState,
 } from '../types/settlement';
 
@@ -44,7 +65,26 @@ interface BuildingAdaptationDrawerProps {
  onVacateSurvivorRole: (survivorId: string) => void;
  onInvestigateHiddenGroup: (group: HiddenSurvivorGroup) => void;
  onRepairBuilding?: (buildingId: string | number) => void;
+ /** Tower armament: equips/unequips a ranged weapon from the colony armory. */
+ onAssignTowerWeapon?: (buildingId: string | number, weaponId: WeaponItemId | null) => void;
  onSearchInfestedBuilding?: (building: BuildingPolygon) => void;
+ onReorderConstruction?: (buildingId: string | number, direction: 'up' | 'down') => void;
+ onExpandAdaptation?: (buildingId: string | number, targetPct: number) => void;
+ onSetRecipe?: (buildingId: string | number, recipeId: string) => void;
+ onSetFertilize?: (buildingId: string | number, enabled: boolean) => void;
+ /** §7.1 split sections of this source building (IFZ footprint splitting). */
+ buildingSections?: BuildingSection[];
+ /** Per-section adaptations currently in the settlement (keyed by section id). */
+ sectionAdaptations?: AdaptedBuilding[];
+ onSplitBuilding?: (bldg: BuildingPolygon, parts: 2 | 3 | 4) => void;
+ /** Adapts a facility type into ONE split section. */
+ onAdaptSection?: (bldg: BuildingPolygon, sectionId: string, typeId: FunctionalBuildingTypeId) => void;
+ /** Deadapts a single split section (removes only that adaptation). */
+ onDeadaptSection?: (sectionId: string) => void;  /** Wounded squad members currently inside this facility's treatment radius. */
+  nearbyWounded?: number;
+  /** Shooting Range: order / cancel a squad's training course (§Terminus). */
+  onStartTraining?: (squadId: string) => void;
+  onStopTraining?: (squadId: string) => void;
 }
 
 export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> = ({
@@ -60,10 +100,27 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  onVacateSurvivorRole,
  onInvestigateHiddenGroup,
  onRepairBuilding,
+ onAssignTowerWeapon,
  onSearchInfestedBuilding,
+ onReorderConstruction,
+ onExpandAdaptation,
+ onSetRecipe,
+ onSetFertilize,
+ buildingSections = [],
+ sectionAdaptations = [],
+ onSplitBuilding,
+ onAdaptSection,    onDeadaptSection,
+    nearbyWounded,
+    onStartTraining,
+    onStopTraining,
 }) => {
  const [isAppointingHead, setIsAppointingHead] = useState(false);
  const [isMinimized, setIsMinimized] = useState(false);
+
+ // Default facility type for one-click section conversion. The player can also
+ // arm a different type from the Build menu and paint across that section's
+ // footprint in the world.
+ const defaultSectionType: FunctionalBuildingTypeId = 'shelter_bunkhouse';
 
  if (!building) return null;
 
@@ -73,12 +130,21 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  const volume = footprintArea * building.height;
 
  // If building is already adapted, get current stats
- const activeDef = adaptedInfo ? FUNCTIONAL_BUILDING_DEFINITIONS[adaptedInfo.typeId] : null;
-
- // Appointed Head
+ const activeDef = adaptedInfo ? FUNCTIONAL_BUILDING_DEFINITIONS[adaptedInfo.typeId] : null; // Appointed Head
  const currentHead = adaptedInfo?.assignedHeadId
- ? settlement.namedSurvivors.find((s) => s.id === adaptedInfo.assignedHeadId)
- : null;
+   ? settlement.namedSurvivors.find((s) => s.id === adaptedInfo.assignedHeadId)
+   : null;
+
+ // Construction queue position: index within all queued sites, and whether
+ // this site is inside the active building window.
+ const constructionQueue = getPrioritizedConstructionSites(settlement);
+ const queueIndex = adaptedInfo
+   ? constructionQueue.all.findIndex(
+       (b) => String(b.buildingId) === String(adaptedInfo.buildingId)
+     )
+   : -1;
+ const isQueueActive =
+   queueIndex >= 0 && queueIndex < constructionQueue.active.length;
 
  
 
@@ -215,30 +281,55 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  Make Contact & Scout Group
  </button>
  </div>
- )}
-
- {/* CASE 1: Building is HQ */}
- {isHQ && (
- <div className="bg-[#18241b] border border-[#22c55e] p-3 text-center space-y-2">
- <div className="w-10 h-10 bg-[#15803d]/30 border border-[#22c55e] flex items-center justify-center mx-auto text-[#4ade80]">
- <Shield className="w-6 h-6" />
- </div>
- <div className="font-black text-sm text-[#4ade80] uppercase">Settlement Command Headquarters</div>
- <p className="text-[11px] text-[#d1d5db]">
- Central command nexus of the outpost. Provides fortified defense perimeter, default survivor housing, and base inventory storage.
- </p>
- <div className="grid grid-cols-2 gap-2 text-[10px] text-left pt-2 border-t border-[#2d4734]">
- <div>
- <span className="text-[#6b7280]">Living Quarters:</span>{' '}
- <span className="font-bold text-white">{settlement.hq?.maxCapacity} Beds</span>
- </div>
- <div>
- <span className="text-[#6b7280]">Defense Bonus:</span>{' '}
- <span className="font-bold text-[#4ade80]">+{settlement.hq?.defenseRating} Def</span>
- </div>
- </div>
- </div>
- )}
+ )}{/* CASE 1: Building is HQ */}
+  {isHQ && (() => {
+  const hqRecord = getPrimaryHQ(settlement);
+  const hqBreached = !hqRecord || !isHQOperational(hqRecord);
+  const hqDurabilityPct = hqRecord && hqRecord.maxDurability > 0
+    ? Math.max(0, Math.min(100, (hqRecord.currentDurability / hqRecord.maxDurability) * 100))
+    : 0;
+  return (
+  <div className={hqBreached ? 'bg-[#2a1215] border border-red-600 p-3 text-center space-y-2' : 'bg-[#18241b] border border-[#22c55e] p-3 text-center space-y-2'}>
+    <div className={hqBreached ? 'w-10 h-10 bg-red-950/40 border border-red-600 flex items-center justify-center mx-auto text-red-400' : 'w-10 h-10 bg-[#15803d]/30 border border-[#22c55e] flex items-center justify-center mx-auto text-[#4ade80]'}>
+    <Shield className="w-6 h-6" />
+    </div>
+    <div className={hqBreached ? 'font-black text-sm text-red-400 uppercase' : 'font-black text-sm text-[#4ade80] uppercase'}>
+    {hqBreached ? 'Command Center Breached' : 'Settlement Command Headquarters'}
+    </div>
+    <p className="text-[11px] text-[#d1d5db]">
+    {hqBreached
+      ? 'The command post has been overrun. It provides no storage, shelter, defense or squad capacity — secure the sector and re-establish the HQ at a new structure to restore the colony.'
+      : 'Central command nexus of the outpost. Provides fortified defense perimeter, default survivor housing, and base inventory storage.'}
+    </p>
+    <div className="text-[10px] text-left pt-2 border-t border-[#2d4734] space-y-1.5">
+    <div className="flex justify-between items-center">
+      <span className="text-[#6b7280]">Command Center Integrity:</span>
+      <span className={hqBreached ? 'font-bold text-red-400' : 'font-bold text-white'}>
+      {hqRecord ? `${Math.max(0, Math.round(hqRecord.currentDurability))} / ${hqRecord.maxDurability} HP` : '—'}
+      </span>
+    </div>
+    <div className="h-1.5 bg-black/40 rounded-sm overflow-hidden">
+      <div
+      className={hqBreached ? 'h-full bg-red-600' : hqDurabilityPct > 50 ? 'h-full bg-[#22c55e]' : 'h-full bg-amber-500'}
+      style={{ width: `${hqDurabilityPct}%` }}
+      />
+    </div>
+    {!hqBreached && (
+      <div className="grid grid-cols-2 gap-2">
+      <div>
+        <span className="text-[#6b7280]">Living Quarters:</span>{' '}
+        <span className="font-bold text-white">{hqRecord?.maxCapacity} Beds</span>
+      </div>
+      <div>
+        <span className="text-[#6b7280]">Defense Bonus:</span>{' '}
+        <span className="font-bold text-[#4ade80]">+{hqRecord?.defenseRating} Def</span>
+      </div>
+      </div>
+    )}
+    </div>
+  </div>
+  );
+  })()}
 
  {/* CASE 2: Building is Already Adapted */}
  {!isHQ && adaptedInfo && activeDef && (
@@ -264,7 +355,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  </div>
 
  {/* Construction Progress Over Time (§4.6) */}
- {adaptedInfo.constructionStatus === 'in_progress' ? (
+ {adaptedInfo.constructionStatus === 'in_progress' || adaptedInfo.constructionStatus === 'planned' ? (
  (() => {
  const workOrder = settlement.constructionOrders?.find(
  (o) => String(o.buildingId) === String(building.id)
@@ -300,6 +391,39 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  />
  </div>
 
+ {/* Construction Queue Position & Priority Controls */}
+ {queueIndex >= 0 && onReorderConstruction && constructionQueue.all.length > 1 ? (
+ <div className="flex items-center justify-between gap-2 bg-slate-900/80 border border-slate-800 rounded px-2 py-1.5">
+ <div className="flex items-center gap-1.5 text-[10px] min-w-0">
+ <ListOrdered className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+ <span className="text-slate-300">
+ QUEUE {queueIndex + 1} OF {constructionQueue.all.length}
+ </span>
+ <span className={`font-bold ${isQueueActive ? 'text-emerald-400' : 'text-amber-400'}`}>
+ {isQueueActive ? 'BUILDING' : 'QUEUED'}
+ </span>
+ </div>
+ <div className="flex items-center gap-1 shrink-0">
+ <button
+ onClick={() => onReorderConstruction(adaptedInfo.buildingId, 'up')}
+ disabled={queueIndex === 0}
+ title="Move earlier in the construction queue"
+ className="w-6 h-6 flex items-center justify-center bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 disabled:opacity-30 disabled:hover:bg-slate-800 transition-colors"
+ >
+ <ArrowUp className="w-3.5 h-3.5" />
+ </button>
+ <button
+ onClick={() => onReorderConstruction(adaptedInfo.buildingId, 'down')}
+ disabled={queueIndex === constructionQueue.all.length - 1}
+ title="Move later in the construction queue"
+ className="w-6 h-6 flex items-center justify-center bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 disabled:opacity-30 disabled:hover:bg-slate-800 transition-colors"
+ >
+ <ArrowDown className="w-3.5 h-3.5" />
+ </button>
+ </div>
+ </div>
+ ) : null}
+
  {workOrder && (
  <div className="bg-slate-900/80 p-2 border border-slate-800 rounded text-[10px] space-y-1">
  <div className="text-slate-400 flex justify-between">
@@ -308,6 +432,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  {Math.round(workOrder.deductedCost.wood)}/{workOrder.totalCost.wood}W •{' '}
  {Math.round(workOrder.deductedCost.metal)}/{workOrder.totalCost.metal}M •{' '}
  {Math.round(workOrder.deductedCost.bricks)}/{workOrder.totalCost.bricks}B
+ {workOrder.totalCost.tools ? <> •{' '}{Math.round(workOrder.deductedCost.tools || 0)}/{workOrder.totalCost.tools}T</> : null}
  </span>
  </div>
  <div className="text-slate-400 text-[10px]">
@@ -331,21 +456,282 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  </div>
  )}
 
- {/* Scaled Capacity Details (§7.1) */}
+ {/* §7.2 Production Recipe — multi-recipe facilities run the player's choice. */}
+ {activeDef && (activeDef.recipes?.length || 0) > 1 &&
+   adaptedInfo.constructionStatus === 'completed' &&
+   onSetRecipe && (
+   <div className="bg-[#0e1117] p-2.5 border border-[#202836] space-y-1.5 text-[11px]">
+    <div className="flex justify-between items-center">
+     <span className="text-[#9ca3af] font-semibold">Production Recipe (§7.2):</span>
+     <span className="text-[10px] text-[#6b7280]">
+      {adaptedInfo.selectedRecipeId ? 'Player set' : 'Default'}
+     </span>
+    </div>
+    {activeDef.recipes!.map((r) => {
+     const fmtFlow = (flows: { resource: string; amountPerDay: number }[]) =>
+       flows.map((f) => `${f.amountPerDay} ${f.resource.replace(/_/g, ' ')}`).join(' + ');
+     const lock = r.researchRequirement
+       ? getBuildingLockStatus(settlement, r.researchRequirement)
+       : { unlocked: true, requiredName: '' };
+     const locked = !lock.unlocked;
+     // §IFZ gear lines (Arms/Protective Gear factories) end in a real armory
+     // item instead of a stockpile resource — show the manufactured gear name.
+     const gearName = r.gear
+       ? r.gear.kind === 'weapon'
+         ? getWeaponDefinition(r.gear.itemId).name
+         : getArmorDefinition(r.gear.itemId).name
+       : null;
+     const isActive =
+       !locked &&
+       (adaptedInfo.selectedRecipeId ?? activeDef.recipes![0].id) === r.id;
+     return (
+      <button
+       key={r.id}
+       onClick={() => onSetRecipe(adaptedInfo.buildingId, r.id)}
+       disabled={isActive || locked}
+       title={locked ? `Requires research: ${lock.requiredName}` : undefined}
+       className={`w-full p-2 border text-left transition-colors ${
+        isActive
+         ? 'bg-[#0c2f22] border-[#10b981] text-emerald-200 cursor-default'
+         : locked
+         ? 'bg-[#0d0f13] border-[#232830] text-slate-500 cursor-not-allowed opacity-80'
+         : 'bg-[#12161d] border-[#28303c] text-slate-300 hover:border-[#38bdf8] hover:text-white cursor-pointer'
+       }`}
+      >
+       <div className="flex items-center justify-between">
+        <span className="font-bold text-xs">{r.name}</span>
+        {isActive && <span className="text-[9px] font-bold text-emerald-300">ACTIVE</span>}
+       </div>
+       <div className="text-[9px] text-slate-400 mt-0.5 font-mono">
+        {r.inputs.length ? fmtFlow(r.inputs) : 'No inputs'} →{' '}
+        {locked
+         ? `REQUIRES ${lock.requiredName.toUpperCase()}`
+         : gearName
+         ? `MANUFACTURE ${gearName.toUpperCase()}`
+         : fmtFlow(r.outputs)}
+       </div>
+      </button>
+     );
+    })}
+    <div className="text-[9px] text-[#6b7280]">
+     The crew runs only the selected recipe — if its inputs run short the
+     building idles instead of silently switching recipes.
+    </div>
+   </div>
+  )}
+
+ {/* §7.2 Fertilizer — a per-plot choice that consumes stockpile fertilizer. */}
+ {activeDef &&
+   (adaptedInfo.typeId === 'field' ||
+     adaptedInfo.typeId === 'vast_field' ||
+     adaptedInfo.typeId === 'greenhouse' ||
+     adaptedInfo.typeId === 'greenhouse_hydro') &&
+   adaptedInfo.constructionStatus === 'completed' &&
+   onSetFertilize && (
+   <div className="bg-[#0e1117] p-2.5 border border-[#202836] space-y-1.5 text-[11px]">
+    <div className="flex items-center justify-between">
+     <span className="text-[#9ca3af] font-semibold">Fertilization (§7.2):</span>
+     <span className="text-[10px] font-mono text-[#6b7280]">
+      Stockpile: {Math.floor((settlement.stockpile.materials.fertilizer || 0) * 100) / 100}
+     </span>
+    </div>
+    <button
+     onClick={() => onSetFertilize(adaptedInfo.buildingId, !adaptedInfo.isFertilized)}
+     className={`w-full py-1.5 px-2 border text-[10px] font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+      adaptedInfo.isFertilized
+       ? 'bg-[#0c2f22] border-[#10b981] text-emerald-200 hover:bg-[#103a2b]'
+       : 'bg-[#12161d] border-[#28303c] text-slate-300 hover:border-[#10b981] hover:text-emerald-200'
+     }`}
+    >
+     {adaptedInfo.isFertilized
+      ? <><Sprout className="w-3.5 h-3.5" /> FERTILIZING THIS PLOT — STOP</>
+      : <><Sprout className="w-3.5 h-3.5" /> APPLY FERTILIZER (+75% YIELD)</>}
+    </button>
+    <div className="text-[9px] text-[#6b7280]">
+     A fertilized plot consumes 0.5 Fertilizer per crop cycle from the
+     stockpile; with an empty stock the cycle simply runs unfertilized.{" "}
+     {adaptedInfo.isFertilized &&
+      (settlement.stockpile.materials.fertilizer || 0) < 0.5 && (
+       <span className="text-amber-400">Out of fertilizer — next cycle runs unfertilized.</span>
+      )}
+    </div>
+   </div>
+  )}
+
+ {/* §5.3 Medical care — beds, assigned nurses, patient queue. */}
+ {activeDef &&
+   ((activeDef.medicalProperties?.treatsWounded) ||
+     adaptedInfo.typeId === 'medbay' ||
+     adaptedInfo.typeId === 'infirmary_clinic' ||
+     adaptedInfo.typeId === 'hospital') &&
+   adaptedInfo.constructionStatus === 'completed' && (
+   <div className="bg-[#0e1117] p-2.5 border border-[#202836] space-y-1.5 text-[11px]">
+    <div className="flex items-center justify-between">
+     <span className="text-[#9ca3af] font-semibold flex items-center gap-1.5">
+      <HeartPulse className="w-3.5 h-3.5 text-rose-400" /> Medical Care (§5.3)
+     </span>
+     <span className="text-[10px] font-mono text-[#6b7280]">
+      {adaptedInfo.assignedWorkers || 0} NURSE{adaptedInfo.assignedWorkers === 1 ? '' : 'S'}
+     </span>
+    </div>
+    <div className="flex justify-between text-[10px] font-mono text-[#94a3b8]">
+     <span>BEDS:
+      <span className="text-white font-bold ml-1">
+       {activeDef.medicalProperties?.bedCapacity ?? Math.floor(adaptedInfo.maxCapacity || 0)}
+      </span>
+     </span>
+     {typeof nearbyWounded === 'number' && nearbyWounded > 0 ? (
+      <span>WOUNDED IN FACILITY: <span className="text-rose-300 font-bold">{nearbyWounded}</span></span>
+     ) : (
+      <span>NO WOUNDED PRESENT</span>
+     )}
+    </div>
+    <div className="text-[9px] text-[#6b7280]">
+     Each assigned nurse attends one admitted patient at +0.1 HP per in-game
+     hour; wounded beyond the bed count wait in queue, and an unstaffed
+     facility heals nobody. Park wounded squads inside the building to treat
+     them.
+    </div>
+   </div>
+  )}
+
+ {/* §7.1 Partial Adaptation — converted share of the real structure. */}
  <div className="bg-[#0e1117] p-2.5 border border-[#202836] space-y-1.5 text-[11px]">
  <div className="flex justify-between items-center">
- <span className="text-[#9ca3af]">Scalable Capacity:</span>
- <span className="font-black text-[#4ade80] text-sm">
- {adaptedInfo.maxCapacity} {adaptedInfo.capacityUnit}
+ <span className="text-[#9ca3af]">Adaptation Coverage:</span>
+ <span className="font-black text-[#38bdf8] text-sm">
+ {adaptedInfo.adaptationPercentage}%
  </span>
  </div>
  <div className="w-full bg-[#1b2230] h-2 overflow-hidden">
- <div className="bg-[#22c55e] h-full" style={{ width: '35%' }} />
+ <div
+ className="h-full transition-all duration-300"
+ style={{
+ width: `${Math.min(100, adaptedInfo.adaptationPercentage || 0)}%`,
+ background:
+ (adaptedInfo.adaptationPercentage || 0) >= 100
+ ? 'linear-gradient(90deg,#059669,#10b981)'
+ : 'linear-gradient(90deg,#0ea5e9,#38bdf8)',
+ }}
+ />
  </div>
  <div className="flex justify-between text-[10px] text-[#6b7280]">
- <span>Formula: {activeDef.capacityLabel}</span>
+ <span>
+ {Math.round(adaptedInfo.adaptedAreaM2 || 0)}m² of{' '}
+ {Math.round(adaptedInfo.footprintAreaM2 || 0)}m² footprint
+ </span>
+ <span>
+ {adaptedInfo.maxCapacity} / {adaptedInfo.fullCapacity ?? adaptedInfo.maxCapacity}{' '}
+ {adaptedInfo.capacityUnit}
+ </span>
  </div>
+
+ {/* Expand a partial conversion to full coverage — cost scales with the
+     remaining unadapted area and construction re-queues the crew. */}
+ {!adaptedInfo.isFreestanding &&
+ (adaptedInfo.adaptationPercentage || 0) < 100 &&
+ adaptedInfo.constructionStatus === 'completed' &&
+ onExpandAdaptation && (
+ <button
+ onClick={() => onExpandAdaptation(adaptedInfo.buildingId, 100)}
+ title={`Convert the remaining ${(100 - (adaptedInfo.adaptationPercentage || 0))}% of this structure — the crew expands the facility to full ${adaptedInfo.fullCapacity ?? adaptedInfo.maxCapacity} ${adaptedInfo.capacityUnit} capacity.`}
+ className="w-full mt-1 py-1.5 px-2 bg-[#0ea5e9]/15 hover:bg-[#0ea5e9]/30 border border-[#38bdf8]/50 text-[#38bdf8] text-[11px] font-bold flex items-center justify-center gap-1.5 transition-colors"
+ >
+ <Maximize2 className="w-3.5 h-3.5" />
+ EXPAND ADAPTATION TO 100%
+ </button>
+ )}
  </div>
+
+ {/* §7.1 IFZ footprint splitting — divide a large building into independently
+     adaptable sections (brick cost for the partition walls). */}
+ {!isHQ && !adaptedInfo.isFreestanding && (
+ <div className="bg-[#0e1117] p-2.5 border border-[#202836] space-y-1.5 text-[11px]">
+  <div className="flex justify-between items-center">
+   <span className="text-[#9ca3af] font-semibold flex items-center gap-1.5">
+    <Scissors className="w-3.5 h-3.5 text-[#38bdf8]" /> Sections (§7.1)
+   </span>
+   <span className="text-[10px] font-mono text-[#6b7280]">
+    {buildingSections.length > 0 ? `${buildingSections.length} sections` : 'unsplit'}
+   </span>
+  </div>
+
+  {buildingSections.length > 0 ? (
+   <div className="space-y-1">
+    {buildingSections.map((sec, i) => {
+     const adapted = sectionAdaptations.find((a) => String(a.buildingId) === String(sec.id));
+     return (
+      <div key={sec.id} className="p-1.5 bg-[#12161d] border border-[#28303c] flex items-center justify-between gap-1">
+       <div className="min-w-0">
+        <div className="text-[10px] font-bold text-[#e2e8f0]">
+         Section {i + 1}
+         {adapted && (
+          <span className="ml-1.5 font-mono text-[9px] text-[#38bdf8]">
+           {FUNCTIONAL_BUILDING_DEFINITIONS[adapted.typeId]?.name || adapted.typeId}
+          </span>
+         )}
+        </div>
+        <div className="text-[9px] font-mono text-[#6b7280]">
+         {Math.round(sec.footprintAreaM2)}m² footprint
+         {adapted ? (
+          <> • {adapted.maxCapacity} {adapted.capacityUnit} • {adapted.constructionStatus.replace('_', ' ')}</>
+         ) : (
+          ' • unconverted'
+         )}
+        </div>
+       </div>
+       <div className="flex items-center gap-1 shrink-0">
+        {!adapted && onAdaptSection && (
+         <button
+          onClick={() => onAdaptSection(building, sec.id, defaultSectionType)}
+          title="Convert this section into a facility (defaults to a Shelter; convert from the Build menu to choose another type)"
+          className="px-1.5 py-0.5 text-[9px] font-bold bg-[#0ea5e9]/15 hover:bg-[#0ea5e9]/30 border border-[#38bdf8]/50 text-[#38bdf8] transition-colors"
+         >
+          CONVERT
+         </button>
+        )}
+        {adapted && onDeadaptSection && (
+         <button
+          onClick={() => onDeadaptSection(String(sec.id))}
+          title="Remove this section's adaptation (the section becomes unconverted)"
+          className="px-1.5 py-0.5 text-[9px] font-bold bg-rose-950/30 hover:bg-rose-900/50 border border-rose-500/40 text-rose-300 transition-colors"
+         >
+          DEADAPT
+         </button>
+        )}
+       </div>
+      </div>
+     );
+    })}
+    <div className="text-[9px] text-[#6b7280]">
+     Each section adapts independently — arm a facility type from the Build menu,
+     then press on the section you want and drag across its footprint to convert it.
+    </div>
+   </div>
+  ) : (
+   <>
+    <div className="text-[9px] text-[#6b7280]">
+     Split this large structure into independently adaptable sections. Partition
+     walls cost bricks; afterwards each region converts into its own facility.
+    </div>
+    {onSplitBuilding && (
+     <div className="flex items-center gap-1.5">
+      {([2, 3, 4] as const).map((parts) => (
+       <button
+        key={parts}
+        onClick={() => onSplitBuilding(building, parts)}
+        title={`Split into ${parts} sections (brick cost for partition walls)`}
+        className="flex-1 py-1 text-[10px] font-bold bg-[#12161d] hover:bg-[#1a2332] border border-[#28303c] hover:border-[#38bdf8] text-[#e2e8f0] transition-colors"
+       >
+        SPLIT ×{parts}
+       </button>
+      ))}
+     </div>
+    )}
+   </>
+  )}
+ </div>
+ )}
 
  {/* Appointed Facility Head (§4.6) */}
  <div className="bg-[#0e1117] p-2.5 border border-[#202836] space-y-2">
@@ -475,7 +861,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  <button
  id="repair-building-btn"
  onClick={() => onRepairBuilding && onRepairBuilding(building.id)}
- disabled={!hasMaterials}
+ disabled={!hasMaterials || adaptedInfo.isUnderRepair}
  className={`w-full py-1.5 font-bold uppercase flex items-center justify-center gap-1.5 transition-colors ${
  hasMaterials
  ? 'bg-amber-600 hover:bg-amber-500 text-slate-900 cursor-pointer'
@@ -483,7 +869,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  }`}
  >
  <Hammer className="w-3.5 h-3.5" />
- <span>Repair Structure ({repairCost.missingHp} HP)</span>
+ <span>{adaptedInfo.isUnderRepair ? `Repairing (${adaptedInfo.repairProgress || 0}%)` : `Start Repair (${repairCost.missingHp} HP)`}</span>
  </button>
  </div>
  );
@@ -504,6 +890,287 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  <span className="font-bold text-[#38bdf8]">+{adaptedInfo.defenseRating}</span>
  </div>
  </div>
+
+ {/* Water Cistern (§Terminus) — roof-area weather collection readout */}
+ {adaptedInfo.typeId === 'water_cistern' && (() => {
+ const rec = settlement.waterState?.cisterns.get(adaptedInfo.buildingId);
+ if (!rec) return null;
+ const mult = CISTERN_WEATHER_MULT[settlement.weather?.currentWeather || 'clear'] || 0;
+ const ratePerDay = rec.roofAreaM2 * 0.5 * mult * rec.efficiency;
+ return (
+ <div className="bg-[#0e1117] p-2.5 border border-[#164E63] space-y-1.5">
+ <div className="flex items-center justify-between text-[11px]">
+ <span className="text-[#9ca3af] font-semibold flex items-center gap-1.5">
+ <Droplets className="w-3.5 h-3.5 text-cyan-400" />
+ Rain Catchment
+ </span>
+ <span className="text-[9px] px-1.5 py-0.5 bg-cyan-950 text-cyan-300 border border-cyan-800 font-bold uppercase">
+ {Math.round(rec.currentWater)} / {rec.capacity} L
+ </span>
+ </div>
+ <div className="text-[10px] font-mono text-[#94A3B8]">
+ {Math.round(rec.roofAreaM2)} M² ROOF · COLLECTS {ratePerDay >= 0.5 ? `${Math.round(ratePerDay)} L/DAY` : 'NOTHING NOW'}
+ </div>
+ <div className="w-full h-1.5 bg-[#1A1E24]">
+ <div className="h-full bg-[#22D3EE]" style={{ width: `${Math.min(100, (rec.currentWater / rec.capacity) * 100)}%` }} />
+ </div>
+ <div className="text-[9px] font-mono text-[#718096]">
+ {mult > 0
+   ? `${settlement.weather?.currentWeather?.toUpperCase() || 'CLEAR'} — ${mult.toFixed(2)}× COLLECTION (${rec.efficiency.toFixed(1)}× EFFICIENCY)`
+   : 'CLEAR SKIES — NO COLLECTION. CISTERNS ARE YOUR RAIN BUFFER: BIGGER ROOFS BANK MORE.'}
+ </div>
+ </div>
+ );
+ })()}  {/* Generator Station (§Terminus) — fuel → local power grid readout */}
+  {adaptedInfo.typeId === 'generator_station' && (() => {
+    const rec = settlement.powerState?.generators.get(adaptedInfo.buildingId);
+    if (!rec) return null;
+    const fuelTotal =
+      (settlement.stockpile?.fuel?.gasoline || 0) +
+      (settlement.stockpile?.fuel?.diesel || 0) +
+      (settlement.stockpile?.fuel?.biofuel || 0);
+    return (
+      <div className="bg-[#0e1117] p-2.5 border border-[#4D3E00] space-y-1.5">
+        <div className="flex items-center justify-between text-[11px]">
+          <span className="text-[#9ca3af] font-semibold flex items-center gap-1.5">
+            <Zap className="w-3.5 h-3.5 text-yellow-400" />
+            Generator Station
+          </span>
+          <span className={`text-[9px] px-1.5 py-0.5 border font-bold uppercase ${rec.running ? 'bg-yellow-950 text-yellow-300 border-yellow-800' : 'bg-rose-950 text-rose-300 border-rose-800'}`}>
+            {rec.running ? 'Running' : 'Offline'}
+          </span>
+        </div>
+        <div className="text-[10px] font-mono text-[#94A3B8]">
+          {rec.powerOutputKw} KW · {rec.powerRadiusM}M RADIUS · BURNS {rec.fuelPerHour} FUEL/HR
+        </div>
+        <div className="flex items-center justify-between text-[10px] font-mono">
+          <span className="text-[#94A3B8]">BUFFER: {Math.round(rec.currentFuel)} / {rec.fuelCapacity}</span>
+          <span className="text-[#64748B]">STOCKPILE FUEL: {Math.round(fuelTotal)}</span>
+        </div>
+        <div className="w-full h-1.5 bg-[#1A1E24]">
+          <div className="h-full bg-[#FDE047]" style={{ width: `${Math.min(100, (rec.currentFuel / rec.fuelCapacity) * 100)}%` }} />
+        </div>
+        <div className="text-[9px] font-mono text-[#718096]">
+          {rec.running
+            ? 'RUNS ONLY WHILE FACILITIES INSIDE ITS RADIUS NEED POWER — THE BUFFER TOPS UP FROM THE STOCKPILE (GASOLINE → DIESEL → BIOFUEL). NO LOAD, NO BURN.'
+            : rec.currentFuel > 0 || fuelTotal > 0
+              ? 'STANDBY — NO FACILITIES INSIDE ITS RADIUS NEED POWER RIGHT NOW, SO THE UNIT IS IDLING AND CONSERVING FUEL. IT AUTO-STARTS WHEN A LOAD APPEARS.'
+              : 'OUT OF FUEL — NO FUEL IN THE BUFFER OR THE STOCKPILE. POWERED FACILITIES INSIDE ITS RADIUS ARE DARK.'}
+        </div>
+      </div>
+    );
+  })()}
+
+  {/* Battery Bank (§Terminus) — GRID EXTENSION / EMERGENCY RESERVE, not a
+      generator: a charged bank backs critical facilities inside ITS OWN
+      radius when generators can't cover them */}
+  {adaptedInfo.typeId === 'battery_bank' && (() => {
+    const ps: import('../types/power').PowerState | undefined = settlement.powerState;
+    const rec = ps?.batteries.get(adaptedInfo.buildingId);
+    if (!rec) return null;
+    const pct = rec.capacityKwh ? (rec.storedKwh / rec.capacityKwh) * 100 : 0;
+    const feeding = rec.discharging;
+    const armed = !feeding && pct > 0;
+    return (
+      <div className="bg-[#0e1117] p-2.5 border border-[#155E75] space-y-1.5">
+        <div className="flex items-center justify-between text-[11px]">
+          <span className="text-[#9ca3af] font-semibold flex items-center gap-1.5">
+            <BatteryCharging className="w-3.5 h-3.5 text-cyan-400" />
+            {feeding ? 'Emergency Reserve' : armed ? 'Grid Extension' : 'Battery Bank'}
+          </span>
+          <span className={`text-[9px] px-1.5 py-0.5 border font-bold uppercase ${feeding ? 'bg-cyan-950 text-cyan-300 border-cyan-800' : armed ? 'bg-teal-950 text-teal-300 border-teal-800' : 'bg-slate-950 text-slate-400 border-slate-800'}`}>
+            {feeding ? 'Reserve · Feeding' : armed ? 'Reserve · Armed' : 'Reserve · Empty'}
+          </span>
+        </div>
+        <div className="text-[10px] font-mono text-[#94A3B8]">
+          {Math.round(rec.storedKwh)} / {Math.round(rec.capacityKwh)} KWH · {rec.powerRadiusM}M RESERVE REACH · CHARGES {rec.chargeKw} KW · DISCHARGES {rec.dischargeKw} KW
+        </div>
+        <div className="w-full h-1.5 bg-[#1A1E24]">
+          <div className={`h-full ${feeding ? 'bg-[#22D3EE]' : 'bg-[#67E8F9]'}`} style={{ width: `${Math.min(100, pct)}%` }} />
+        </div>
+        <div className="text-[9px] font-mono text-[#718096]">
+          {feeding
+            ? 'EMERGENCY RESERVE FEEDING THE GRID — STORED POWER IS CARRYING CRITICAL LOADS INSIDE THIS REACH WHILE THE GENERATOR IS DOWN OR OVERWHELMED. REFUEL IT BEFORE THE RESERVE IS SPENT.'
+            : armed
+              ? 'GRID EXTENSION ARMED — THIS IS NOT A GENERATOR. ANY CRITICAL FACILITY INSIDE THE BANK\'S OWN REACH IS BACKED THE MOMENT GENERATORS CAN\'T COVER IT, AND IT REFILLS FROM SURPLUS WHILE THEY RUN.'
+              : 'RESERVE EMPTY — A CHARGED BANK EXTENDS THE GRID FROM ITS OWN POSITION. CONNECT A RUNNING GENERATOR WITH SURPLUS TO CHARGE IT.'}
+        </div>
+      </div>
+    );
+  })()}
+
+  {/* Floodlight Tower — power dependency readout (§Terminus grid) */}
+  {adaptedInfo.typeId === 'floodlight_tower' && (() => {
+    const powered = (settlement.powerState?.poweredBuildingIds || []).includes(String(adaptedInfo.buildingId));
+    return (
+      <div className="bg-[#0e1117] p-2.5 border border-[#78350F] space-y-1.5">
+        <div className="flex items-center justify-between text-[11px]">
+          <span className="text-[#9ca3af] font-semibold flex items-center gap-1.5">
+            <Sun className="w-3.5 h-3.5 text-amber-400" />
+            Night Illumination
+          </span>
+          <span className={`text-[9px] px-1.5 py-0.5 border font-bold uppercase ${powered ? 'bg-amber-950 text-amber-300 border-amber-800' : 'bg-slate-950 text-slate-300 border-slate-800'}`}>
+            {powered ? 'Powered · 80m' : 'Dim · 30m'}
+          </span>
+        </div>
+        <div className="text-[9px] font-mono text-[#718096]">
+          {powered
+            ? 'ON THE GRID — FULL 80M SUPPRESSION CONE AT NIGHT. THIS IS WHY DEFENDING YOUR GENERATOR MATTERS.'
+            : 'NO POWER — RUNS ON BATTERY AT A DIM 30M GLOW. CONNECT A RUNNING GENERATOR WITHIN ITS RADIUS FOR THE FULL CONE.'}
+        </div>
+      </div>
+    );
+  })()}
+
+  {/* Shooting Range (§Terminus) — ammo-into-proficiency training */}
+  {adaptedInfo.typeId === 'shooting_range' && (() => {
+    const powered = (settlement.powerState?.poweredBuildingIds || []).includes(String(adaptedInfo.buildingId));
+    const sessions = settlement.trainingState?.sessions || new Map();
+    return (
+      <div className="bg-[#0e1117] p-2.5 border border-[#3F2E0E] space-y-2">
+        <div className="flex items-center justify-between text-[11px]">
+          <span className="text-[#9ca3af] font-semibold flex items-center gap-1.5">
+            <Crosshair className="w-3.5 h-3.5 text-orange-400" />
+            Combat Training
+          </span>
+          <span className={`text-[9px] px-1.5 py-0.5 border font-bold uppercase ${powered ? 'bg-orange-950 text-orange-300 border-orange-800' : 'bg-slate-950 text-slate-400 border-slate-800'}`}>
+            {powered ? 'Powered' : 'No Power'}
+          </span>
+        </div>
+        <div className="text-[9px] font-mono text-[#718096]">
+          TRAINING DRAWS AMMUNITION AND GRANTS A PERMANENT TIER: UNTRAINED → BASIC
+          → TRAINED → VETERAN → EXPERT. HIGHER TIERS TAKE LONGER. THE RANGE MUST
+          STAY POWERED — AN UNPOWERED RANGE DRILLS NOBODY.
+        </div>
+        {(settlement.squads || []).slice(0, 4).map((sq) => {
+          const tier = sq.trainingTier ?? 0;
+          const session = sessions.get(sq.id);
+          return (
+            <div key={sq.id} className="p-2 bg-[#141a22] border border-[#202836] flex items-center justify-between gap-2">
+              <div>
+                <div className="text-[11px] font-bold text-slate-200">{sq.name}</div>
+                <div className="text-[9px] font-mono text-[#94A3B8]">
+                  {['Untrained', 'Basic', 'Trained', 'Veteran', 'Expert'][tier]}
+                  {session ? ` · ${Math.min(100, Math.round((session.progressSec / [600, 600, 1800, 3600, 7200][Math.min(4, session.tier + 1)] || 1) * 100))}%` : ''}
+                </div>
+              </div>
+              {session ? (
+                <button
+                  onClick={() => onStopTraining && onStopTraining(sq.id)}
+                  disabled={!onStopTraining}
+                  className="px-2 py-1 bg-slate-950/60 hover:bg-slate-900 border border-slate-700 text-slate-300 font-bold text-[10px] cursor-pointer"
+                >
+                  Stop
+                </button>
+              ) : tier >= 4 ? (
+                <span className="text-[9px] font-bold text-emerald-400">EXPERT</span>
+              ) : (
+                <button
+                  onClick={() => onStartTraining && onStartTraining(sq.id)}
+                  disabled={!onStartTraining || !powered}
+                  className="px-2 py-1 bg-orange-950/60 hover:bg-orange-900 border border-orange-700/60 text-orange-300 font-bold text-[10px] cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={powered ? 'Start the next training course' : 'The range needs power'}
+                >
+                  Train
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  })()}
+
+  {/* Tower Armament — mount a ranged weapon from the colony armory (§4.3) */}
+ {(() => {
+ const towerDef = getCanonicalDefenseDef(adaptedInfo.typeId);
+ if (!towerDef?.weaponMountable) return null;
+ const isBuilt = adaptedInfo.constructionStatus === 'completed';
+ const equipped = adaptedInfo.equippedWeaponId;
+ const equippedDef = equipped ? getWeaponDefinition(equipped) : null;
+ const armoryWeapons = (settlement.armory?.weapons || []).filter(
+   (w) => getWeaponDefinition(w).ammoPerVolley > 0 && w !== equipped
+ );
+ return (
+ <div className="bg-[#0e1117] p-2.5 border border-[#202836] space-y-2">
+ <div className="flex items-center justify-between text-[11px]">
+ <span className="text-[#9ca3af] font-semibold flex items-center gap-1.5">
+ <Crosshair className="w-3.5 h-3.5 text-rose-400" />
+ Tower Armament
+ </span>
+ {equipped && equippedDef && (
+ <span className="text-[9px] px-1.5 py-0.5 bg-rose-950 text-rose-300 border border-rose-800 font-bold uppercase">
+ Armed
+ </span>
+ )}
+ </div>
+
+ {!isBuilt ? (
+ <p className="text-[10px] text-slate-500 italic">
+ The tower is still under construction — finish building it before mounting a weapon.
+ </p>
+ ) : equipped ? (
+ <div className="p-2 bg-[#141a22] border border-rose-800/40 flex items-center justify-between">
+ <div>
+ <div className="text-xs font-bold text-rose-300">
+ {equippedDef?.name || equipped}
+ </div>
+ <div className="text-[10px] text-slate-400">
+ {equippedDef?.damage || 0} dmg / shot • {equippedDef?.ammoPerVolley} ammo per volley
+ </div>
+ </div>
+ <button
+ onClick={() => onAssignTowerWeapon && onAssignTowerWeapon(adaptedInfo.buildingId, null)}
+ disabled={!onAssignTowerWeapon}
+ className="px-2 py-1 bg-rose-950/50 hover:bg-rose-900/60 border border-rose-700/60 text-rose-300 font-bold text-[10px] transition-colors cursor-pointer"
+ title="Returns the weapon to the colony armory"
+ >
+ Unequip
+ </button>
+ </div>
+ ) : (
+ <div className="space-y-1.5">
+ <div className="p-1.5 bg-[#141a22] border border-emerald-800/40 flex items-start gap-1.5">
+ <span className="text-[10px] text-slate-400">
+ <span className="font-bold text-emerald-300">BOW FALLBACK ACTIVE</span> — an unarmed tower fires a bow with{' '}
+ <span className="font-bold text-emerald-300">infinite ammunition</span> ({WEAPON_CATALOG.bow.damage} dmg, no ammo cost). Mount a firearm for real stopping power:
+ </span>
+ </div>
+ {armoryWeapons.length === 0 ? (
+ <p className="text-[10px] text-amber-400/80 italic">
+ No ranged weapons in the armory. Scavenge firearms (police stations, gun shops) to arm this tower.
+ </p>
+ ) : (
+ <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
+ {armoryWeapons.map((wid) => {
+ const wdef = getWeaponDefinition(wid);
+ return (
+ <button
+ key={wid}
+ onClick={() => onAssignTowerWeapon && onAssignTowerWeapon(adaptedInfo.buildingId, wid)}
+ disabled={!onAssignTowerWeapon}
+ className="w-full p-1.5 text-left text-[10px] bg-[#141a22] hover:bg-rose-950/50 border border-[#273240] hover:border-rose-700/50 flex items-center justify-between transition-colors cursor-pointer"
+ >
+ <span className="font-bold text-slate-200">{wdef.name}</span>
+ <span className="font-mono text-rose-300">
+ {wdef.damage} dmg
+ </span>
+ </button>
+ );
+ })}
+ </div>
+ )}
+ </div>
+ )}
+
+ <p className="text-[9px] text-slate-500 leading-snug">
+ A manned tower (assigned workers) fires {equipped ? 'its mounted weapon' : 'once armed'} at zombies in
+ range, consuming {equippedDef?.ammoPerVolley || 1} ammo per shot from the colony reserve. Equipping moves the
+ weapon out of the shared armory; unequipping returns it.
+ </p>
+ </div>
+ );
+ })()}
  </div>
 
  {/* Dismantle Button */}

@@ -6,6 +6,7 @@ import { BuildingSearchState } from '../types/scavenging';
 import { ArmorItemId, TacticalSquadUnit, WeaponItemId } from '../types/combat';
 import { WorldVehicle } from '../types/vehicle';
 import { depositItemsIntoVehicle, getVehicleInventoryCapacity } from './vehicleService';
+import { getPrimaryHQ, isBuildingOperational, isBuildingFullyLooted, isHQBuilding } from './buildingOperational';
 
 const DEFAULT_CAPACITY = 4;
 
@@ -45,6 +46,28 @@ const i = (kind: SquadLootItem['kind'], label: string, itemId: string, weight: n
   itemId,
 });
 
+/**
+ * Scavenge/expedition coordination speed: 1.0 base, +30% per operational
+ * Expedition Center, and another +30% when that center is on the power grid.
+ */
+export function getScavengeSpeedMultiplier(state: SettlementState): number {
+  const poweredIds = new Set<string>(state.powerState?.poweredBuildingIds || []);
+  let mult = 1.0;
+  for (const b of state.adaptedBuildings.values()) {
+    if (b.typeId === 'expedition_center' && isBuildingOperational(b)) {
+      mult += 0.3;
+      if (poweredIds.has(String(b.buildingId))) mult += 0.3;
+    }
+  }
+  for (const b of state.freestandingBuildings || []) {
+    if (b.typeId === 'expedition_center' && isBuildingOperational(b)) {
+      mult += 0.3;
+      if (poweredIds.has(String(b.buildingId))) mult += 0.3;
+    }
+  }
+  return mult;
+}
+
 export function createEmptySquadInventory(capacity = DEFAULT_CAPACITY): SquadInventory {
   return { capacity, used: 0, items: [] };
 }
@@ -83,8 +106,11 @@ export function getBuildingSearchDurationSec(b: BuildingPolygon): number {
   return Math.min(42, Math.max(7, Math.round(baseTime)));
 }
 
-export function generateLootForBuilding(b: BuildingPolygon): SquadLootItem[] {
-  const r = (min: number, max: number) => min + Math.floor(Math.random() * (max - min + 1));
+export function generateLootForBuilding(
+  b: BuildingPolygon,
+  resourceMultiplier = 1
+): SquadLootItem[] {
+  const r = (min: number, max: number) => Math.max(1, Math.round((min + Math.floor(Math.random() * (max - min + 1))) * resourceMultiplier));
   const items: SquadLootItem[] = [];
 
   switch (b.type) {
@@ -127,25 +153,32 @@ export function generateLootForBuilding(b: BuildingPolygon): SquadLootItem[] {
     case 'warehouse':
     case 'industrial':
       items.push(q('metal', r(6, 16), 1.5), q('wood', r(5, 14), 1.2), q('gasoline', r(4, 12), 0.5));
+      if (Math.random() < 0.6) items.push(q('scrap', r(4, 12), 0.9));
+      if (Math.random() < 0.5) items.push(q('tools', r(2, 6), 1.8));
       if (Math.random() < 0.35) items.push(i('weapon', 'Fire Axe', 'axe', 2.0));
       if (Math.random() < 0.25) items.push(q('bricks', r(4, 10), 2.0));
+      if (Math.random() < 0.3) items.push(q('logs', r(3, 8), 1.2));
       break;
     case 'school':
       items.push(q('canned_goods', r(2, 6), 1.2), q('bottled_water', r(2, 6), 1.0), q('sterile_bandages', r(1, 4), 0.4));
+      if (Math.random() < 0.3) items.push(q('tools', r(1, 3), 1.8));
       break;
     default:
       items.push(q('canned_goods', r(1, 4), 1.2), q('bottled_water', r(1, 3), 1.0));
       if (Math.random() < 0.35) items.push(q('ammunition', r(2, 8), 0.15));
       if (Math.random() < 0.25) items.push(q('wood', r(2, 6), 1.2));
+      if (Math.random() < 0.2) items.push(q('tools', r(1, 3), 1.8));
+      if (Math.random() < 0.2) items.push(q('scrap', r(2, 6), 0.9));
   }
   return items;
 }
 
 export function createBuildingSearchState(
   buildingId: string | number,
-  building?: BuildingPolygon
+  building?: BuildingPolygon,
+  resourceMultiplier = 1
 ): BuildingSearchState {
-  const lootPool = building ? generateLootForBuilding(building) : [];
+  const lootPool = building ? generateLootForBuilding(building, resourceMultiplier) : [];
   const totalDuration = building ? getBuildingSearchDurationSec(building) : 15;
   return {
     buildingId,
@@ -162,14 +195,15 @@ export function createBuildingSearchState(
 
 export function ensureBuildingSearchStates(
   state: SettlementState,
-  buildings: BuildingPolygon[]
+  buildings: BuildingPolygon[],
+  resourceMultiplier = 1
 ): SettlementState {
   const m = new Map(state.buildingSearches || new Map());
   for (const b of buildings) {
     const freshDuration = getBuildingSearchDurationSec(b);
     const existing = m.get(b.id);
     if (!existing) {
-      m.set(b.id, createBuildingSearchState(b.id, b));
+      m.set(b.id, createBuildingSearchState(b.id, b, resourceMultiplier));
     } else if (existing.totalDurationSec !== freshDuration) {
       // Keep search progress/loot state but refresh the duration so size changes take effect
       m.set(b.id, { ...existing, totalDurationSec: freshDuration });
@@ -236,7 +270,7 @@ export function findNearestStorageDropoff(
     for (const bldg of adaptedList as any[]) {
       if (
         (bldg.typeId === 'storage_depot' || bldg.typeId === 'warehouse') &&
-        bldg.constructionStatus === 'completed'
+        isBuildingOperational(bldg)
       ) {
         const center =
           bldg.center ||
@@ -264,7 +298,7 @@ export function findNearestStorageDropoff(
     for (const bldg of settlement.freestandingBuildings) {
       if (
         (bldg.typeId === 'storage_depot' || bldg.typeId === 'warehouse') &&
-        bldg.constructionStatus === 'completed' &&
+        isBuildingOperational(bldg) &&
         bldg.position
       ) {
         const dist = Math.hypot(pos.x - bldg.position.x, pos.z - bldg.position.z);
@@ -286,12 +320,13 @@ export function findNearestStorageDropoff(
   }
 
   // Fallback to HQ Fortress
-  if (settlement.hq?.center) {
+  const primaryHQ = getPrimaryHQ(settlement);
+  if (primaryHQ?.center) {
     return {
-      x: settlement.hq.center.x,
-      z: settlement.hq.center.z,
-      name: settlement.hq.buildingName || 'HQ Fortress',
-      buildingId: settlement.hq.buildingId,
+      x: primaryHQ.center.x,
+      z: primaryHQ.center.z,
+      name: primaryHQ.buildingName || 'HQ Fortress',
+      buildingId: primaryHQ.buildingId,
     };
   }
 
@@ -306,15 +341,23 @@ export function startBuildingSearch(
   squadId: string,
   pos: Point2D,
   b: BuildingPolygon,
-  radius = 18
+  radius = 18,
+  resourceMultiplier = 1
 ): { success: boolean; newState: SettlementState; error?: string; searchState?: BuildingSearchState } {
+  if (isHQBuilding(state, b.id)) {
+    return {
+      success: false,
+      newState: state,
+      error: 'This is your headquarters — command infrastructure is never scavenged.',
+    };
+  }
   const sq = state.squads.find((s) => s.id === squadId);
   if (!sq) return { success: false, newState: state, error: 'Squad not found.' };
 
   const m = new Map(state.buildingSearches || new Map());
   let cur = m.get(b.id);
   if (!cur) {
-    cur = createBuildingSearchState(b.id, b);
+    cur = createBuildingSearchState(b.id, b, resourceMultiplier);
     m.set(b.id, cur);
   }
 
@@ -392,7 +435,11 @@ export function tickBuildingScavengeProgress(
   const totalItemsCount = search.loot.length;
   const previouslyResolvedCount = Math.max(0, totalItemsCount - unlooted.length);
 
-  let elapsed = (search.elapsedDurationSec || 0) + deltaSec;
+  // §Terminus: an operational Expedition Center coordinates the search (+30%
+  // speed each; a powered one coordinates even harder — another +30%). The
+  // squad physically searches faster, so progress accrues quicker per second.
+  const scavengeSpeed = getScavengeSpeedMultiplier(state);
+  let elapsed = (search.elapsedDurationSec || 0) + deltaSec * scavengeSpeed;
   let progress = Math.min(100, Math.round((elapsed / totalDuration) * 100));
 
   // Determine newly unlocked items this tick based on progress milestones
@@ -496,13 +543,19 @@ export function tickBuildingScavengeProgress(
       if (vehicleFull) {
         // 2a. Cargo bay is full -> after the squad boards, the vehicle drives
         // home to HQ/storage so BOTH the backpack and the bay are deposited.
-        updatedVehicle = { ...updatedVehicle, autoDepotReturn: true };
-        updatedVehicles = (state.vehicles || []).map((v) => (v.id === updatedVehicle.id ? updatedVehicle : v));
-        dropoffDestination = findNearestStorageDropoff(
-          state,
-          { x: assignedVeh.position.x, z: assignedVeh.position.z },
-          buildings
-        );
+        // IFZ storage gate: skip the home trip when the settlement cannot take
+        // the combined haul — the bay keeps the loot until storage frees and
+        // the player (or a later deposit run) drives home.
+        const combinedHaul = [...currentItems, ...(updatedVehicle.inventory || [])];
+        if (hasStockpileRoomForHaul(state, combinedHaul)) {
+          updatedVehicle = { ...updatedVehicle, autoDepotReturn: true };
+          updatedVehicles = (state.vehicles || []).map((v) => (v.id === updatedVehicle.id ? updatedVehicle : v));
+          dropoffDestination = findNearestStorageDropoff(
+            state,
+            { x: assignedVeh.position.x, z: assignedVeh.position.z },
+            buildings
+          );
+        }
       }
 
       // 2b. Walk back to the parked vehicle and board it. The simulation loop
@@ -518,18 +571,36 @@ export function tickBuildingScavengeProgress(
         pathState: undefined,
       };
     } else if (shouldReturnAfterSearch || currentUsed > 0) {
-      // Inventory full or carrying loot -> Auto-path on foot to storage depot
-      // (or HQ if none)
-      dropoffDestination = findNearestStorageDropoff(state, { x: squad.x, z: squad.z }, buildings);
-      nextSquad = {
-        ...nextSquad,
-        state: 'returning',
-        targetPos: { x: dropoffDestination.x, z: dropoffDestination.z },
-        targetBuildingId: null,
-        targetBuildingName: dropoffDestination.name,
-        searchProgress: undefined,
-        pathState: undefined,
-      };
+      // IFZ storage gate: only trek home when the settlement can actually take
+      // the haul. If storage is full the squad does NOT return — it keeps the
+      // loot in its backpack out in the field (holdHaul) until storage frees,
+      // avoiding the pointless round-trip that would just strand the load at a
+      // full depot.
+      if (!hasStockpileRoomForHaul(state, currentItems)) {
+        nextSquad = {
+          ...nextSquad,
+          state: 'idle',
+          holdHaul: true,
+          targetPos: null,
+          targetBuildingId: null,
+          targetBuildingName: null,
+          searchProgress: undefined,
+          pathState: undefined,
+        };
+      } else {
+        // Inventory full or carrying loot -> Auto-path on foot to storage depot
+        // (or HQ if none)
+        dropoffDestination = findNearestStorageDropoff(state, { x: squad.x, z: squad.z }, buildings);
+        nextSquad = {
+          ...nextSquad,
+          state: 'returning',
+          targetPos: { x: dropoffDestination.x, z: dropoffDestination.z },
+          targetBuildingId: null,
+          targetBuildingName: dropoffDestination.name,
+          searchProgress: undefined,
+          pathState: undefined,
+        };
+      }
     } else {
       // Empty haul and nothing left to carry -> go idle.
       nextSquad = {
@@ -618,6 +689,15 @@ function addLootToStockpile(stock: any, l: SquadLootItem): void {
     case 'bricks':
       stock.materials.bricks += l.quantity;
       break;
+    case 'tools':
+      stock.materials.tools = (stock.materials.tools || 0) + l.quantity;
+      break;
+    case 'logs':
+      stock.materials.logs = (stock.materials.logs || 0) + l.quantity;
+      break;
+    case 'scrap':
+      stock.materials.scrap = (stock.materials.scrap || 0) + l.quantity;
+      break;
   }
 }
 
@@ -644,11 +724,26 @@ const STOCKPILE_LOOT_LABELS = new Set([
   'wood',
   'metal',
   'bricks',
+  'tools',
+  'logs',
+  'scrap',
 ]);
 
 /** Stockpile units an item consumes (0 for weapons/armor, which go to the armory). */
 function lootStockpileUnits(l: SquadLootItem): number {
   return STOCKPILE_LOOT_LABELS.has(l.label) ? (l.quantity ?? 1) : 0;
+}
+
+/**
+ * True when the settlement stockpile can accept every unit of the given haul
+ * under `totalStorageCapacity` (weapons/armor never consume capacity). This is
+ * the IFZ gate: a squad checks whether storage has room BEFORE trekking home
+ * to deposit — if not, it simply doesn't return and keeps the loot.
+ */
+export function hasStockpileRoomForHaul(state: SettlementState, items: SquadLootItem[]): boolean {
+  const capacity = state.totalStorageCapacity ?? Infinity;
+  const units = items.reduce((sum, l) => sum + lootStockpileUnits(l), 0);
+  return getStockpileUnits(state.stockpile) + units <= capacity;
 }
 
 /**
@@ -718,7 +813,7 @@ export function unloadSquadAtDropoff(
       ...state,
       stockpile: stockAfter,
       armory,
-      fieldLootUnits: (state.fieldLootUnits || 0) + overflowUnits,
+      overflowLootUnits: (state.overflowLootUnits || 0) + overflowUnits,
       squadInventories: {
         ...(state.squadInventories || {}),
         [squadId]: { ...createEmptySquadInventory(inv.capacity), items: overflow },
@@ -767,7 +862,7 @@ export function unloadVehicleAtDropoff(
       ...state,
       stockpile: stockAfter,
       armory,
-      fieldLootUnits: (state.fieldLootUnits || 0) + overflowUnits,
+      overflowLootUnits: (state.overflowLootUnits || 0) + overflowUnits,
       vehicles: (state.vehicles || []).map((v) => (v.id === vehicle.id ? { ...v, inventory: overflow } : v)),
     },
     unloaded: deposited,

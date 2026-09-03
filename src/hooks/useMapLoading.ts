@@ -5,6 +5,7 @@ import { fetchFromOverpass } from '../services/osmFetcher';
 import { fetchElevationGrid } from '../services/elevationService';
 import { processOsmData } from '../services/mapProcessor';
 import { generateHiddenGroupsForMap } from '../services/populationService';
+import { getPrimaryHQ } from '../services/buildingOperational';
 import { generateWorldVehicles } from '../services/vehicleService';
 import { ensureBuildingSearchStates, } from '../services/scavengingService';
 import { createInitialSettlementState } from '../services/settlementService';
@@ -21,6 +22,13 @@ import type { RadioDirectiveState, RadioTransmission } from '../types/radioDirec
 import type { WorldScene } from '../render/WorldScene';
 import { RoadNetworkGraph } from '../services/roadPathfinder';
 import { PathGrid } from '../services/pathfindingService';
+
+/**
+ * Per-colony random seed so world vehicle placements differ between
+ * playthroughs instead of every game spawning the fleet at the same spots
+ * (the previous hard-coded seed 42).
+ */
+const freshWorldSeed = () => Math.floor(Math.random() * 1e9);
 
 /**
  * Runtime dependencies for the map-pipeline & colony-flow handlers, extracted
@@ -41,6 +49,8 @@ export interface MapLoadingRuntime {
   roadGraphRef: MutableRefObject<RoadNetworkGraph | null>;
   pathGridRef: MutableRefObject<PathGrid | null>;
   settlementRef: MutableRefObject<SettlementState>;
+  /** Sim-owned map — carries the live resource-node depletion of this colony. */
+  mapDataRef: MutableRefObject<MapData | null>;
   sceneRef: MutableRefObject<WorldScene | null>;
   descentTimerRef: MutableRefObject<ReturnType<typeof setInterval> | null>;
   stopDescentTimer: () => void;
@@ -92,6 +102,7 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
     roadGraphRef,
     pathGridRef,
     settlementRef,
+    mapDataRef,
     sceneRef,
     descentTimerRef,
     stopDescentTimer,
@@ -150,9 +161,9 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
             await new Promise((r) => setTimeout(r, 0));
 
             setSettlement((prev) => {
-              const prepared = ensureBuildingSearchStates(prev, cached.buildings);
+              const prepared = ensureBuildingSearchStates(prev, cached.buildings, prev.scavengingResourceMultiplier);
               if (prepared.hiddenGroups.size === 0) {
-                const groups = generateHiddenGroupsForMap(cached.buildings, prev.hq?.buildingId);
+                const groups = generateHiddenGroupsForMap(cached.buildings, getPrimaryHQ(prev)?.buildingId);
                 return { ...prepared, hiddenGroups: groups };
               }
               return prepared;
@@ -181,9 +192,14 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
           pathGridRef.current = new PathGrid(bundled);
           setCacheSource('Bundled Offline Map');
           setSettlement((prev) => {
-            const prepared = ensureBuildingSearchStates(prev, bundled.buildings);
-            const groups = generateHiddenGroupsForMap(bundled.buildings, prepared.hq?.buildingId);
-            const initialVehicles = prev.vehicles.length === 0 ? generateWorldVehicles(bundled, 42) : prev.vehicles;
+            const prepared = ensureBuildingSearchStates(prev, bundled.buildings, prev.scavengingResourceMultiplier);
+            // Re-roll groups only for a fresh colony; preserve existing ones.
+            const groups = prepared.hiddenGroups.size === 0
+              ? generateHiddenGroupsForMap(bundled.buildings, getPrimaryHQ(prepared)?.buildingId)
+              : prepared.hiddenGroups;
+            const initialVehicles = prev.vehicles.length === 0
+              ? generateWorldVehicles(bundled, freshWorldSeed())
+              : prev.vehicles;
             return { ...prepared, hiddenGroups: groups, vehicles: initialVehicles };
           });
           setIsLoading(false);
@@ -247,9 +263,14 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
       );
 
       setSettlement((prev) => {
-        const prepared = ensureBuildingSearchStates(prev, processed.buildings);
-        const groups = generateHiddenGroupsForMap(processed.buildings, prepared.hq?.buildingId);
-        const initialVehicles = prev.vehicles.length === 0 ? generateWorldVehicles(processed, 42) : prev.vehicles;
+        const prepared = ensureBuildingSearchStates(prev, processed.buildings, prev.scavengingResourceMultiplier);
+        // Re-roll groups only for a fresh colony; preserve existing ones.
+        const groups = prepared.hiddenGroups.size === 0
+          ? generateHiddenGroupsForMap(processed.buildings, getPrimaryHQ(prepared)?.buildingId)
+          : prepared.hiddenGroups;
+        const initialVehicles = prev.vehicles.length === 0
+          ? generateWorldVehicles(processed, freshWorldSeed())
+          : prev.vehicles;
         return { ...prepared, hiddenGroups: groups, vehicles: initialVehicles };
       });
       setIsLoading(false);
@@ -273,9 +294,14 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
             pathGridRef.current = new PathGrid(bundled);
             setCacheSource('Bundled Offline Map');
             setSettlement((prev) => {
-              const prepared = ensureBuildingSearchStates(prev, bundled.buildings);
-              const groups = generateHiddenGroupsForMap(bundled.buildings, prepared.hq?.buildingId);
-              const initialVehicles = prev.vehicles.length === 0 ? generateWorldVehicles(bundled, 42) : prev.vehicles;
+              const prepared = ensureBuildingSearchStates(prev, bundled.buildings, prev.scavengingResourceMultiplier);
+              // Re-roll groups only for a fresh colony; preserve existing ones.
+              const groups = prepared.hiddenGroups.size === 0
+                ? generateHiddenGroupsForMap(bundled.buildings, getPrimaryHQ(prepared)?.buildingId)
+                : prepared.hiddenGroups;
+              const initialVehicles = prev.vehicles.length === 0
+                ? generateWorldVehicles(bundled, freshWorldSeed())
+                : prev.vehicles;
               return { ...prepared, hiddenGroups: groups, vehicles: initialVehicles };
             });
             setIsLoading(false);
@@ -331,7 +357,8 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
       [activeSettlementId]: {
         ...prev[activeSettlementId],
         state: settlement,
-        cachedMapData: mapData || undefined,
+        // Cache the sim-owned map so node depletion survives the switch away.
+        cachedMapData: mapDataRef.current || mapData || undefined,
         cachedZombies: zombies,
       },
       [newId]: newRecord,
@@ -379,8 +406,13 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
       );
       setSettlement((prev) => {
         const prepared = ensureBuildingSearchStates(prev, preloadedMapData.buildings);
-        const groups = generateHiddenGroupsForMap(preloadedMapData.buildings, prepared.hq?.buildingId);
-        const initialVehicles = prev.vehicles.length === 0 ? generateWorldVehicles(preloadedMapData, 42) : prev.vehicles;
+        // Fresh colony: roll groups + vehicle placements randomly this game.
+        const groups = prepared.hiddenGroups.size === 0
+          ? generateHiddenGroupsForMap(preloadedMapData.buildings, getPrimaryHQ(prepared)?.buildingId)
+          : prepared.hiddenGroups;
+        const initialVehicles = prev.vehicles.length === 0
+          ? generateWorldVehicles(preloadedMapData, freshWorldSeed())
+          : prev.vehicles;
         return { ...prepared, hiddenGroups: groups, vehicles: initialVehicles };
       });
       if (!preloadedMapData.source?.includes('Bundled')) {
@@ -440,7 +472,8 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
       [activeSettlementId]: {
         ...settlements[activeSettlementId],
         state: settlement,
-        cachedMapData: mapData || undefined,
+        // Cache the sim-owned map so node depletion survives the switch away.
+        cachedMapData: mapDataRef.current || mapData || undefined,
         cachedZombies: zombies,
       },
     };

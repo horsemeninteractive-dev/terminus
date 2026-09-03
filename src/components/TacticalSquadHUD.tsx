@@ -15,6 +15,7 @@ import {
   MinusCircle,
   Package,
   RotateCcw,
+  Radio,
   Shield,
   ShieldAlert,
   Skull,
@@ -49,6 +50,7 @@ interface TacticalSquadHUDProps {
   onDeselect: () => void;
   onChangeStance: (squadId: string, stance: CombatStance) => void;
   onOrderFallbackHQ?: (squadId: string) => void;
+  onRecallAll?: () => void;
   armory?: { weapons: WeaponItemId[]; armor: ArmorItemId[] };
   onAssignWeapon?: (squadId: string, memberId: string, weaponId: WeaponItemId | null) => void;
   onAssignArmor?: (squadId: string, memberId: string, armorId: ArmorItemId | null) => void;
@@ -61,6 +63,8 @@ interface TacticalSquadHUDProps {
   onDismountVehicle?: () => void;
   onStartScavengeArea?: () => void;
   isScavengeAreaActive?: boolean;
+  /** §IFZ CTRL+drag multi-select: >1 means orders from this panel apply to all. */
+  selectedCount?: number;
 }
 
 // Survivor portrait faces are stored per squad member (assigned at creation) and
@@ -70,6 +74,7 @@ export const TacticalSquadHUD: React.FC<TacticalSquadHUDProps> = ({
   onDeselect,
   onChangeStance,
   onOrderFallbackHQ,
+  onRecallAll,
   armory,
   onAssignWeapon,
   onAssignArmor,
@@ -81,6 +86,7 @@ export const TacticalSquadHUD: React.FC<TacticalSquadHUDProps> = ({
   onDismountVehicle,
   onStartScavengeArea,
   isScavengeAreaActive = false,
+  selectedCount = 1,
 }) => {
   const [isEditingName, setIsEditingName] = useState(false);
   const [squadName, setSquadName] = useState(squad?.name || 'SQUAD 1');
@@ -225,6 +231,19 @@ export const TacticalSquadHUD: React.FC<TacticalSquadHUDProps> = ({
           </button>
         </div>
       </div>
+
+      {/* §IFZ CTRL+drag multi-select banner — the primary squad panel doubles as
+          the command card for every squad inside the selection box. */}
+      {(selectedCount ?? 1) > 1 && (
+        <div className="px-2.5 py-1.5 bg-[#0A1622] border-b border-[#164E63] flex items-center justify-between gap-2">
+          <span className="text-[10px] font-heading font-bold text-cyan-300 uppercase tracking-wider">
+            {selectedCount} SQUADS SELECTED
+          </span>
+          <span className="text-[9px] font-mono text-cyan-500/80">
+            CTRL+DRAG BOX · ORDERS APPLY TO ALL
+          </span>
+        </div>
+      )}
 
       {/* 2. Cinematic Squad Artwork Banner */}
       <div className="relative h-24 sm:h-28 w-full bg-[#050709] overflow-hidden border-b border-[#1E293B]">
@@ -454,6 +473,14 @@ export const TacticalSquadHUD: React.FC<TacticalSquadHUDProps> = ({
             className={`w-8 h-8 sm:w-7 sm:h-7 border transition-colors flex items-center justify-center ${isScavengeAreaActive ? 'bg-amber-900/60 border-amber-400 text-amber-300' : 'bg-[#151D28] hover:bg-[#1E293B] text-amber-400 border-[#2D3B4E]'}`}
           >
             <MapPin className="w-3.5 h-3.5" />
+          </button>
+          {/* Emergency recall through the antenna network */}
+          <button
+            onClick={() => { onRecallAll?.(); soundEngine.playClick(); }}
+            title="Recall all squads (requires operational Antenna)"
+            className="w-8 h-8 sm:w-7 sm:h-7 bg-rose-950/50 hover:bg-rose-900/70 border border-rose-700/60 text-rose-300 flex items-center justify-center transition-colors"
+          >
+            <Radio className="w-3.5 h-3.5" />
           </button>
           {/* Center on Squad */}
           <button

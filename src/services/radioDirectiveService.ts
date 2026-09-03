@@ -7,6 +7,7 @@ import {
 } from '../types/radioDirective';
 import { SettlementState } from '../types/settlement';
 import { GameClockState, ZombieUnit } from '../types/combat';
+import { getPrimaryHQ } from './buildingOperational';
 
 export const CLASSIFICATION_COLORS: Record<
   TransmissionClassification,
@@ -184,7 +185,7 @@ export function updateRadioDirectiveSystem(
 
     switch (directive.conditionType) {
       case 'establish_hq':
-        isComplete = Boolean(settlement.hq);
+        isComplete = Boolean(getPrimaryHQ(settlement));
         progress = isComplete ? 1 : 0;
         break;
 
@@ -246,7 +247,7 @@ export function updateRadioDirectiveSystem(
   // Sequential Step-by-Step Progression:
 
   // --- Step 1 -> Complete HQ & Trigger Step 2 (Muster Squad) ---
-  if (Boolean(settlement.hq)) {
+  if (Boolean(getPrimaryHQ(settlement))) {
     if (!completedSet.has('dir_hq')) {
       completedSet.add('dir_hq');
       newlyCompletedDirectiveIds.push('dir_hq');

@@ -13,6 +13,7 @@ import {
  Trees,
  Truck,
  Utensils,
+ Wrench,
  X,
 } from 'lucide-react';
 import { INITIAL_STOCKPILE } from '../services/settlementService';
@@ -33,7 +34,7 @@ export const ResourceDebugModal: React.FC<ResourceDebugModalProps> = ({
 }) => {
  if (!isOpen) return null;
 
- const handleAdjustMaterial = (mat: 'wood' | 'metal' | 'bricks', delta: number) => {
+ const handleAdjustMaterial = (mat: 'wood' | 'metal' | 'bricks' | 'tools', delta: number) => {
  const updated: SettlementStockpile = {
  ...stockpile,
  materials: {
@@ -118,7 +119,7 @@ export const ResourceDebugModal: React.FC<ResourceDebugModalProps> = ({
  medical: { first_aid_kits: 50, sterile_bandages: 100, antibiotics: 40, painkillers: 60 },
  fuel: { gasoline: 200, diesel: 150, biofuel: 50 },
  ammo: { sharedPool: 600 },
- materials: { wood: 1000, metal: 1000, bricks: 1000 },
+ materials: { wood: 1000, metal: 1000, bricks: 1000, tools: 100 },
  });
  } else if (preset === 'depleted') {
  onUpdateStockpile({
@@ -127,7 +128,7 @@ export const ResourceDebugModal: React.FC<ResourceDebugModalProps> = ({
  medical: { first_aid_kits: 1, sterile_bandages: 2, antibiotics: 0, painkillers: 0 },
  fuel: { gasoline: 5, diesel: 0, biofuel: 0 },
  ammo: { sharedPool: 20 },
- materials: { wood: 15, metal: 10, bricks: 10 },
+ materials: { wood: 15, metal: 10, bricks: 10, tools: 2 },
  });
  }
  };
@@ -191,7 +192,7 @@ export const ResourceDebugModal: React.FC<ResourceDebugModalProps> = ({
  <div className="text-white font-bold uppercase text-[11px] mb-2 flex items-center justify-between border-b border-[#24272c] pb-1">
  <span className="flex items-center gap-1.5 text-[#38bdf8]">
  <Box className="w-3.5 h-3.5" />
- <span>1. Construction Materials (Wood / Metal / Bricks)</span>
+ <span>1. Construction Materials (Wood / Metal / Bricks / Tools)</span>
  </span>
  </div>
 
@@ -282,6 +283,36 @@ export const ResourceDebugModal: React.FC<ResourceDebugModalProps> = ({
  className="flex-1 bg-[#22252c] hover:bg-[#30353f] py-1 text-center font-bold text-[#38bdf8]"
  >
  +200
+ </button>
+ </div>
+ </div>
+
+ {/* Tools */}
+ <div className="bg-[#181a1f] p-2 border border-[#292c31] flex flex-col justify-between">
+ <div className="flex justify-between items-center mb-1">
+ <span className="text-[#c084fc] font-bold flex items-center gap-1">
+ <Wrench className="w-3 h-3" /> Tools
+ </span>
+ <span className="text-base font-black text-white">{stockpile.materials.tools || 0}</span>
+ </div>
+ <div className="flex gap-1 mt-2">
+ <button
+ onClick={() => handleAdjustMaterial('tools', -20)}
+ className="flex-1 bg-[#22252c] hover:bg-[#30353f] py-1 text-center font-bold text-[#ef4444]"
+ >
+ -20
+ </button>
+ <button
+ onClick={() => handleAdjustMaterial('tools', 20)}
+ className="flex-1 bg-[#22252c] hover:bg-[#30353f] py-1 text-center font-bold text-[#4ade80]"
+ >
+ +20
+ </button>
+ <button
+ onClick={() => handleAdjustMaterial('tools', 100)}
+ className="flex-1 bg-[#22252c] hover:bg-[#30353f] py-1 text-center font-bold text-[#38bdf8]"
+ >
+ +100
  </button>
  </div>
  </div>

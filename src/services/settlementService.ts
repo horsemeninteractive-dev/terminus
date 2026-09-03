@@ -7,6 +7,7 @@ import {
 import { BuildingPolygon, Point2D } from '../types/map';
 import {
   AdaptedBuilding,
+  BuildingSection,
   ConstructionWorkOrder,
   DeconstructionJob,
   DeconstructionSource,
@@ -16,6 +17,7 @@ import {
   SettlementState,
   SettlementStockpile,
 } from '../types/settlement';
+import { clipPolygonToRect, polygonArea, polygonBounds, splitFootprintIntoStrips } from './adaptationGeometry';
 import {
   DEFAULT_JOB_PRIORITIES,
   INITIAL_GENERAL_POPULATION,
@@ -29,24 +31,28 @@ import { WorldVehicle } from '../types/vehicle';
 import {
   createInitialResearchState,
   getBuildingLockStatus,
+  isResearchUnlocked,
 } from './researchService';
 import { createInitialMoraleState } from './moraleService';
 import { createInitialWeatherState } from './weatherService';
+import { getPrimaryHQ, isBuildingFullyLooted, isHQBuilding, isHQOperational, isBuildingOperational } from './buildingOperational';
+import { getStockpileUnits } from './stockpileCapacity';
 
 /**
- * Initial starting resources for a new outpost settlement per §7.2
+ * Baseline starting resources. Food and water are replaced with population-scaled
+ * values when a new scenario is created; these defaults cover legacy callers.
  */
 export const INITIAL_STOCKPILE: SettlementStockpile = {
   food: {
-    canned_goods: 45,
-    mre_rations: 25,
-    dried_rations: 30,
-    fresh_harvest: 10,
+    canned_goods: 0,
+    mre_rations: 0,
+    dried_rations: 0,
+    fresh_harvest: 0,
   },
   water: {
-    bottled_water: 60,
-    purified_water: 40,
-    rainwater: 20,
+    bottled_water: 0,
+    purified_water: 0,
+    rainwater: 0,
   },
   medical: {
     first_aid_kits: 8,
@@ -55,17 +61,18 @@ export const INITIAL_STOCKPILE: SettlementStockpile = {
     painkillers: 12,
   },
   fuel: {
-    gasoline: 35,
-    diesel: 25,
+    gasoline: 50,
+    diesel: 0,
     biofuel: 0,
   },
   ammo: {
-    sharedPool: 120, // Shared ammunition pool
+    sharedPool: 150, // Shared ammunition pool
   },
   materials: {
-    wood: 180,
-    metal: 140,
-    bricks: 120,
+    wood: 50,
+    metal: 50,
+    bricks: 50,
+    tools: 20,
   },
 };
 
@@ -78,46 +85,25 @@ export function createInitialSettlementState(
 ): SettlementState {
   const colonyName = scenario?.colonyName || name;
   const banner = scenario?.banner || DEFAULT_BANNER_CONFIG;
-
-  // Resource level multiplier (scarce = 0.5x, standard = 1.0x, plentiful = 1.8x)
-  let supplyMult = 1.0;
-  if (scenario?.startingSupplies === 'scarce' || scenario?.resourcesLevel === 1) {
-    supplyMult = 0.5;
-  } else if (scenario?.startingSupplies === 'plentiful' || scenario?.resourcesLevel === 3) {
-    supplyMult = 1.8;
-  }
+  const scavengingResourceMultiplier =
+    scenario?.startingSupplies === 'scarce' || scenario?.resourcesLevel === 1
+      ? 0.5
+      : scenario?.startingSupplies === 'plentiful' || scenario?.resourcesLevel === 3
+        ? 1.8
+        : 1;
 
   const stockpile: SettlementStockpile = {
-    food: {
-      canned_goods: Math.round(INITIAL_STOCKPILE.food.canned_goods * supplyMult),
-      mre_rations: Math.round(INITIAL_STOCKPILE.food.mre_rations * supplyMult),
-      dried_rations: Math.round(INITIAL_STOCKPILE.food.dried_rations * supplyMult),
-      fresh_harvest: Math.round(INITIAL_STOCKPILE.food.fresh_harvest * supplyMult),
-    },
-    water: {
-      bottled_water: Math.round(INITIAL_STOCKPILE.water.bottled_water * supplyMult),
-      purified_water: Math.round(INITIAL_STOCKPILE.water.purified_water * supplyMult),
-      rainwater: Math.round(INITIAL_STOCKPILE.water.rainwater * supplyMult),
-    },
+    food: { canned_goods: 0, mre_rations: 0, dried_rations: 0, fresh_harvest: 0 },
+    water: { bottled_water: 0, purified_water: 0, rainwater: 0 },
     medical: {
-      first_aid_kits: Math.max(1, Math.round(INITIAL_STOCKPILE.medical.first_aid_kits * supplyMult)),
-      sterile_bandages: Math.round(INITIAL_STOCKPILE.medical.sterile_bandages * supplyMult),
-      antibiotics: Math.max(1, Math.round(INITIAL_STOCKPILE.medical.antibiotics * supplyMult)),
-      painkillers: Math.round(INITIAL_STOCKPILE.medical.painkillers * supplyMult),
+      first_aid_kits: 8,
+      sterile_bandages: 18,
+      antibiotics: 6,
+      painkillers: 12,
     },
-    fuel: {
-      gasoline: Math.round(INITIAL_STOCKPILE.fuel.gasoline * supplyMult),
-      diesel: Math.round(INITIAL_STOCKPILE.fuel.diesel * supplyMult),
-      biofuel: 0,
-    },
-    ammo: {
-      sharedPool: Math.round(INITIAL_STOCKPILE.ammo.sharedPool * supplyMult),
-    },
-    materials: {
-      wood: Math.round(INITIAL_STOCKPILE.materials.wood * supplyMult),
-      metal: Math.round(INITIAL_STOCKPILE.materials.metal * supplyMult),
-      bricks: Math.round(INITIAL_STOCKPILE.materials.bricks * supplyMult),
-    },
+    fuel: { gasoline: 50, diesel: 0, biofuel: 0 },
+    ammo: { sharedPool: 150 },
+    materials: { wood: 50, metal: 50, bricks: 50, tools: 20 },
   };
 
   // Population scaling per player scenario settings:
@@ -137,6 +123,12 @@ export function createInitialSettlementState(
 
   const namedCount = peopleLvl === 1 ? 1 : peopleLvl === 3 ? 3 : 2;
   const generalCount = peopleLvl === 1 ? 12 : peopleLvl === 3 ? 48 : 24;
+
+  // Each citizen consumes 0.5 food/day and 1.5 water/day. Start with exactly
+  // five food-days and seven water-days, independent of supply difficulty.
+  const startingPopulation = namedCount + generalCount;
+  stockpile.food.canned_goods = Math.round(startingPopulation * 0.5 * 5);
+  stockpile.water.bottled_water = Math.round(startingPopulation * 1.5 * 7);
 
   const starterNamedSurvivors = getStarterNamedSurvivors(namedCount);
   const children: import('../types/population').ChildCitizen[] = [];
@@ -192,8 +184,10 @@ export function createInitialSettlementState(
     name: colonyName,
     banner,
     scenarioSettings: scenario as GameScenarioSettings,
+    scavengingResourceMultiplier,
     isInitialized: false,
-    hq: null,
+    headquarters: [],
+    primaryHQId: null,
     stockpile,
     adaptedBuildings: new Map<string | number, AdaptedBuilding>(),
     freestandingBuildings: [],
@@ -217,11 +211,12 @@ export function createInitialSettlementState(
     outbreaks: new Map(),
     fallenHeroes: [],
     vehicles: starterVehicles,
+    vehicleWorkshopOrders: [],
     rivalHideouts: new Map(),
     zombieLairs: new Map(),
     deconstructionJobs: new Map(),
     demolishedBuildings: new Map(),
-    armory: { weapons: [], armor: [] },
+    armory: { weapons: ['pistol', 'pistol', 'pistol', 'pistol'], armor: [] },
     research: createInitialResearchState(),
     morale: createInitialMoraleState(),
     weather: createInitialWeatherState(),
@@ -263,9 +258,11 @@ export function grantDebugResources(
       sharedPool: current.ammo.sharedPool + (delta.ammo?.sharedPool || 0),
     },
     materials: {
+      ...current.materials,
       wood: current.materials.wood + (delta.materials?.wood || 0),
       metal: current.materials.metal + (delta.materials?.metal || 0),
       bricks: current.materials.bricks + (delta.materials?.bricks || 0),
+      tools: (current.materials.tools || 0) + (delta.materials?.tools || 0),
     },
   };
 
@@ -292,10 +289,13 @@ export function setDebugResources(
  * Checks if stockpile has enough materials for a given cost
  */
 export function canAffordCost(stockpile: SettlementStockpile, cost: ResourceCost): boolean {
+  // `(x || 0)` on both sides: older saves seeded `materials` without a tools
+  // key, and `undefined >= 0` is false — which silently blocked EVERY build.
   return (
-    stockpile.materials.wood >= cost.wood &&
-    stockpile.materials.metal >= cost.metal &&
-    stockpile.materials.bricks >= cost.bricks
+    stockpile.materials.wood >= (cost.wood || 0) &&
+    stockpile.materials.metal >= (cost.metal || 0) &&
+    stockpile.materials.bricks >= (cost.bricks || 0) &&
+    (stockpile.materials.tools || 0) >= (cost.tools || 0)
   );
 }
 
@@ -306,26 +306,19 @@ export function deductCost(stockpile: SettlementStockpile, cost: ResourceCost): 
   return {
     ...stockpile,
     materials: {
-      wood: Math.max(0, stockpile.materials.wood - cost.wood),
-      metal: Math.max(0, stockpile.materials.metal - cost.metal),
-      bricks: Math.max(0, stockpile.materials.bricks - cost.bricks),
+      ...stockpile.materials,
+      wood: Math.max(0, stockpile.materials.wood - (cost.wood || 0)),
+      metal: Math.max(0, stockpile.materials.metal - (cost.metal || 0)),
+      bricks: Math.max(0, stockpile.materials.bricks - (cost.bricks || 0)),
+      tools: Math.max(0, (stockpile.materials.tools || 0) - (cost.tools || 0)),
     },
   };
 }
 
-/**
- * Total item units currently held across every stockpile category — the unit
- * that totalStorageCapacity is measured in (IFZ-style finite physical storage).
- */
-export function getStockpileUnits(stockpile: SettlementStockpile): number {
-  let units = 0;
-  for (const category of Object.values(stockpile)) {
-    for (const value of Object.values(category as Record<string, number>)) {
-      if (typeof value === 'number') units += value;
-    }
-  }
-  return units;
-}
+// Shared finite-storage helpers (deposit-within-capacity, unit counting) live
+// in ./stockpileCapacity so every resource stream — gathering, deconstruction,
+// caravans, production — can import them without creating service cycles.
+export { getStockpileUnits, depositWithinCapacity, countStockpileUnits } from './stockpileCapacity';
 
 /**
  * Adds materials to settlement stockpile
@@ -340,32 +333,58 @@ export function addMaterials(
       wood: stockpile.materials.wood + (materials.wood || 0),
       metal: stockpile.materials.metal + (materials.metal || 0),
       bricks: stockpile.materials.bricks + (materials.bricks || 0),
+      tools: stockpile.materials.tools + (materials.tools || 0),
     },
   };
 }
 
 /**
- * Calculates aggregate settlement stats across all adapted & freestanding buildings
+ * Calculates aggregate settlement stats across all HQs and all adapted &
+ * freestanding buildings. `headquarters` is the authoritative collection;
+ * the primary command HQ is the entry matching `primaryHQId`.
  */
 export function recalculateSettlementStats(
-  hq: SettlementHQ | null,
+  headquarters: SettlementHQ[],
+  primaryHQId: string | number | null,
   adaptedBuildings: Map<string | number, AdaptedBuilding>,
   freestanding: AdaptedBuilding[]
 ) {
+  const list = Array.isArray(headquarters) ? headquarters : [];
+  const primary = getPrimaryHQ({ headquarters: list, primaryHQId });
+  const additional = list.filter(
+    (h) => !primary || String(h.buildingId) !== String(primary.buildingId)
+  );
+
   let storageCap = 250; // Base baseline storage
   let livingCap = 0;
   let defenseRating = 0;
   // HQ provides the first 2 deployable squad slots; each built Squad Quarters
   // adds another from its building definition.
-  let squadCapacity = 2;
+  let squadCapacity = 0;
 
-  if (hq) {
-    storageCap += Math.round(hq.footprintAreaM2 * 0.5);
+  // §7.5 A destroyed command center contributes nothing — a breached HQ does
+  // not provide storage, shelter, defense or squad slots until re-established.
+  if (primary && isHQOperational(primary)) {
+    const hqDefinition = FUNCTIONAL_BUILDING_DEFINITIONS.headquarters;
+    // The primary HQ's vault is a fixed 850 storage units regardless of the
+    // physical footprint of the building it was established in, so settlement
+    // storage is exactly 850 (plus warehouses etc.) once an HQ exists.
+    storageCap = 850;
+    const hqAdaptedArea = primary.footprintAreaM2;
+    squadCapacity += Math.max(1, Math.floor(Math.sqrt(Math.max(1, hqAdaptedArea)) / 8)) + (hqDefinition.squadCapacity || 0);
     // HQ is the colony's primary shelter. Its functional capacity is computed
     // when it is established; use that value rather than a footprint-only
     // estimate so the warning and morale calculation agree with the HQ panel.
-    livingCap += Math.max(2, hq.maxCapacity || Math.floor(hq.footprintAreaM2 / 20));
-    defenseRating += hq.defenseRating;
+    livingCap += Math.max(2, primary.maxCapacity || Math.floor(primary.footprintAreaM2 / 20));
+    defenseRating += primary.defenseRating;
+  }
+
+  for (const additionalHQ of additional) {
+    if (!isHQOperational(additionalHQ)) continue;
+    squadCapacity += Math.max(1, Math.floor(Math.sqrt(Math.max(1, additionalHQ.footprintAreaM2)) / 8)) + (FUNCTIONAL_BUILDING_DEFINITIONS.headquarters.squadCapacity || 0);
+    storageCap += FUNCTIONAL_BUILDING_DEFINITIONS.headquarters.storageCapacity || 0;
+    livingCap += Math.max(2, additionalHQ.maxCapacity);
+    defenseRating += additionalHQ.defenseRating;
   }
 
   const allBuildings = [...Array.from(adaptedBuildings.values()), ...freestanding];
@@ -380,13 +399,23 @@ export function recalculateSettlementStats(
   const SQUAD_CAPACITY_TYPES: FunctionalBuildingTypeId[] = ['squad_quarters'];
 
   for (const bldg of allBuildings) {
+    // §7.1 Operational state is the single authority for every stat: a
+    // breached, still-under-construction, or repair-stalled building
+    // contributes NO defense, storage, living, or squad capacity. A destroyed
+    // Watchtower is not a shield and a gutted Warehouse is not a vault.
+    if (!isBuildingOperational(bldg)) continue;
     defenseRating += bldg.defenseRating;
     if (STORAGE_TYPES.includes(bldg.typeId)) {
       storageCap += bldg.maxCapacity;
     } else if (LIVING_TYPES.includes(bldg.typeId)) {
       livingCap += bldg.maxCapacity;
     }
-    if (SQUAD_CAPACITY_TYPES.includes(bldg.typeId)) {
+    // A squad slot is all-or-nothing: a partially adapted Squad Quarters does
+    // not field half a squad, so only a fully converted building grants the slot.
+    if (
+      SQUAD_CAPACITY_TYPES.includes(bldg.typeId) &&
+      (bldg.adaptationPercentage ?? 100) >= 100
+    ) {
       squadCapacity += FUNCTIONAL_BUILDING_DEFINITIONS[bldg.typeId]?.squadCapacity || 1;
     }
   }
@@ -401,7 +430,11 @@ export function establishSettlementHQ(
   state: SettlementState,
   bldg: BuildingPolygon
 ): SettlementState {
-  const stats = calculateBuildingStats('shelter_bunkhouse', bldg, true);
+  const stats = calculateBuildingStats('headquarters', bldg, true);
+  // Command-center structural integrity: larger/higher HQs are tougher. The
+  // baseline matches a Fortified Tower so a small HQ can still be overrun by
+  // a determined siege, while a large command block shrugs off early hordes.
+  const hqMaxDurability = Math.max(650, Math.round(600 + stats.footprintArea * 0.5 + bldg.levels * 120));
   const hqStats: SettlementHQ = {
     buildingId: bldg.id,
     buildingName: bldg.name || `${bldg.type.toUpperCase()} COMMAND HQ`,
@@ -411,12 +444,20 @@ export function establishSettlementHQ(
     center: bldg.center,
     defenseRating: stats.baseDefense + 50, // HQ fortified bonus
     maxCapacity: stats.maxCapacity,
+    maxDurability: hqMaxDurability,
+    currentDurability: hqMaxDurability,
   };
 
   const adaptedBuildings = new Map(state.adaptedBuildings);
-
+  const headquarters = [...(state.headquarters || [])];
+  const existingHQ = headquarters.find((h) => String(h.buildingId) === String(bldg.id));
+  if (existingHQ) return state;
+  headquarters.push(hqStats);
+  // The newly established/selected command center becomes primary — even when
+  // it replaces a previously-breached HQ (reclamation promotes the new HQ).
   const { storageCap, livingCap, defenseRating, squadCapacity } = recalculateSettlementStats(
-    hqStats,
+    headquarters,
+    hqStats.buildingId,
     adaptedBuildings,
     state.freestandingBuildings
   );
@@ -424,7 +465,8 @@ export function establishSettlementHQ(
   const intermediateState: SettlementState = {
     ...state,
     isInitialized: true,
-    hq: hqStats,
+    primaryHQId: hqStats.buildingId,
+    headquarters,
     adaptedBuildings,
     totalStorageCapacity: storageCap,
     totalLivingCapacity: livingCap,
@@ -436,16 +478,61 @@ export function establishSettlementHQ(
 }
 
 /**
- * Converts a real OSM building into an adapted functional structure (§7.1, §7.2)
+/** Options for area-based (§7.1 IFZ drag) and split-section adaptation. */
+export interface AdaptBuildingOptions {
+  /**
+   * Physical selection already clipped to the source footprint (the exact
+   * dragged area). When given, the conversion covers this sub-region rather
+   * than a preset percentage; the stored percentage is derived from its area.
+   */
+  selectionPolygon?: Point2D[];
+  /** For split sections: adapt the section record instead of the whole
+   *  building. The record is keyed by the section id and stamped with the
+   *  source building id so each section stays independently adaptable. */
+  section?: BuildingSection;
+  /** Cost multiplier applied to the type's full adaptation cost before the
+   *  incremental share is taken. Sections pay only their footprint's share so
+   *  a building split into N parts costs the same total as one whole build. */
+  costScale?: number;
+  /** Building whose search/loot state gates the adaptation. Sections share
+   *  their parent's cleared status (sections themselves are never searched). */
+  gateBuildingId?: string | number;
+}
+
+/**
+ * Converts a real OSM building into an adapted functional structure (§7.1, §7.2).
+ * `adaptation` is either a legacy percentage (0–100) or a physical selection
+ * polygon — the exact area the player dragged across the footprint. With a
+ * polygon, the stored `adaptedPolygon` / `adaptedAreaM2` reflect the real
+ * selected region and the percentage is derived from its area.
  */
 export function adaptBuilding(
   state: SettlementState,
   bldg: BuildingPolygon,
-  typeId: FunctionalBuildingTypeId
+  typeId: FunctionalBuildingTypeId,
+  adaptation: number | Point2D[] = 100,
+  options: AdaptBuildingOptions = {}
 ): { success: boolean; newState: SettlementState; error?: string } {
+  const { selectionPolygon, section, costScale, gateBuildingId } = options;
+  const recordKey = section ? section.id : bldg.id;
+  const gateId = gateBuildingId ?? bldg.id;
+  // `adaptation` may itself be a physical selection polygon (the dragged area),
+  // in which case it takes precedence over the options polygon.
+  const physicalSelection =
+    Array.isArray(adaptation) && adaptation.length >= 3 ? adaptation : selectionPolygon;
   const def = FUNCTIONAL_BUILDING_DEFINITIONS[typeId];
   if (!def) {
     return { success: false, newState: state, error: 'Unknown functional building type' };
+  }
+
+  // Purpose-built facilities (Cistern, walls, gates, towers, …) are freestanding
+  // only — they can never be made by converting a real-world building.
+  if (!def.adaptationAllowed) {
+    return {
+      success: false,
+      newState: state,
+      error: 'This facility is purpose-built and can only be constructed freestanding.',
+    };
   }
 
   // Research gate: the reference design gates adaptation by the building's tech
@@ -459,18 +546,75 @@ export function adaptBuilding(
     };
   }
 
-  // IFZ rule: a real building must be scavenged/cleared before it can be
-  // converted into a functional structure. You cannot adapt untouched loot.
-  const searchState = state.buildingSearches?.get(bldg.id);
-  if (!searchState?.searched) {
+  // IFZ rule: a real building must be scavenged AND fully cleared (no leftover
+  // loot) before it can be converted into a functional structure. The HQ is
+  // command infrastructure and can never be adapted away either. Split sections
+  // gate against the PARENT building's cleared status — sections are never
+  // searched separately.
+  if (isHQBuilding(state, gateId)) {
     return {
       success: false,
       newState: state,
-      error: 'This building must be scavenged and cleared before it can be adapted.',
+      error: 'This is your headquarters — it cannot be converted into another facility.',
+    };
+  }
+  const searchState = state.buildingSearches?.get(gateId);
+  if (!isBuildingFullyLooted(searchState)) {
+    return {
+      success: false,
+      newState: state,
+      error: 'This building must be fully scavenged and cleared before it can be adapted.',
     };
   }
 
-  const cost = getAdaptedCost(typeId, bldg.type);
+  // §7.1 IFZ-style physical selection: when the player drags across the
+  // footprint, the conversion covers exactly that sub-region. The dragged
+  // polygon is clipped to the real footprint and the coverage percentage is
+  // DERIVED from the selected area rather than being a preset knob.
+  let requestedPercentage = Math.max(1, Math.min(100, typeof adaptation === 'number' ? adaptation : 100));
+  let adaptedPolygon: Point2D[] | undefined;
+  if (physicalSelection && physicalSelection.length >= 3) {
+    const sel = polygonBounds(physicalSelection);
+    const clipped = clipPolygonToRect(bldg.polygon || [], sel.minX, sel.maxX, sel.minZ, sel.maxZ);
+    if (clipped.length >= 3) {
+      const selectedArea = polygonArea(clipped);
+      const footprintArea = Math.max(1, polygonArea(bldg.polygon || []));
+      requestedPercentage = Math.min(100, Math.max(1, Math.round((selectedArea / footprintArea) * 100)));
+      adaptedPolygon = clipped;
+    }
+  } else if (section && section.polygon.length >= 3) {
+    adaptedPolygon = section.polygon;
+  }
+
+  const existing = state.adaptedBuildings.get(recordKey);
+  if (existing && existing.typeId !== typeId) {
+    return { success: false, newState: state, error: 'This structure is already assigned to another adaptation.' };
+  }
+  const stats = calculateBuildingStats(typeId, bldg, true);
+  const previousPercentage = existing?.adaptationPercentage || 0;
+  const targetPercentage = Math.max(previousPercentage, requestedPercentage);
+  const incrementalPercentage = Math.max(0, targetPercentage - previousPercentage);
+  if (incrementalPercentage <= 0) {
+    return { success: false, newState: state, error: 'This adaptation is already complete.' };
+  }
+  // §Terminus economics: the base cost scales with the REAL structure's shell
+  // volume (footprint × height), not a per-type flat rate — a large building
+  // costs proportionally more because it yields proportionally more capacity.
+  const fullCost = getAdaptedCost(typeId, bldg.type, stats.footprintArea, bldg.height);
+  const baseCost: ResourceCost = costScale && costScale !== 1
+    ? {
+        wood: Math.ceil(fullCost.wood * costScale),
+        metal: Math.ceil(fullCost.metal * costScale),
+        bricks: Math.ceil(fullCost.bricks * costScale),
+        tools: fullCost.tools ? Math.ceil(fullCost.tools * costScale) : 0,
+      }
+    : fullCost;
+  const cost: ResourceCost = {
+    wood: Math.ceil(baseCost.wood * incrementalPercentage / 100),
+    metal: Math.ceil(baseCost.metal * incrementalPercentage / 100),
+    bricks: Math.ceil(baseCost.bricks * incrementalPercentage / 100),
+    tools: baseCost.tools ? Math.ceil(baseCost.tools * incrementalPercentage / 100) : 0,
+  };
   if (!canAffordCost(state.stockpile, cost)) {
     return {
       success: false,
@@ -479,25 +623,45 @@ export function adaptBuilding(
     };
   }
 
-  const stats = calculateBuildingStats(typeId, bldg, true);
-  const workerCount = Math.max(1, Math.min(3, state.generalPopulation.total || 1));
+  const workerCount = 0; // Live labour distribution assigns construction workers.
+
+  // §7.1 partial adaptation: capacity, defense and worker-slot contribution are
+  // ALL proportional to the converted area, not the whole shell. `fullCapacity`
+  // keeps the 100% value for expansion previews; `maxCapacity` is scaled so
+  // every consumer (storage/living aggregates, housing, morale) sees a 25%
+  // warehouse as a 25% warehouse. Durability stays full — the physical shell
+  // stands regardless of how much of it is converted.
+  const scale = targetPercentage / 100;
+  const previousFullCapacity = existing?.fullCapacity ?? existing?.maxCapacity;
+  const fullCapacity = previousFullCapacity ?? stats.maxCapacity;
+  const scaledCapacity = Math.max(0, Math.round(fullCapacity * scale));
 
   const adapted: AdaptedBuilding = {
-    buildingId: bldg.id,
+    buildingId: recordKey,
     typeId: typeId,
     isHQ: false,
     name: def.name,
     category: def.category,
     adaptedAt: Date.now(),
     footprintAreaM2: stats.footprintArea,
+    adaptedAreaM2: stats.footprintArea * targetPercentage / 100,
+    adaptationPercentage: targetPercentage,
+    adaptedPolygon,
+    sourceBuildingId: section ? section.sourceBuildingId : undefined,
     totalFloorAreaM2: stats.totalFloorArea,
     volumeM3: stats.volume,
-    maxCapacity: stats.maxCapacity,
+    fullCapacity,
+    maxCapacity: scaledCapacity,
     currentUsage: 0,
     capacityUnit: stats.capacityUnit,
+    // Multi-recipe facilities start on their first recipe; expanding a partial
+    // conversion keeps whatever the player already selected.
+    selectedRecipeId:
+      existing?.selectedRecipeId ??
+      (def.recipes?.length ? def.recipes[0].id : undefined),
     maxDurability: stats.maxDurability,
     currentDurability: stats.maxDurability,
-    defenseRating: stats.baseDefense,
+    defenseRating: Math.round(stats.baseDefense * scale),
     isFreestanding: false,
     position: bldg.center,
     height: bldg.height,
@@ -505,35 +669,36 @@ export function adaptBuilding(
     polygon: bldg.polygon,
     constructionStatus: 'in_progress',
     constructionProgress: 0,
-    constructionWorkRequired: 100,
+    constructionWorkRequired: Math.max(1, Math.round(100 * incrementalPercentage / 100)),
     constructionWorkDone: 0,
     assignedWorkers: workerCount,
   };
 
   const newAdaptedMap = new Map(state.adaptedBuildings);
-  newAdaptedMap.set(bldg.id, adapted);
+  newAdaptedMap.set(recordKey, existing ? { ...existing, ...adapted } : adapted);
 
   const constructionOrder: ConstructionWorkOrder = {
-    id: `const_${bldg.id}_${Date.now()}`,
-    buildingId: bldg.id,
+    id: `const_${recordKey}_${Date.now()}`,
+    buildingId: recordKey,
     buildingName: def.name,
     workerCount,
     state: 'traveling',
-    position: { ...(state.hq?.center || bldg.center) },
+    position: { ...(getPrimaryHQ(state)?.center || bldg.center) },
     targetPosition: { ...bldg.center },
     totalCost: cost,
-    deductedCost: { wood: 0, metal: 0, bricks: 0 },
+    deductedCost: { wood: 0, metal: 0, bricks: 0, tools: 0 },
     progress: 0,
     createdAt: Date.now(),
   };
 
   const updatedOrders = [
-    ...(state.constructionOrders || []).filter((o) => o.buildingId !== bldg.id),
+    ...(state.constructionOrders || []).filter((o) => o.buildingId !== recordKey),
     constructionOrder,
   ];
 
   const { storageCap, livingCap, defenseRating, squadCapacity } = recalculateSettlementStats(
-    state.hq,
+    state.headquarters,
+    state.primaryHQId ?? null,
     newAdaptedMap,
     state.freestandingBuildings
   );
@@ -555,8 +720,137 @@ export function adaptBuilding(
 }
 
 /**
+ * IFZ-style footprint splitting (§7.1): divides a large real building into
+ * `parts` independently-adaptable sections. The split costs bricks (partition
+ * walls) and each resulting section can later be adapted into a different
+ * facility type via `adaptBuildingSection`. A split building's whole-building
+ * adaptation is removed — the sections are the adaptation surface from then on.
+ */
+export function splitBuilding(
+  state: SettlementState,
+  bldg: BuildingPolygon,
+  parts: 2 | 3 | 4 = 2
+): { success: boolean; newState: SettlementState; error?: string; sections?: BuildingSection[] } {
+  if (!bldg.polygon || bldg.polygon.length < 3) {
+    return { success: false, newState: state, error: 'This structure has no valid footprint to split.' };
+  }
+  if (parts < 2 || parts > 4) {
+    return { success: false, newState: state, error: 'A structure can be split into 2–4 sections.' };
+  }
+  if (isHQBuilding(state, bldg.id)) {
+    return { success: false, newState: state, error: 'The headquarters cannot be split.' };
+  }
+  const existingSections = state.buildingSections?.get(bldg.id);
+  if (existingSections && existingSections.length > 0) {
+    return { success: false, newState: state, error: 'This building is already split into sections.' };
+  }
+  const existingAdaptation = state.adaptedBuildings.get(bldg.id);
+  if (existingAdaptation) {
+    return { success: false, newState: state, error: 'Remove the building adaptation before splitting it into sections.' };
+  }
+  const searchState = state.buildingSearches?.get(bldg.id);
+  if (!isBuildingFullyLooted(searchState)) {
+    return { success: false, newState: state, error: 'The building must be fully scavenged and cleared before it can be split.' };
+  }
+
+  const strips = splitFootprintIntoStrips(bldg.polygon, parts);
+  if (strips.length < 2) {
+    return { success: false, newState: state, error: 'This footprint is too irregular to split into sections.' };
+  }
+
+  // Partition walls cost bricks proportional to the total cut length.
+  const b = polygonBounds(bldg.polygon);
+  const span = Math.max(b.maxX - b.minX, b.maxZ - b.minZ);
+  const totalCutLength = (parts - 1) * span;
+  const brickCost = Math.max(15, Math.ceil(totalCutLength * 1.5));
+  const stock = state.stockpile.materials;
+  if ((stock.bricks || 0) < brickCost) {
+    return {
+      success: false,
+      newState: state,
+      error: `Insufficient bricks for the partition walls (Requires ${brickCost} bricks).`,
+    };
+  }
+
+  const sections: BuildingSection[] = strips.map((s, i) => ({
+    id: `${bldg.id}::s${i}`,
+    sourceBuildingId: bldg.id,
+    index: i,
+    polygon: s.polygon,
+    center: s.center,
+    footprintAreaM2: s.areaM2,
+    splitBrickCost: brickCost,
+  }));
+
+  const newStockpile = {
+    ...state.stockpile,
+    materials: { ...stock, bricks: stock.bricks - brickCost },
+  };
+  const buildingSections = new Map(state.buildingSections || []);
+  buildingSections.set(bldg.id, sections);
+
+  return {
+    success: true,
+    newState: { ...state, stockpile: newStockpile, buildingSections },
+    sections,
+  };
+}
+
+/**
+ * Adapts ONE split section of a real building into a functional structure
+ * (§7.1). Each section is independently adaptable — the map key is the section
+ * id and the record is stamped with the source building id, so a single large
+ * warehouse can become e.g. a shelter section + a medbay section.
+ */
+export function adaptBuildingSection(
+  state: SettlementState,
+  sourceBldg: BuildingPolygon,
+  section: BuildingSection,
+  typeId: FunctionalBuildingTypeId
+): { success: boolean; newState: SettlementState; error?: string } {
+  const sections = state.buildingSections?.get(sourceBldg.id) || [];
+  if (!sections.some((s) => s.id === section.id)) {
+    return { success: false, newState: state, error: 'This section does not belong to the selected building.' };
+  }
+  const footprintArea = Math.max(1, polygonArea(sourceBldg.polygon || []));
+  const sectionShare = Math.max(0.02, Math.min(1, section.footprintAreaM2 / footprintArea));
+  // Synthesise a polygon representing just this section so capacity/volume/
+  // footprint stats are proportional to the section, not the whole shell.
+  const sectionBldg: BuildingPolygon = {
+    ...sourceBldg,
+    id: section.id,
+    polygon: section.polygon,
+    center: section.center,
+  };
+  return adaptBuilding(state, sectionBldg, typeId, 100, {
+    section,
+    selectionPolygon: section.polygon,
+    costScale: sectionShare,
+    gateBuildingId: sourceBldg.id,
+  });
+}
+
+/**
  * Builds a freestanding structure on open terrain (§7.1)
  */
+export function deadaptBuilding(
+  state: SettlementState,
+  buildingId: string | number
+): { success: boolean; newState: SettlementState; error?: string } {
+  const adapted = state.adaptedBuildings.get(buildingId);
+  if (!adapted || adapted.isFreestanding) {
+    return { success: false, newState: state, error: 'No reversible building adaptation found.' };
+  }
+  if (adapted.isHQ) return { success: false, newState: state, error: 'The headquarters cannot be deadapted.' };
+  if (state.constructionOrders?.some((order) => order.buildingId === buildingId)) {
+    return { success: false, newState: state, error: 'Finish or cancel the current adaptation first.' };
+  }
+  const next = new Map(state.adaptedBuildings);
+  next.delete(buildingId);
+  const orders = (state.constructionOrders || []).filter((order) => order.buildingId !== buildingId);
+  return { success: true, newState: recalculateLaborDistribution({ ...state, adaptedBuildings: next, constructionOrders: orders }) };
+}
+
 export function buildFreestanding(
   state: SettlementState,
   typeId: FunctionalBuildingTypeId,
@@ -578,6 +872,18 @@ export function buildFreestanding(
       success: false,
       newState: state,
       error: `Requires research: ${lock.requiredName}`,
+    };
+  }
+
+  // Adaptation-type facilities (conversions of real-world buildings) can only
+  // be erected freestanding from scratch once the colony masters Advanced
+  // Masonry. Genuinely freestanding IFZ structures (walls, gates, towers,
+  // wire, sandbags — defs with `adaptationAllowed: false`) are exempt.
+  if (def.adaptationAllowed && !isResearchUnlocked(state, 'advanced_masonry')) {
+    return {
+      success: false,
+      newState: state,
+      error: 'Requires research: Advanced Masonry (freestanding facilities need masonry expertise)',
     };
   }
 
@@ -609,7 +915,7 @@ export function buildFreestanding(
   };
 
   const stats = calculateBuildingStats(typeId, dummyBldg, false);
-  const workerCount = Math.max(1, Math.min(3, state.generalPopulation.total || 1));
+  const workerCount = 0; // Live labour distribution assigns construction workers.
 
   const freestandingObj: AdaptedBuilding = {
     buildingId: dummyBldg.id,
@@ -619,11 +925,14 @@ export function buildFreestanding(
     category: def.category,
     adaptedAt: Date.now(),
     footprintAreaM2: footprintArea,
+    adaptedAreaM2: footprintArea,
+    adaptationPercentage: 100,
     totalFloorAreaM2: footprintArea,
     volumeM3: footprintArea * customHeight,
     maxCapacity: Math.max(2, Math.floor(stats.maxCapacity * 0.7)),
     currentUsage: 0,
     capacityUnit: stats.capacityUnit,
+    selectedRecipeId: def.recipes?.length ? def.recipes[0].id : undefined,
     maxDurability: stats.maxDurability,
     currentDurability: stats.maxDurability,
     defenseRating: stats.baseDefense,
@@ -648,10 +957,10 @@ export function buildFreestanding(
     buildingName: `Freestanding ${def.name}`,
     workerCount,
     state: 'traveling',
-    position: { ...(state.hq?.center || position) },
+    position: { ...(getPrimaryHQ(state)?.center || position) },
     targetPosition: { ...position },
     totalCost: cost,
-    deductedCost: { wood: 0, metal: 0, bricks: 0 },
+    deductedCost: { wood: 0, metal: 0, bricks: 0, tools: 0 },
     progress: 0,
     createdAt: Date.now(),
   };
@@ -663,7 +972,8 @@ export function buildFreestanding(
   ];
 
   const { storageCap, livingCap, defenseRating, squadCapacity } = recalculateSettlementStats(
-    state.hq,
+    state.headquarters,
+    state.primaryHQId ?? null,
     state.adaptedBuildings,
     newFreestandingList
   );
@@ -734,7 +1044,14 @@ export function orderDeconstruction(
     return { success: false, newState: state, error: 'Deconstruction is already underway on this structure.' };
   }
 
-  if (state.hq && String(state.hq.buildingId) === String(buildingId)) {
+  // Only a *standing* primary command center is protected — rubble from a
+  // breached HQ is deconstructable like any other ruin.
+  const commandCenter = getPrimaryHQ(state);
+  if (
+    commandCenter &&
+    isHQOperational(commandCenter) &&
+    String(commandCenter.buildingId) === String(buildingId)
+  ) {
     return { success: false, newState: state, error: 'The headquarters cannot be deconstructed.' };
   }
 
@@ -801,6 +1118,8 @@ export function orderDeconstruction(
     maxWorkers,
     startedAt: Date.now(),
     progressPct: 0,
+    state: 'dismantling',
+    carriedMaterials: { wood: 0, metal: 0, bricks: 0 },
   };
 
   const newJobs = new Map(state.deconstructionJobs);

@@ -29,6 +29,10 @@ export interface VehicleDefinition {
   turretRange?: number;
   repairMetalCost: number;
   repairPartsCost?: number;
+  /** Metal consumed to fabricate this model at a Vehicle Workshop (§8). */
+  fabricationMetalCost: number;
+  /** Metal recovered when the chassis is dismantled at a Vehicle Workshop (§8). */
+  scrapMetalYield: number;
   soundRadius: number; // acoustic radius in meters when running
 }
 
@@ -47,6 +51,8 @@ export const VEHICLE_DEFINITIONS: Record<VehicleType, VehicleDefinition> = {
     inventoryCapacity: 12,
     hasMountedTurret: false,
     repairMetalCost: 20,
+    fabricationMetalCost: 70,
+    scrapMetalYield: 35,
     soundRadius: 35,
   },
   armed_truck: {
@@ -66,6 +72,8 @@ export const VEHICLE_DEFINITIONS: Record<VehicleType, VehicleDefinition> = {
     turretFireRate: 0.35, // 0.35s between high-caliber rounds
     turretRange: 36, // 36 meters range
     repairMetalCost: 35,
+    fabricationMetalCost: 160,
+    scrapMetalYield: 90,
     soundRadius: 75,
   },
   cargo_van: {
@@ -82,6 +90,8 @@ export const VEHICLE_DEFINITIONS: Record<VehicleType, VehicleDefinition> = {
     inventoryCapacity: 25,
     hasMountedTurret: false,
     repairMetalCost: 25,
+    fabricationMetalCost: 100,
+    scrapMetalYield: 55,
     soundRadius: 40,
   },
 };
@@ -164,6 +174,42 @@ export interface WorldVehicle {
   // downstream logic (deposit, dismount, queue-dispatch) can take over instead
   // of waiting forever for it to reach an unreachable targetPos.
   reachBlocked?: boolean;
+
+  // Set while the vehicle sits in a Vehicle Workshop bay on a repair or
+  // dismantle order. A vehicle being dismantled cannot be mounted/driven.
+  workshopJobId?: string | null;
+}
+
+// ==========================================
+// 3. Vehicle Workshop Orders (§8)
+// ==========================================
+
+export type VehicleWorkshopOrderType = 'fabricate' | 'repair' | 'dismantle';
+
+/**
+ * A job queued on a Vehicle Workshop (adapt `vehicle_workshop`):
+ * - `fabricate` consumes metal over time and spawns a new operational vehicle
+ * - `repair` restores chassis HP over time, consuming metal per HP healed
+ * - `dismantle` recovers scrap metal from a parked chassis over time
+ *
+ * Progress is measured in mechanic-hours; the workshop's assigned workers are
+ * split across its active orders every tick (one bay per order).
+ */
+export interface VehicleWorkshopOrder {
+  id: string;
+  workshopId: string | number;
+  workshopName: string;
+  type: VehicleWorkshopOrderType;
+  /** Vehicle under repair / being dismantled. */
+  vehicleId?: string | null;
+  /** Model being fabricated. */
+  vehicleType?: VehicleType;
+  label: string;
+  mechanicHoursDone: number;
+  mechanicHoursRequired: number;
+  /** Metal still owed for a fabrication, deducted as work advances. */
+  pendingMetal?: number;
+  createdAt: number;
 }
 
 

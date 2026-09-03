@@ -4,13 +4,17 @@ import {
   assignMemberWeapon,
   breachInfestedBuilding,
   emitNoiseEvent,
+  equipBuildingWeapon,
   generateBuildingInfestation,
   orderSquadAttack,
   orderSquadMove,
   orderSquadRecall,
+  orderAllSquadsRecall,
   repairBuilding,
 } from '../services/combatService';
+import { getOccupation, breachOccupiedBuilding } from '../services/buildingOccupationService';
 import { dismountSquadFromVehicle, mountSquadToVehicle, orderVehicleRoadTravel } from '../services/vehicleService';
+import { createVehicleWorkshopOrder } from '../services/vehicleWorkshopService';
 import { payRansomForCaptive } from '../services/rivalFactionService';
 import { assignResourceGatherers } from '../services/resourceGatheringService';
 import {
@@ -20,6 +24,7 @@ import {
   startBuildingSearch,
 } from '../services/scavengingService';
 import { startResearchNode } from '../services/researchService';
+import { getPrimaryHQ, isHQBuilding } from '../services/buildingOperational';
 import { calculateSettlementMorale } from '../services/moraleService';
 import { soundService, ToastMessage } from '../services/soundService';
 import type { BuildingPolygon, MapData, Point2D } from '../types/map';
@@ -259,6 +264,9 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
               targetZombieId: null,
               targetBuildingId: null,
               pendingMountVehicleId: targetVehicle.id,
+              // Boarding another vehicle supersedes a fuel delivery in flight.
+              pendingFuelDeliveryVehicleId: null,
+              noPath: undefined, // a fresh mount order may open a new route
             };
           }
           return s;
@@ -305,7 +313,7 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
 
   const handleOrderVehicleExtraction = (vehicle: WorldVehicle) => {
     if (!roadGraphRef.current) return;
-    const hqPos = settlement.hq?.center || { x: 0, z: 0 };
+    const hqPos = getPrimaryHQ(settlement)?.center || { x: 0, z: 0 };
     const updatedVeh = orderVehicleRoadTravel(vehicle, hqPos, roadGraphRef.current);
     setSettlement((prev) => ({
       ...prev,
@@ -406,6 +414,7 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
     const ids = mapData.buildings
       .filter((b) => buildingIntersectsBox(b))
       .filter((b) => !exhausted.has(String(b.id)))
+      .filter((b) => !isHQBuilding(settlement, b.id))
       .map((b) => b.id);
     setScavengeQueue((prev) => ({ ...prev, [selectedSquadId]: ids }));
     if (ids.length > 0) {
@@ -416,8 +425,32 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
     setToastMessage({ title: 'SCAVENGE QUEUE CREATED', desc: `${ids.length} building${ids.length === 1 ? '' : 's'} queued for ${combatSquads.find((s) => s.squadId === selectedSquadId)?.name || 'squad'}.`, type: 'success' });
   };
 
+  const handleOrderAllSquadsRecall = () => {
+    const antennaOperational = [
+      ...Array.from(settlement.adaptedBuildings.values()),
+      ...(settlement.freestandingBuildings || []),
+    ].some((building) =>
+      (building.typeId === 'antenna' || building.typeId === 'comms_relay') &&
+      building.constructionStatus === 'completed' &&
+      building.currentDurability > 0 &&
+      !building.isUnderRepair
+    );
+    if (!antennaOperational) {
+      setToastMessage({ title: 'RECALL UNAVAILABLE', desc: 'An operational Antenna or Comms Relay is required.', type: 'warn' });
+      return;
+    }
+    const hqPos = getPrimaryHQ(settlement)?.center || { x: 0, z: 0 };
+    setCombatSquads((prev) => {
+      const updated = orderAllSquadsRecall(prev, hqPos);
+      combatSquadsRef.current = updated;
+      return updated;
+    });
+    setScavengeQueue({});
+    setToastMessage({ title: 'ALL SQUADS RECALLED', desc: 'Emergency recall issued through the operational antenna network.', type: 'info' });
+  };
+
   const handleOrderSquadRecall = (squadId: string) => {
-    const hqPos = settlement.hq?.center || { x: 0, z: 0 };
+    const hqPos = getPrimaryHQ(settlement)?.center || { x: 0, z: 0 };
     setCombatSquads((prev) => {
       const updated = orderSquadRecall(prev, squadId, hqPos);
       combatSquadsRef.current = updated;
@@ -547,6 +580,8 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
         category: 'food',
         adaptedAt: Date.now(),
         footprintAreaM2: 80,
+        adaptedAreaM2: 80,
+        adaptationPercentage: 100,
         totalFloorAreaM2: 80,
         volumeM3: 240,
         maxCapacity: 60,
@@ -596,8 +631,9 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
     setSettlement(res.newState);
     soundService.playRepairSound();
     const adapted = res.newState.adaptedBuildings.get(buildingId);
-    if (adapted) {
-      const noise = emitNoiseEvent('repair', adapted.position.x, adapted.position.z, 'REPAIRS UNDERWAY');
+    const repairedBuilding = adapted || res.newState.freestandingBuildings.find((building) => building.buildingId === buildingId);
+    if (repairedBuilding) {
+      const noise = emitNoiseEvent('repair', repairedBuilding.position.x, repairedBuilding.position.z, 'REPAIRS UNDERWAY');
       setNoiseEvents((prev) => [...prev, noise.event]);
     }
     setToastMessage({
@@ -620,6 +656,10 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
 
   const handleSearchBuilding = (building: BuildingPolygon, squadIdOverride?: string) => {
     const squadId = squadIdOverride || selectedSquadId;
+    if (isHQBuilding(settlement, building.id)) {
+      setToastMessage({ title: 'HQ CANNOT BE SCAVENGED', desc: 'This is your headquarters — command infrastructure is never searched for loot.', type: 'warn' });
+      return;
+    }
     if (!squadId) {
       setToastMessage({ title: 'NO SQUAD SELECTED', desc: 'Select and dispatch a squad to this structure first.', type: 'warn' });
       return;
@@ -653,7 +693,14 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
         return;
       }
 
-      const r = startBuildingSearch(settlement, squadId, { x: sq.x, z: sq.z }, building);
+      const r = startBuildingSearch(
+        settlement,
+        squadId,
+        { x: sq.x, z: sq.z },
+        building,
+        18,
+        settlement.scavengingResourceMultiplier
+      );
       if (!r.success) {
         setToastMessage({ title: 'SEARCH UNAVAILABLE', desc: r.error || 'Structure cannot be searched.', type: 'warn' });
         return;
@@ -674,9 +721,24 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
         )
       );
 
-      const infestation = generateBuildingInfestation(building);
-      const breach = breachInfestedBuilding(infestation, building.center);
-      setZombies((z) => [...z, ...breach]);
+      // §IFZ Building Occupation — an OCCUPIED structure holds real infected
+      // that took the building over. Breaching wakes THEM (no conjured
+      // infestation): every living occupation zombie inside attacks the squad,
+      // and killing all of them clears the building. Unoccupied structures
+      // still trigger the classic random encounter.
+      const occupation = getOccupation(settlement, building.id);
+      if (occupation && !occupation.isCleared) {
+        setZombies((z) => breachOccupiedBuilding(z, occupation, building.center));
+        setToastMessage({
+          title: 'OCCUPIED STRUCTURE BREACHED',
+          desc: `${occupation.buildingName} is infested — ${occupation.infectedRemaining} infected inside have been alerted and are fighting back. Kill every one to clear the building.`,
+          type: 'danger',
+        });
+      } else {
+        const infestation = generateBuildingInfestation(building);
+        const breach = breachInfestedBuilding(infestation, building.center);
+        setZombies((z) => [...z, ...breach]);
+      }
       const n = emitNoiseEvent('breach', building.center.x, building.center.z, 'BUILDING SEARCH');
       setNoiseEvents((v) => [...v, n.event]);
       soundService.playCombatActionSFX('assault_order');
@@ -758,6 +820,22 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
     );
   };
 
+  // Tower armament: equip/unequip a ranged weapon on a weaponMountable tower.
+  // The weapon leaves the shared armory while mounted and returns on unequip.
+  const handleAssignTowerWeapon = useCallback(
+    (buildingId: string | number, weaponId: WeaponItemId | null) => {
+      setSettlement((prev) => {
+        const res = equipBuildingWeapon(prev, buildingId, weaponId);
+        if (!res.success) {
+          addTacticalAlert('TOWER ARMAMENT', res.error || 'Cannot change tower weapon.', 'warn');
+          return prev;
+        }
+        return res.newState;
+      });
+    },
+    [addTacticalAlert]
+  );
+
   const handleAssignArmor = (squadId: string, memberId: string, armorId: ArmorItemId | null) => {
     const member = combatSquads.find((s) => s.squadId === squadId)?.members.find((m) => m.id === memberId);
     if (!member) return;
@@ -809,34 +887,46 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
     }
   }, [settlement, addTacticalAlert]);
 
-  const handleRepairVehicle = useCallback((vehicleId: string) => {
-    setSettlement((prev) => {
-      const metal = prev.stockpile.materials.metal;
-      if (metal < 15) {
-        addTacticalAlert('REPAIR FAILED', 'Requires 15 units of metal', 'warn');
-        return prev;
+  const handleRepairVehicle = useCallback(
+    (vehicleId: string) => {
+      // §8 — repairs happen at a staffed Vehicle Workshop over time. The
+      // vehicle must be parked in the bay; mechanics restore HP over
+      // mechanic-hours while metal is consumed per HP healed. The instant
+      // pay-metal → full-HP path no longer exists anywhere.
+      const res = createVehicleWorkshopOrder(settlement, {
+        type: 'repair',
+        vehicleId,
+      });
+      if (!res.success || !res.newState) {
+        addTacticalAlert('REPAIR FAILED', res.error || 'No staffed Vehicle Workshop nearby.', 'warn');
+        return;
       }
-      return {
-        ...prev,
-        stockpile: {
-          ...prev.stockpile,
-          materials: {
-            ...prev.stockpile.materials,
-            metal: metal - 15,
-          },
-        },
-        vehicles: prev.vehicles.map((v) =>
-          v.id === vehicleId ? { ...v, condition: 'operational', currentHp: v.maxHp } : v
-        ),
-      };
-    });
-    addTacticalAlert('VEHICLE REPAIRED', 'Vehicle restored to operational readiness', 'success');
-  }, [addTacticalAlert]);
+      setSettlement(res.newState);
+      addTacticalAlert(
+        'REPAIR QUEUED',
+        'Vehicle rolled into the workshop bay — mechanics restore it over time.',
+        'success'
+      );
+    },
+    [settlement, addTacticalAlert]
+  );
 
   const handleRefuelVehicle = useCallback((vehicleId: string) => {
     setSettlement((prev) => {
       const veh = prev.vehicles.find((v) => v.id === vehicleId);
       if (!veh) return prev;
+      const nearWarehouse = [
+        ...Array.from(prev.adaptedBuildings.values()),
+        ...(prev.freestandingBuildings || []),
+      ].some((building) =>
+        (building.typeId === 'warehouse' || building.typeId === 'storage_depot') &&
+        building.constructionStatus === 'completed' && building.currentDurability > 0 &&
+        !building.isUnderRepair && Math.hypot(building.position.x - veh.position.x, building.position.z - veh.position.z) <= 30
+      );
+      if (!nearWarehouse) {
+        addTacticalAlert('REFUEL REQUIRES DELIVERY', 'Move a fuel item to the vehicle, or park it beside an operational Warehouse.', 'warn');
+        return prev;
+      }
       const fuelType = veh.fuelType;
       const available = prev.stockpile.fuel[fuelType] || 0;
       const needed = Math.round(veh.maxFuel - veh.currentFuel);
@@ -973,6 +1063,7 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
     handleStartSquadScavengeArea,
     handleDesignateSquadScavenge,
     handleOrderSquadRecall,
+    handleOrderAllSquadsRecall: handleOrderAllSquadsRecall,
     handleSetClockSpeed,
     handleGrantFreshFood,
     handleDrainFoodStockpile,
@@ -984,6 +1075,7 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
     handleSearchBuilding,
     autoEquipScavengedGear,
     handleAssignWeapon,
+    handleAssignTowerWeapon,
     handleAssignArmor,
     handleChangeSquadStance,
     handleStartResearchNode,

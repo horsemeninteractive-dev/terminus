@@ -21,6 +21,78 @@ import { IFZ_IMAGES } from '../assets/images';
 import { DynamicAtmosphericBackground } from './DynamicAtmosphericBackground';
 import { TerminusLogo } from './TerminusLogo';
 
+// Pull the real changelog into the UPDATES extras modal so the in-game
+// readout is always the actual CHANGELOG.md, never a stale hand-written blurb.
+import changelogRaw from '../../CHANGELOG.md?raw';
+
+/** Minimal markdown renderer for the changelog subset we write. */
+function renderChangelog(md: string): React.ReactNode {
+  const lines = md.split('\n');
+  const out: React.ReactNode[] = [];
+  let key = 0;
+  let started = false;
+  // Tokenize one inline segment: `code`, **bold**, *italic* — in that order.
+  const inline = (text: string): React.ReactNode[] => {
+    const parts: React.ReactNode[] = [];
+    const tokens = text.split(/(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g);
+    let t = 0;
+    for (const tok of tokens) {
+      if (!tok) continue;
+      const k = t++;
+      if (tok.startsWith('`') && tok.endsWith('`')) {
+        parts.push(<code key={k} className="text-[#7DD3FC] bg-white/5 px-1 rounded">{tok.slice(1, -1)}</code>);
+      } else if (tok.startsWith('**') && tok.endsWith('**')) {
+        parts.push(<strong key={k} className="text-[#E8E8E8]">{tok.slice(2, -2)}</strong>);
+      } else if (tok.startsWith('*') && tok.endsWith('*')) {
+        parts.push(<em key={k} className="italic text-[#A5B4FC]">{tok.slice(1, -1)}</em>);
+      } else {
+        parts.push(<span key={k}>{tok}</span>);
+      }
+    }
+    return parts;
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    // Skip everything before the first `## ` heading (title/intro text).
+    if (!started) {
+      if (line.startsWith('## ')) started = true;
+      else continue;
+    }
+    // Skip definition footnotes ([Unreleased]: https://...).
+    if (/^\[[^\]]+\]:/.test(line)) continue;
+    if (line.startsWith('### ')) {
+      out.push(
+        <div key={key++} className="mt-3 mb-1 font-heading font-bold text-[11px] uppercase tracking-wider text-[#38bdf8]">
+          {line.slice(4)}
+        </div>
+      );
+    } else if (line.startsWith('## ')) {
+      out.push(
+        <div key={key++} className="mt-4 mb-1 font-heading font-bold text-sm text-[#E8E8E8]">
+          {line.slice(3)}
+        </div>
+      );
+    } else if (line === '---') {
+      out.push(<div key={key++} className="my-2 h-px bg-[#262F3D]" />);
+    } else if (line.startsWith('- ')) {
+      out.push(
+        <div key={key++} className="flex gap-1.5 text-[#8C9BAE]">
+          <span className="text-[#B31217] shrink-0">▸</span>
+          <span>{inline(line.slice(2))}</span>
+        </div>
+      );
+    } else if (line) {
+      out.push(
+        <div key={key++} className="text-[#8C9BAE]">
+          {inline(line)}
+        </div>
+      );
+    }
+  }
+  return <>{out}</>;
+}
+
 interface MainMenuProps {
  onContinue: () => void;
  onNewGame: () => void;
@@ -88,7 +160,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
  {/* 2. Top Right Telemetry Bar */}
  <div className="absolute top-4 right-6 z-30 flex items-center gap-3">
  <span className="text-xs font-tech font-bold tracking-widest text-[#E8E8E8] drop-">
- VER 0.26.7.30 18 BETA+
+ VER {__APP_VERSION__} BETA+
  </span>
 
  {/* Red exclamation alert box */}
@@ -170,18 +242,13 @@ export const MainMenu: React.FC<MainMenuProps> = ({
  CREDITS
  </button>
 
- {/* EXTRAS */}
+ {/* EXTRAS — greyed out and unwired for now: the entry stays in the menu
+     layout but is disabled and never opens the submenu flyout. */}
  <button
- onClick={() => {
- soundService.playCombatActionSFX('assault_order');
- setShowExtrasSubmenu(!showExtrasSubmenu);
- }}
- onMouseEnter={() => handleMenuHover('extras')}
- className={`w-full text-left px-5 py-2.5 font-heading text-sm uppercase tracking-widest transition-all border-b border-[#262F3D]/50 border-l-4 clip-tactical-chamfer-tr-bl ${
- showExtrasSubmenu
- ? 'bg-[#1A2634] text-white border-l-[#E8E8E8] surface-bevel'
- : 'bg-[#0E1013]/90 hover:bg-[#1A2634] text-[#E8E8E8] hover:text-[#E8E8E8] border-l-transparent hover:border-l-[#E8E8E8] surface-bevel'
- }`}
+ disabled
+ aria-disabled="true"
+ title="Coming soon"
+ className="w-full text-left px-5 py-2.5 font-heading text-sm uppercase tracking-widest transition-all border-b border-[#262F3D]/50 border-l-4 clip-tactical-chamfer-tr-bl bg-[#0E1013]/40 text-[#5A6270] border-l-transparent cursor-not-allowed"
  >
  EXTRAS
  </button>
@@ -401,10 +468,10 @@ export const MainMenu: React.FC<MainMenuProps> = ({
 
  {activeExtrasModal === 'updates' && (
  <div>
- <div className="font-heading font-bold text-[#EF4444] mb-2 text-sm">VERSION 0.26.7.30 BETA UPDATE:</div>
- <p className="text-[#8C9BAE]">
- Full 3D satellite globe navigation with discrete zone sizing, real-world building extraction, and enhanced right-click squad tactical movement controls are operational.
- </p>
+ <div className="font-heading font-bold text-[#EF4444] mb-2 text-sm">VERSION {__APP_VERSION__} — RELEASE NOTES</div>
+ <div className="max-h-[55vh] overflow-y-auto pr-1 space-y-0.5">
+ {renderChangelog(changelogRaw)}
+ </div>
  </div>
  )}
 

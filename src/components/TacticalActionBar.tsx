@@ -18,6 +18,7 @@ import {
   Layers,
   Lock,
   MoreHorizontal,
+  MousePointer2,
   Pickaxe,
   Plus,
   Radio,
@@ -38,7 +39,9 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import {
   FUNCTIONAL_CATEGORIES,
+  ADAPT_REFERENCE_VOLUME_M3,
   FUNCTIONAL_BUILDING_DEFINITIONS,
+  LEGACY_ALIAS_BUILDING_TYPE_IDS,
 } from '../data/functionalBuildings';
 import {
   FunctionalBuildingTypeId,
@@ -125,26 +128,7 @@ const BUILDING_CATEGORY_TABS: BuildingCategoryTab[] = [
   },
 ];
 
-// Legacy alias ids that duplicate a canonical IFZ building (e.g. 'Infirmary
-// Clinic' is just Medbay under an old name). They stay fully functional for
-// save compatibility but are hidden from the picker so the roster reads cleanly
-// against the IFZ reference (each facility appears once under its real name).
-const LEGACY_ALIAS_TYPE_IDS = new Set<FunctionalBuildingTypeId>([
-  'shelter_bunkhouse',
-  'storage_depot',
-  'greenhouse_hydro',
-  'food_pantry',
-  'workshop_forge',
-  'timber_mill',
-  'scrap_smelter',
-  'guard_watchtower',
-  'barricade_gatehouse',
-  'armory_cache',
-  'infirmary_clinic',
-  'community_hall',
-  'comms_relay',
-  'research_lab',
-]);
+
 
 // Canonical freestanding fortifications (walls, gates, towers) shown in the
 // Fortifications panel — matches the IFZ wall/tower roster plus the Terminus
@@ -259,7 +243,7 @@ export const TacticalActionBar: React.FC<TacticalActionBarProps> = ({
     return Object.values(FUNCTIONAL_BUILDING_DEFINITIONS).filter((def) => {
       return (
         currentCategoryTab.categories.includes(def.category) &&
-        !LEGACY_ALIAS_TYPE_IDS.has(def.id)
+        !LEGACY_ALIAS_BUILDING_TYPE_IDS.has(def.id)
       );
     });
   }, [selectedBuildingTab, currentCategoryTab]);
@@ -317,6 +301,16 @@ export const TacticalActionBar: React.FC<TacticalActionBarProps> = ({
 
             {/* Right Building List */}
             <div className="flex-1 flex flex-col min-h-0 bg-[#0A0E14]/80 overflow-y-auto p-2 space-y-1.5 max-h-[58vh]">
+              {/* §7.1 IFZ drag adaptation — press on a building and drag across
+                  its own footprint to paint the portion to convert. The price
+                  scales with the structure's real size (volume × share), so
+                  rates below are shown per 1,000 m³ of converted shell. */}
+              <div className="flex items-center gap-1.5 px-0.5 pb-0.5 -mt-0.5">
+                <MousePointer2 className="w-3 h-3 text-[#38bdf8] shrink-0" />
+                <span className="text-[9px] font-mono text-[#64748B] uppercase tracking-wider">
+                  Press a building & drag to paint the conversion · price scales with size
+                </span>
+              </div>
               {tabBuildings.length === 0 ? (
                 <div className="p-4 text-center text-xs font-mono text-[#64748B]">
                   No facilities available in this category.
@@ -325,6 +319,14 @@ export const TacticalActionBar: React.FC<TacticalActionBarProps> = ({
                 tabBuildings.map((def) => {
                   const lock = getBuildingLockStatus(settlement, def.researchRequirement);
                   const locked = !lock.unlocked;
+                  // §Terminus size economics: a conversion charges the reference
+                  // material cost scaled by the real structure's shell volume
+                  // (footprint × height). The menu shows that rate per 1,000 m³.
+                  const rate1000 = (v: number) =>
+                    v > 0 ? Math.max(1, Math.round((v * 1000) / ADAPT_REFERENCE_VOLUME_M3)) : 0;
+                  const rateTxt = def.adaptationAllowed
+                    ? `${rate1000(def.adaptationCost.wood)}W/${rate1000(def.adaptationCost.metal)}M/${rate1000(def.adaptationCost.bricks)}B/1,000m³`
+                    : `PLACE ${def.freestandingCost.wood}W / ${def.freestandingCost.metal}M / ${def.freestandingCost.bricks}B`;
                   return (
                     <button
                       key={def.id}
@@ -340,7 +342,13 @@ export const TacticalActionBar: React.FC<TacticalActionBarProps> = ({
                         setActivePanel(null);
                         soundEngine.playClick();
                       }}
-                      title={locked ? `Requires research: ${lock.requiredName}` : undefined}
+                      title={
+                        locked
+                          ? `Requires research: ${lock.requiredName}`
+                          : def.adaptationAllowed
+                          ? `Conversion cost scales with the real structure's volume — materials shown per 1,000 m³ of converted shell.`
+                          : undefined
+                      }
                       className={`w-full flex items-center justify-between p-2.5 border transition-all text-left min-h-[46px] touch-manipulation ${
                         locked
                           ? 'bg-[#0C0F14] border-[#1A212C] opacity-60 cursor-not-allowed'
@@ -372,9 +380,7 @@ export const TacticalActionBar: React.FC<TacticalActionBarProps> = ({
                           </span>
                         ) : (
                           <span className="text-[10px] font-mono text-[#64748B] group-hover:text-[#94A3B8] whitespace-nowrap">
-                            {def.adaptationAllowed
-                              ? `${def.adaptationCost.wood}W / ${def.adaptationCost.metal}M / ${def.adaptationCost.bricks}B`
-                              : `PLACE ${def.freestandingCost.wood}W / ${def.freestandingCost.metal}M / ${def.freestandingCost.bricks}B`}
+                            {rateTxt}
                           </span>
                         )}
                       </div>

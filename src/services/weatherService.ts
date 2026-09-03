@@ -1,5 +1,6 @@
 import { MoonPhase, SeasonInfo, SeasonType, WeatherConditionInfo, WeatherState, WeatherType } from '../types/weather';
 import { SettlementState } from '../types/settlement';
+import { isBuildingOperational } from './buildingOperational';
 import { isResearchUnlocked } from './researchService';
 
 // ==========================================
@@ -464,7 +465,7 @@ export function calculateCropYieldFactors(
   ];
 
   const greenhouseCount = allBuildings.filter(
-    (b) => b.typeId === 'greenhouse_hydro' && b.constructionStatus === 'completed'
+    (b) => b.typeId === 'greenhouse_hydro' && isBuildingOperational(b)
   ).length;
 
   const hasHydroponicsTech = isResearchUnlocked(settlement, 'greenhouses');

@@ -69,8 +69,15 @@ export const TacticalPauseMenu: React.FC<TacticalPauseMenuProps> = ({
  const squadCount = settlement?.squads?.length || 1;
  const moraleScore = settlement?.morale?.overallScore ?? 75;
  const displayColonyName = colonyName || settlement?.name || 'Outpost Command';
+ // `clock.hour` accumulates as a float (e.g. 9.283…); floor it for display
+ // and use the clock's already-floored minute so the readout never shows
+ // fractional time. The calendar date mirrors the header's day/month math.
  const displayDay = dayNumber ?? clock?.day ?? 1;
- const displayHour = clock?.hour ?? 12;
+ const displayHour = Math.floor(clock?.hour ?? 12);
+ const displayMinute = clock?.minute ?? 0;
+ const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+ const monthName = months[(Math.floor((displayDay - 1) / 30) + 3) % 12];
+ const dayInMonth = ((displayDay - 1) % 30) + 1;
 
  const handleClick = (action?: () => void) => {
  soundService.playCombatActionSFX('assault_order');
@@ -93,7 +100,7 @@ export const TacticalPauseMenu: React.FC<TacticalPauseMenuProps> = ({
  TACTICAL SIMULATION PAUSED
  </h2>
  <p className="text-[11px] font-mono text-[#94A3B8]">
- {displayColonyName} // Day {displayDay} ({String(displayHour).padStart(2, '0')}:00)
+ {displayColonyName} // {dayInMonth} {monthName} · Day {displayDay} ({String(displayHour).padStart(2, '0')}:{String(displayMinute).padStart(2, '0')})
  </p>
  </div>
  </div>

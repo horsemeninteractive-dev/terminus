@@ -33,6 +33,7 @@ import {
 } from '../types/infection';
 import { NamedSurvivor } from '../types/population';
 import { AdaptedBuilding, SettlementState } from '../types/settlement';
+import { getPrimaryHQ, isBuildingOperational } from '../services/buildingOperational';
 import {
  administerTreatment,
  createSurvivorInfection,
@@ -80,7 +81,7 @@ export const MedicalTriageModal: React.FC<MedicalTriageModalProps> = ({
 
  // Find Infirmary Buildings (canonical Medbay or legacy Infirmary Clinic)
  const infirmaries = (Array.from(adaptedBuildings.values()) as AdaptedBuilding[]).filter(
- (b) => (b.typeId === 'infirmary_clinic' || b.typeId === 'medbay') && b.constructionStatus === 'completed'
+ (b) => (b.typeId === 'infirmary_clinic' || b.typeId === 'medbay') && isBuildingOperational(b)
  );
  const hasOperationalMedbay = infirmaries.length > 0;
 
@@ -193,7 +194,8 @@ export const MedicalTriageModal: React.FC<MedicalTriageModalProps> = ({
  settlement,
  survivorId,
  !currentQuarantined,
- primaryInfirmary ? primaryInfirmary.buildingId : settlement.hq?.buildingId
+ primaryInfirmary ? primaryInfirmary.buildingId : getPrimaryHQ(settlement)?.buildingId
+
  );
  if (success) {
  onUpdateSettlement(newState);

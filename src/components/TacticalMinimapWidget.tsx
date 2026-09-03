@@ -80,6 +80,8 @@ interface TacticalMinimapWidgetProps {
   showSatelliteOverlay?: boolean;
   onToggleSatelliteOverlay?: () => void;
   satelliteQuality?: import('../types/saveGame').SatelliteQuality;
+  showPowerGrid?: boolean;
+  onTogglePowerGrid?: () => void;
   onSatelliteQualityChange?: (quality: import('../types/saveGame').SatelliteQuality) => void;
   showLanduse?: boolean;
   onToggleLanduse?: () => void;
@@ -129,6 +131,8 @@ export const TacticalMinimapWidget: React.FC<TacticalMinimapWidgetProps> = ({
   onToggleSatelliteOverlay,
   satelliteQuality = 'balanced',
   onSatelliteQualityChange,
+  showPowerGrid = false,
+  onTogglePowerGrid,
   showLanduse = true,
   onToggleLanduse,
   labelDetailMode = 'minimal',
@@ -766,6 +770,28 @@ export const TacticalMinimapWidget: React.FC<TacticalMinimapWidgetProps> = ({
                         }`}
                       >
                         {showSatelliteOverlay ? 'ON' : 'OFF'}
+                      </button>
+                    </div>
+
+                    {/* Layer 3: Power Grid Overlay */}
+                    <div className="flex items-center justify-between bg-[#0F141D] p-2 border border-[#1E293B]">
+                      <div className="flex flex-col">
+                        <span className="font-mono text-[10px] font-bold text-white">Power Grid</span>
+                        <span className="font-mono text-[8px] text-[#94A3B8]">Generator radius & powered/shed consumers</span>
+                      </div>
+                      <button
+                        id="toggle-power-grid"
+                        onClick={() => {
+                          soundEngine.playClick();
+                          onTogglePowerGrid?.();
+                        }}
+                        className={`px-2 py-1 text-[9px] font-mono font-bold uppercase border transition-all ${
+                          showPowerGrid
+                            ? 'bg-[#7C2D12] border-[#F59E0B] text-[#FBBF24]'
+                            : 'bg-[#1E293B]/60 border-slate-700 text-[#94A3B8]'
+                        }`}
+                      >
+                        {showPowerGrid ? 'ON' : 'OFF'}
                       </button>
                     </div>
                     {/* Satellite imagery quality tier (persisted in the save) */}

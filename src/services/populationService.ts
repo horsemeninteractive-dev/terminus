@@ -14,19 +14,30 @@ import {
   WorkerJobInfo,
   WorkerJobTypeId,
   WorkerPriorityLevel,
+  SquadWeaponLoadout,
 } from '../types/population';
 import {
   AdaptedBuilding,
   ConstructionWorkOrder,
   FunctionalBuildingTypeId,
   FunctionalCategory,
+  ProductionRecipe,
   SettlementState,
   SettlementStockpile,
 } from '../types/settlement';
+import { getPrimaryHQ, isBuildingOperational } from './buildingOperational';
+import { getPoweredBuildingIds } from './powerService';
+import { getActiveLaw } from './lawService';
+import { recalculateSettlementStats } from './settlementService';
+import { depositWithinCapacity, getStockpileUnits } from './stockpileCapacity';
+import { strandMaterialsAt } from './strandedLootService';
+import { calculateCropYieldFactors } from './weatherService';
 import {
   FUNCTIONAL_BUILDING_DEFINITIONS,
   getBuildingWorkerSlots,
 } from '../data/functionalBuildings';
+import { isResearchUnlocked } from './researchService';
+import { ArmorItemId, WeaponItemId } from '../types/combat';
 
 export type {
   WorkerJobTypeId,
@@ -96,15 +107,23 @@ export function calculateCitizenBreakdownStats(state: SettlementState): CitizenB
   const homeless = Math.max(0, totalCitizens - (state.totalLivingCapacity || 0));
   const ill = Math.max(0, state.infections?.size || 0);
 
+  // Adult/child work rules (§IFZ Major Update #5): the Child Labour Permitted
+  // law lets children join the general labour pool; otherwise they are fully
+  // excluded from work (baseline Terminus rule).
+  const childLabor = getActiveLaw(state).childLaborAllowed;
+
   const squadMembers = (state.squads || []).reduce(
     (sum, sq) => sum + 1 + (sq.generalCount || 0),
     0
   );
+  const committedWorkers = (state.resourceWorkOrders || []).reduce((sum, order) => sum + Math.max(0, order.workerCount || 0), 0)
+    + Array.from(state.deconstructionJobs?.values() || []).reduce((sum, job) => sum + Math.max(0, job.assignedWorkers || 0), 0)
+    + (state.constructionOrders || []).reduce((sum, order) => sum + Math.max(0, order.workerCount || 0), 0);
 
-  const totalWorkers = Math.max(0, totalCitizens - children - squadMembers - ill);
+  const totalWorkers = Math.max(0, totalCitizens - (childLabor ? 0 : children) - squadMembers - ill);
   const assignedMap = state.generalPopulation?.assignedWorkerJobs || ({} as Record<WorkerJobTypeId, number>);
   const totalAssigned = Object.values(assignedMap).reduce((sum, val) => sum + (val || 0), 0);
-  const unemployed = Math.max(0, totalWorkers - totalAssigned);
+  const unemployed = Math.max(0, totalWorkers - totalAssigned - committedWorkers);
 
   return {
     totalCitizens,
@@ -114,6 +133,7 @@ export function calculateCitizenBreakdownStats(state: SettlementState): CitizenB
     unemployed,
     totalWorkers,
     squadMembers,
+    committedWorkers,
   };
 }
 
@@ -140,7 +160,8 @@ const BUILDING_JOB_MAP: Partial<Record<FunctionalBuildingTypeId, WorkerJobTypeId
   wooden_tower: 'guard',
   metal_tower: 'guard',
   fortified_tower: 'guard',
-  floodlight_tower: 'guard',
+  // NB: floodlight_tower intentionally absent — it is powered illumination,
+  // not a garrison, so it falls through to the guardable gate below (null).
   guard_watchtower: 'guard',
   shooting_range: 'guard',
   wooden_gate: 'guard',
@@ -182,11 +203,74 @@ export function getBuildingJobForType(b: {
   const explicit = BUILDING_JOB_MAP[b.typeId];
   if (explicit) return explicit;
   if (b.category === 'food') return 'farming';
-  if (b.category === 'defense' || b.category === 'defense_towers' || b.category === 'defense_walls') return 'guard';
+  // §IFZ: only mannable defences create guard posts. Passive barriers (walls,
+  // fences, barbed wire) share the defense categories but are not firing
+  // positions — they never attract guard labour, so the colony's guards man
+  // towers and gatehouses instead of standing on a palisade run.
+  if (b.category === 'defense' || b.category === 'defense_towers' || b.category === 'defense_walls') {
+    return FUNCTIONAL_BUILDING_DEFINITIONS[b.typeId]?.guardable ? 'guard' : null;
+  }
   if (b.category === 'production') return 'factory';
   if (b.category === 'utility') return 'scientist';
   if (b.category === 'civilian') return 'nurse';
   return null;
+}
+
+/**
+ * How many construction sites may draw workers/materials simultaneously. Sites
+ * beyond this window wait in the construction queue so scarce materials and
+ * labour finish one structure before the next one starts draining them.
+ */
+export const MAX_ACTIVE_CONSTRUCTION_SITES = 3;
+
+/**
+ * Sort key for one construction site. An explicit player-set queue index wins;
+ * otherwise the order falls back to placement time (earliest first).
+ */
+export function constructionSitePriorityKey(b: { constructionPriority?: number; adaptedAt?: number }): number {
+  if (typeof b.constructionPriority === 'number') return b.constructionPriority;
+  return b.adaptedAt || 0;
+}
+
+/**
+ * All in-progress/planned construction sites ordered by construction priority
+ * (earliest first - the construction queue order) plus the active window of
+ * the first {@link MAX_ACTIVE_CONSTRUCTION_SITES} of them.
+ */
+export function getPrioritizedConstructionSites(state: SettlementState): {
+  all: AdaptedBuilding[];
+  active: AdaptedBuilding[];
+} {
+  const all = [
+    ...Array.from(state.adaptedBuildings.values()),
+    ...(state.freestandingBuildings || []),
+  ]
+    .filter((b) => b.constructionStatus === 'in_progress' || b.constructionStatus === 'planned')
+    // Stable sort: ties keep insertion order.
+    .sort((a, b) => constructionSitePriorityKey(a) - constructionSitePriorityKey(b));
+  return { all, active: all.slice(0, MAX_ACTIVE_CONSTRUCTION_SITES) };
+}
+
+/**
+ * Promotes or demotes a queued construction site, rewriting the explicit
+ * priority of every in-progress site so the new order sticks. Labour is
+ * recalculated so builders and materials reflow to the new active window.
+ */
+export function reorderConstructionQueue(
+  state: SettlementState,
+  buildingId: string | number,
+  direction: 'up' | 'down'
+): { success: boolean; newState: SettlementState } {
+  const sites = getPrioritizedConstructionSites(state).all;
+  const idx = sites.findIndex((b) => String(b.buildingId) === String(buildingId));
+  if (idx === -1) return { success: false, newState: state };
+  const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
+  if (swapIdx < 0 || swapIdx >= sites.length) return { success: false, newState: state };
+  [sites[idx], sites[swapIdx]] = [sites[swapIdx], sites[idx]];
+  for (let i = 0; i < sites.length; i++) {
+    sites[i].constructionPriority = i;
+  }
+  return { success: true, newState: recalculateLaborDistribution(state) };
 }
 
 export function getWorkerJobDemand(state: SettlementState): Record<WorkerJobTypeId, number> {
@@ -201,7 +285,7 @@ export function getWorkerJobDemand(state: SettlementState): Record<WorkerJobType
     nurse: 0,
   };
 
-  if (!state.isInitialized || !state.hq) {
+  if (!state.isInitialized || !getPrimaryHQ(state)) {
     return demand;
   }
 
@@ -210,15 +294,14 @@ export function getWorkerJobDemand(state: SettlementState): Record<WorkerJobType
     ...(state.freestandingBuildings || []),
   ];
 
-  // 1. Builder Demand
-  const inProgressBuildings = adaptedArray.filter(
-    (b) => b.constructionStatus === 'in_progress' || b.constructionStatus === 'planned'
-  );
+  // 1. Builder Demand — staff only the active construction window. Sites
+  // queued behind it don't consume builder labour until they become active.
+  const constructionQueue = getPrioritizedConstructionSites(state);
   const deconstructionJobs = Array.from(state.deconstructionJobs?.values() || []);
   const damagedBuildings = adaptedArray.filter(
     (b) => b.currentDurability < (b.maxDurability || 100)
   );
-  demand.builder = inProgressBuildings.length * 6 + deconstructionJobs.length * 4 + damagedBuildings.length * 2;
+  demand.builder = constructionQueue.active.length * 6 + deconstructionJobs.length * 4 + damagedBuildings.length * 2;
   // If no projects active, provide nominal capacity if headquarters is active
   if (demand.builder === 0 && adaptedArray.length > 0) {
     demand.builder = 10;
@@ -244,7 +327,7 @@ export function getWorkerJobDemand(state: SettlementState): Record<WorkerJobType
   }
 
   // Basic HQ baseline capacity for small colonies
-  if (state.hq) {
+  if (getPrimaryHQ(state)) {
     demand.guard = Math.max(demand.guard, 2);
     demand.builder = Math.max(demand.builder, 4);
     demand.scavenger = Math.max(demand.scavenger, 6);
@@ -587,7 +670,7 @@ export function recalculateLaborDistribution(state: SettlementState): Settlement
   };
 
   // If HQ is not established yet, all workers remain unassigned
-  if (!state.isInitialized || !state.hq) {
+  if (!state.isInitialized || !getPrimaryHQ(state)) {
     return {
       ...state,
       generalPopulation: {
@@ -603,9 +686,16 @@ export function recalculateLaborDistribution(state: SettlementState): Settlement
     };
   }
 
+  // Resource-gathering orders reserve citizens before normal base labour
+  // allocation. They are explicit commitments, not a base job priority.
+  const committedWorkers = (state.resourceWorkOrders || []).reduce(
+    (sum, order) => sum + Math.max(0, order.workerCount || 0),
+    0
+  );
+
   // Group jobs by priority level (4 = Urgent ^^, 3 = High ^, 2 = Normal =, 1 = Low v)
   // Priority 0 = Disabled
-  let remainingWorkers = totalAvailableWorkers;
+  let remainingWorkers = Math.max(0, totalAvailableWorkers - committedWorkers);
 
   for (let priorityLevel = 4; priorityLevel >= 1; priorityLevel--) {
     if (remainingWorkers <= 0) break;
@@ -658,19 +748,23 @@ export function recalculateLaborDistribution(state: SettlementState): Settlement
     }
   }
 
-  // Update physical site assignments for construction
+  // Update physical site assignments for construction — builders are assigned
+  // only to sites inside the active construction window. Sites queued behind
+  // the window are cleared to zero workers and hold until they become active.
   const adaptedArray = [
     ...Array.from(state.adaptedBuildings.values()),
     ...(state.freestandingBuildings || []),
   ];
-  const inProgressBuildings = adaptedArray.filter(
-    (b) => b.constructionStatus === 'in_progress' || b.constructionStatus === 'planned'
-  );
+  const constructionQueue = getPrioritizedConstructionSites(state);
+  const activeConstructionIds = new Set(constructionQueue.active.map((b) => String(b.buildingId)));
+  for (const b of constructionQueue.all) {
+    if (!activeConstructionIds.has(String(b.buildingId))) b.assignedWorkers = 0;
+  }
   const deconstructionJobs = Array.from(state.deconstructionJobs?.values() || []);
   const totalConstructionWorkers = assignedWorkerJobs.builder;
 
   const workSites: { assign: (workers: number) => void; cap: number }[] = [
-    ...inProgressBuildings.map((b) => ({
+    ...constructionQueue.active.map((b) => ({
       assign: (w: number) => {
         b.assignedWorkers = w;
       },
@@ -699,7 +793,7 @@ export function recalculateLaborDistribution(state: SettlementState): Settlement
   // job (above) are spread across that job's buildings, each capped at its
   // size-based worker slots. This is what makes "workers go to buildings" — a
   // field with slots but no farming labour produces nothing.
-  const completedSites = adaptedArray.filter((b) => b.constructionStatus === 'completed');
+  const completedSites = adaptedArray.filter((b) => isBuildingOperational(b));
   const jobSites = new Map<WorkerJobTypeId, AdaptedBuilding[]>();
   for (const b of completedSites) {
     const job = getBuildingJobForType(b);
@@ -941,7 +1035,8 @@ export function createSquad(
   state: SettlementState,
   squadName: string,
   leaderId: string,
-  generalCount = 0
+  generalCount = 0,
+  weaponLoadout: SquadWeaponLoadout = 'knife'
 ): { success: boolean; newState: SettlementState; error?: string } {
   // Check squad capacity limit
   if (state.squads.length >= state.squadCapacity) {
@@ -986,6 +1081,7 @@ export function createSquad(
     name: squadName.trim() || `Recon Squad ${cleanedState.squads.length + 1}`,
     // Empty leaderId = leaderless squad led by a generic field leader.
     leaderId: hasNamedLeader ? leader!.id : '',
+    weaponLoadout,
     generalCount: clampedGeneral,
     status: 'idle',
     inventory: [],
@@ -1212,12 +1308,75 @@ export function tickSettlementSimulation(
   let stateChanged = false;
 
   // 1. Advance Construction Work Orders & Sites (§4.6, §7.1)
-  const activeOrders = state.constructionOrders ? [...state.constructionOrders] : [];
+  const allBuildings = [...state.adaptedBuildings.values(), ...(state.freestandingBuildings || [])];
+  // Construction queue: only the active window of sites (earliest-placed
+  // first) draws labour and materials this tick. Scarcity therefore completes
+  // one structure before the next one starts draining the shared stockpile.
+  const constructionQueue = getPrioritizedConstructionSites(state);
+  const activeConstructionIds = new Set(constructionQueue.active.map((b) => String(b.buildingId)));
+  // Process orders in construction-queue order so material grants go to the
+  // highest-priority project first within each tick.
+  const bldgPriority = new Map<
+    string,
+    number
+  >();
+  for (const b of allBuildings) bldgPriority.set(String(b.buildingId), constructionSitePriorityKey(b));
+  const activeOrders = (state.constructionOrders ? [...state.constructionOrders] : []).sort(
+    (a, b) => (bldgPriority.get(String(a.buildingId)) || 0) - (bldgPriority.get(String(b.buildingId)) || 0)
+  );
   const updatedOrders: ConstructionWorkOrder[] = [];
-  const hqCenter = state.hq?.center || { x: 0, z: 0 };
+  // Each operational, staffed Repairmen Shop contributes a finite automated
+  // repair crew. Crews are assigned deterministically to the most damaged
+  // structures first and do not consume ordinary building labour.
+  const repairCrewCapacity = allBuildings
+    .filter((b) => b.typeId === 'repairmen_shop' && isBuildingOperational(b))
+    .reduce((sum, shop) => sum + Math.max(0, shop.assignedWorkers || 0), 0);
+  if (repairCrewCapacity > 0) {
+    // Maintenance priority (§Terminus Repairmen network): crews choose jobs by
+    // structural importance FIRST — Emergency (HQ, gates, towers, generators,
+    // hospitals) → High (warehouse, water) → Normal (production) → Low
+    // (housing) — and the most damaged structure within each band next.
+    const maintenanceBand = (b: { typeId: string }): number => {
+      const t = b.typeId;
+      if (['headquarters', 'wooden_gate', 'metal_gate', 'fortified_gate', 'wooden_tower', 'metal_tower', 'fortified_tower', 'floodlight_tower', 'generator_station', 'hospital'].includes(t)) return 0;
+      if (['warehouse', 'water_cistern', 'medbay', 'research_center', 'antenna', 'weather_center'].includes(t)) return 1;
+      if (['field', 'greenhouse', 'barn', 'cookhouse', 'cannery', 'tool_factory', 'sawmill', 'scrapyard', 'clay_pit', 'arms_factory', 'chemical_plant', 'vehicle_workshop', 'repairmen_shop'].includes(t)) return 2;
+      return 3;
+    };
+    const automaticTargets = allBuildings
+      .filter((b) => b.typeId !== 'repairmen_shop' && b.currentDurability < b.maxDurability && !b.isUnderRepair)
+      .sort((a, b) => {
+        const bandDiff = maintenanceBand(a) - maintenanceBand(b);
+        if (bandDiff !== 0) return bandDiff;
+        return (a.currentDurability / Math.max(1, a.maxDurability)) - (b.currentDurability / Math.max(1, b.maxDurability));
+      })
+      .slice(0, repairCrewCapacity);
+    for (const building of automaticTargets) {
+      const cost = {
+        woodCost: Math.max(2, Math.round(15 * ((building.maxDurability - building.currentDurability) / building.maxDurability))),
+        metalCost: Math.max(1, Math.round(10 * ((building.maxDurability - building.currentDurability) / building.maxDurability))),
+        bricksCost: Math.max(1, Math.round(8 * ((building.maxDurability - building.currentDurability) / building.maxDurability))),
+      };
+      const stock = state.stockpile.materials;
+      if (stock.wood < cost.woodCost || stock.metal < cost.metalCost || stock.bricks < cost.bricksCost) continue;
+      stock.wood -= cost.woodCost;
+      stock.metal -= cost.metalCost;
+      stock.bricks -= cost.bricksCost;
+      building.isUnderRepair = true;
+      building.repairProgress = 0;
+      building.repairWorkRequired = Math.max(20, building.maxDurability - building.currentDurability);
+      building.repairWorkDone = 0;
+    }
+  }
+  const hqCenter = getPrimaryHQ(state)?.center || { x: 0, z: 0 };
   const moraleProductivity = state.morale?.modifiers.productivityMultiplier || 1.0;
 
-  // Process existing orders
+  // Set once a higher-priority project could not be fully supplied this tick:
+  // the remaining stockpile is reserved for it, so later projects hold.
+  let materialsReserved = false;
+
+  // Process existing orders — in construction-queue order (earliest first), so
+  // scarce materials complete one structure before the next begins draining.
   for (const order of activeOrders) {
     // At night crews have returned to shelter/HQ — construction holds until dawn.
     if (isNight) {
@@ -1229,7 +1388,19 @@ export function tickSettlementSimulation(
       state.adaptedBuildings.get(order.buildingId) ||
       state.freestandingBuildings.find((f) => f.buildingId === order.buildingId);
 
-    if (!bldg || bldg.constructionStatus === 'completed') {
+    // A construction crew only abandons the site when the structure is gone,
+    // destroyed, or under repair. In-progress/planned sites must NOT be sent
+    // home — otherwise construction can never advance (the order would bounce
+    // between returning and traveling without ever reaching 'constructing').
+    const siteWorkable = Boolean(
+      bldg &&
+      bldg.currentDurability > 0 &&
+      !bldg.isUnderRepair &&
+      (bldg.constructionStatus === 'in_progress' ||
+        bldg.constructionStatus === 'planned' ||
+        bldg.constructionStatus === 'completed')
+    );
+    if (!siteWorkable) {
       if (order.state !== 'returning') {
         order.state = 'returning';
       }
@@ -1252,9 +1423,15 @@ export function tickSettlementSimulation(
       updatedOrders.push(order);
     } else if (order.state === 'constructing' || order.state === 'paused_materials') {
       if (bldg && (bldg.constructionStatus === 'in_progress' || bldg.constructionStatus === 'planned')) {
-        bldg.constructionStatus = 'in_progress';
-        const assignedWorkers = Math.max(1, order.workerCount || bldg.assignedWorkers || 1);
-
+        bldg.constructionStatus = 'in_progress';        // Construction labour is controlled by the live labour distribution.
+        // Never fall back to the order's creation-time worker count or force one
+        // worker: zero assigned builders must pause the project.
+        const assignedWorkers = Math.max(0, bldg.assignedWorkers || 0);
+        if (assignedWorkers <= 0) {
+          order.state = 'paused_materials';
+          updatedOrders.push(order);
+          continue;
+        }
         let workDonePerSec = assignedWorkers * 3.0;
         if (bldg.assignedHeadId) {
           const head = state.namedSurvivors.find((s) => s.id === bldg.assignedHeadId);
@@ -1272,42 +1449,95 @@ export function tickSettlementSimulation(
         const targetProgress = Math.min(100, (targetWork / totalReq) * 100);
 
         // Calculate material cost required for this delta step
-        const woodTarget = (order.totalCost.wood * targetProgress) / 100;
-        const metalTarget = (order.totalCost.metal * targetProgress) / 100;
-        const bricksTarget = (order.totalCost.bricks * targetProgress) / 100;
-
-        const woodDelta = Math.max(0, woodTarget - order.deductedCost.wood);
-        const metalDelta = Math.max(0, metalTarget - order.deductedCost.metal);
-        const bricksDelta = Math.max(0, bricksTarget - order.deductedCost.bricks);
-
-        const hasWood = state.stockpile.materials.wood >= woodDelta;
-        const hasMetal = state.stockpile.materials.metal >= metalDelta;
-        const hasBricks = state.stockpile.materials.bricks >= bricksDelta;
-
-        if (hasWood && hasMetal && hasBricks) {
-          // Deduct progressive resources from stockpile
-          state.stockpile.materials.wood = Math.max(0, state.stockpile.materials.wood - woodDelta);
-          state.stockpile.materials.metal = Math.max(0, state.stockpile.materials.metal - metalDelta);
-          state.stockpile.materials.bricks = Math.max(0, state.stockpile.materials.bricks - bricksDelta);
-
-          order.deductedCost.wood += woodDelta;
-          order.deductedCost.metal += metalDelta;
-          order.deductedCost.bricks += bricksDelta;
-
-          bldg.constructionWorkDone = targetWork;
-          bldg.constructionProgress = Math.round(targetProgress);
-          order.progress = Math.round(targetProgress);
-          order.state = 'constructing';
-
-          if (bldg.constructionProgress >= 100) {
-            bldg.constructionStatus = 'completed';
-            completedConstructions.push(bldg.name);
-            order.state = 'returning';
-            stateChanged = true;
-          }
-        } else {
-          // Insufficient resources in stockpile — pause until materials arrive
+        const costTargets = {
+          wood: (order.totalCost.wood * targetProgress) / 100,
+          metal: (order.totalCost.metal * targetProgress) / 100,
+          bricks: (order.totalCost.bricks * targetProgress) / 100,
+          tools: ((order.totalCost.tools || 0) * targetProgress) / 100,
+        };
+        const deducted = order.deductedCost;
+        const deltas = {
+          wood: Math.max(0, costTargets.wood - (deducted.wood || 0)),
+          metal: Math.max(0, costTargets.metal - (deducted.metal || 0)),
+          bricks: Math.max(0, costTargets.bricks - (deducted.bricks || 0)),
+          tools: Math.max(0, costTargets.tools - (deducted.tools || 0)),
+        };
+        // Only the active construction window draws labour/materials this
+        // tick; queued structures hold. A higher-priority project that is
+        // short on materials also reserves the remaining stockpile so scarce
+        // resources never spread across several half-built structures.
+        if (!activeConstructionIds.has(String(bldg.buildingId)) || materialsReserved) {
           order.state = 'paused_materials';
+          updatedOrders.push(order);
+          continue;
+        }
+
+        // Grant materials in priority order. The project receives as much of
+        // its delta as the stockpile can currently cover; if that is short of
+        // its full need, the remaining stock is reserved for it and work
+        // advances only by the granted share.
+        const grantKeys = ['wood', 'metal', 'bricks', 'tools'] as const;
+        const granted: Record<string, number> = { wood: 0, metal: 0, bricks: 0, tools: 0 };
+        let materialShort = false;
+        for (const key of grantKeys) {
+          const need = deltas[key] || 0;
+          if (need <= 0) continue;
+          const have = state.stockpile.materials[key] || 0;
+          granted[key] = Math.max(0, Math.min(need, have));
+          if (granted[key] < need - 1e-9) materialShort = true;
+        }
+        // Under scarcity, the earliest unfinished structure owns the available
+        // stockpile: if it cannot be finished from current stock, later
+        // projects hold entirely so materials accumulate until it completes
+        // (IFZ-style — a crew carries materials to one building at a time).
+        const remainingCost = {
+          wood: Math.max(0, (order.totalCost.wood || 0) - (order.deductedCost.wood || 0)),
+          metal: Math.max(0, (order.totalCost.metal || 0) - (order.deductedCost.metal || 0)),
+          bricks: Math.max(0, (order.totalCost.bricks || 0) - (order.deductedCost.bricks || 0)),
+          tools: Math.max(0, (order.totalCost.tools || 0) - (order.deductedCost.tools || 0)),
+        };
+        let scarcityHeld = false;
+        for (const key of grantKeys) {
+          const stillNeeded = remainingCost[key];
+          if (stillNeeded <= 0) continue;
+          if ((state.stockpile.materials[key] || 0) < stillNeeded) {
+            scarcityHeld = true;
+            break;
+          }
+        }
+        if (materialShort || scarcityHeld) materialsReserved = true;
+
+        let ratio = 1;
+        for (const key of grantKeys) {
+          const need = deltas[key] || 0;
+          if (need <= 0) continue;
+          ratio = Math.min(ratio, granted[key] / need);
+        }
+        ratio = Math.max(0, ratio);
+        if (ratio <= 0) {
+          order.state = 'paused_materials';
+          updatedOrders.push(order);
+          continue;
+        }
+
+        // Deduct exactly what was granted; work advances by the granted share.
+        for (const key of grantKeys) {
+          const g = granted[key] || 0;
+          if (g <= 0) continue;
+          state.stockpile.materials[key] = Math.max(0, (state.stockpile.materials[key] || 0) - g);
+          order.deductedCost[key] = (order.deductedCost[key] || 0) + g;
+        }
+
+        bldg.constructionWorkDone = Math.min(totalReq, currentWork + workDonePerSec * deltaSeconds * ratio);
+        bldg.constructionProgress = Math.round(Math.min(100, (bldg.constructionWorkDone / totalReq) * 100));
+        order.progress = bldg.constructionProgress;
+        order.state = 'constructing';
+
+        if (bldg.constructionProgress >= 100) {
+          bldg.constructionStatus = 'completed';
+          completedConstructions.push(bldg.name);
+          order.state = 'returning';
+          stateChanged = true;
         }
       }
       updatedOrders.push(order);
@@ -1340,12 +1570,12 @@ export function tickSettlementSimulation(
         id: `const_${bldg.buildingId}_${Date.now()}`,
         buildingId: bldg.buildingId,
         buildingName: bldg.name,
-        workerCount: Math.max(1, bldg.assignedWorkers || 1),
+        workerCount: Math.max(0, bldg.assignedWorkers || 0),
         state: 'traveling',
         position: { ...hqCenter },
         targetPosition: { ...bldg.position },
         totalCost: cost,
-        deductedCost: { wood: 0, metal: 0, bricks: 0 },
+        deductedCost: { wood: 0, metal: 0, bricks: 0, tools: 0 },
         progress: bldg.constructionProgress || 0,
         createdAt: Date.now(),
       };
@@ -1361,21 +1591,95 @@ export function tickSettlementSimulation(
   // 1b. Advance Deconstruction Jobs (§7.2) — mirrors construction, but recovers
   // materials. Holds at night while workers are sheltered.
   const completedDeconIds: (string | number)[] = [];
+  // Recovered materials that could not fit because the storage ceiling was full.
+  let deconOverflowAccrued = 0;
+  let deconFieldLootPiles = state.fieldLootPiles || [];
 
   if (!isNight) {
   for (const job of state.deconstructionJobs.values()) {
     const assignedWorkers = job.assignedWorkers || 0;
-    let workDonePerSec = assignedWorkers * 2.5;
-    workDonePerSec *= moraleProductivity;
-    if (workDonePerSec === 0) workDonePerSec = 0.5 * moraleProductivity;
+    if (job.state === 'returning') {
+      const stepRes = stepAlongPath(
+        grid, (job as any).pathState, job.position.x, job.position.z,
+        hqCenter.x, hqCenter.z, 6.0, deltaSeconds, 3.0
+      );
+      job.position = { x: stepRes.x, z: stepRes.z };
+      (job as any).pathState = stepRes.state;
+      if (stepRes.arrived) {
+        // Finite stockpile: deposit only what fits. If the ceiling blocks part
+        // of the load, the crew keeps it at HQ and the job stays 'returning',
+        // retrying each tick as capacity frees — nothing is dumped past STO.
+        const load = {
+          wood: job.carriedMaterials?.wood || 0,
+          metal: job.carriedMaterials?.metal || 0,
+          bricks: job.carriedMaterials?.bricks || 0,
+        };
+        const { overflow } = depositWithinCapacity(
+          state.stockpile,
+          state.totalStorageCapacity ?? Infinity,
+          { materials: load }
+        );
+        const ovf = (overflow as any)?.materials as Partial<{ wood: number; metal: number; bricks: number }> | undefined;
+        const overflowUnits = (ovf?.wood || 0) + (ovf?.metal || 0) + (ovf?.bricks || 0);
+        if (overflowUnits > 0) {
+          if (!job.depositBlocked) {
+            job.depositBlocked = true;
+            deconOverflowAccrued += overflowUnits;
+          }
+          job.carriedMaterials = {
+            wood: ovf?.wood || 0,
+            metal: ovf?.metal || 0,
+            bricks: ovf?.bricks || 0,
+          };
+        } else {
+          job.depositBlocked = false;
+          job.carriedMaterials = undefined;
+          completedDeconIds.push(job.buildingId);
+        }
+      }
+      continue;
+    }
+    const workDonePerSec = assignedWorkers * 2.5 * moraleProductivity;
+    // Deconstruction is fully labour-controlled: an unstaffed job must not
+    // advance or complete by itself.
+    if (workDonePerSec <= 0) continue;
 
     job.workDone += workDonePerSec * deltaSeconds;
     job.progressPct = Math.min(100, Math.round((job.workDone / job.workRequired) * 100));
 
     if (job.progressPct >= 100) {
+      // Deposit the recovered load capacity-aware right at the worksite: what
+      // fits enters the stockpile now, anything past the ceiling is stranded
+      // as a recoverable field-loot pile at the demolition site and the crew
+      // is done (no HQ return needed for stranded material).
+      const load = {
+        wood: job.recoverWood,
+        metal: job.recoverMetal,
+        bricks: job.recoverBricks,
+      };
+      const { overflow } = depositWithinCapacity(state.stockpile, state.totalStorageCapacity ?? Infinity, { materials: load });
+      const ovf = (overflow as any)?.materials as Partial<{ wood: number; metal: number; bricks: number }> | undefined;
+      const overflowUnits = (ovf?.wood || 0) + (ovf?.metal || 0) + (ovf?.bricks || 0);
+      if (overflowUnits > 0) {
+        deconFieldLootPiles = strandMaterialsAt(
+          deconFieldLootPiles,
+          { x: job.position.x, z: job.position.z },
+          { wood: ovf?.wood || 0, metal: ovf?.metal || 0, bricks: ovf?.bricks || 0 },
+          'deconstruction'
+        );
+        deconOverflowAccrued += overflowUnits;
+      }
+      job.state = undefined;
+      job.carriedMaterials = undefined;
+      (job as any).pathState = undefined;
       completedDeconIds.push(job.buildingId);
     }
   }
+  }
+  // Recovered materials that a full storage ceiling blocks surface as
+  // overflow even when no job completed this tick (blocked crews hold on).
+  if (deconOverflowAccrued > 0) {
+    state.overflowLootUnits = (state.overflowLootUnits || 0) + deconOverflowAccrued;
   }
 
   if (completedDeconIds.length > 0) {
@@ -1397,11 +1701,8 @@ export function tickSettlementSimulation(
         bricks: job.recoverBricks,
       });
 
-      // Grant recovered materials to the stockpile (§7.2)
-      state.stockpile.materials.wood += job.recoverWood;
-      state.stockpile.materials.metal += job.recoverMetal;
-      state.stockpile.materials.bricks += job.recoverBricks;
-
+      // Materials are deposited when the crew reaches HQ, not when dismantling
+      // finishes. The returning phase removes this job after physical delivery.
       newJobs.delete(id);
       newDemolished.set(id, true);
 
@@ -1418,33 +1719,71 @@ export function tickSettlementSimulation(
     state.freestandingBuildings = newFreestanding;
     state.deconstructionJobs = newJobs;
     state.demolishedBuildings = newDemolished;
+    if (deconFieldLootPiles.length > 0) state.fieldLootPiles = deconFieldLootPiles;
 
-    const stats = (() => {
-      let storageCap = 250;
-      let livingCap = 0;
-      let defenseRating = 0;
-      let squadCapacity = 2;
-      if (state.hq) {
-        storageCap += Math.round(state.hq.footprintAreaM2 * 0.5);
-        livingCap += Math.max(2, state.hq.maxCapacity || Math.floor(state.hq.footprintAreaM2 / 20));
-        defenseRating += state.hq.defenseRating;
-      }
-      const all = [...Array.from(newAdapted.values()), ...newFreestanding];
-      for (const b of all) {
-        defenseRating += b.defenseRating;
-        if (b.typeId === 'storage_depot') storageCap += b.maxCapacity;
-        else if (b.typeId === 'shelter_bunkhouse') livingCap += b.maxCapacity;
-        if (b.typeId === 'squad_quarters') {
-          squadCapacity += FUNCTIONAL_BUILDING_DEFINITIONS[b.typeId]?.squadCapacity || 1;
-        }
-      }
-      return { storageCap, livingCap, defenseRating, squadCapacity };
-    })();
+    // ONE authoritative settlement-stat calculation — the same
+    // recalculateSettlementStats() every construction/adaptation path uses.
+    // The inline copy kept here previously only recognised a handful of
+    // building types (storage_depot / shelter_bunkhouse / squad_quarters), so
+    // demolishing any building could silently drop Warehouses, Shelters,
+    // Houses, extra HQs and non-operational defense from the totals.
+    const stats = recalculateSettlementStats(
+      state.headquarters,
+      state.primaryHQId,
+      newAdapted,
+      newFreestanding
+    );
 
     state.totalStorageCapacity = stats.storageCap;
     state.totalLivingCapacity = stats.livingCap;
     state.totalDefenseRating = stats.defenseRating;
     state.squadCapacity = stats.squadCapacity;
+  }
+
+  // 1c. Medbay production and treatment. Medical buildings require assigned
+  // nurses and consume sterile bandages to manufacture first-aid kits.
+  if (!isNight) {
+    for (const building of allBuildings) {
+      if (!isBuildingOperational(building) || !['medbay', 'infirmary_clinic', 'hospital'].includes(building.typeId)) continue;
+      const staff = Math.max(0, building.assignedWorkers || 0);
+      if (staff <= 0) continue;
+      const producedKits = staff * (building.typeId === 'hospital' ? 0.5 : 0.35) * (deltaSeconds / 600);
+      const bandagesNeeded = producedKits * 2;
+      // Storage pre-check: don't burn bandages unless the finished kits fit —
+      // consuming inputs for output that can't be stored is an economic sink.
+      const free = Math.max(0, (state.totalStorageCapacity ?? Infinity) - getStockpileUnits(state.stockpile));
+      if ((state.stockpile.medical.sterile_bandages || 0) >= bandagesNeeded && free >= producedKits) {
+        state.stockpile.medical.sterile_bandages -= bandagesNeeded;
+        state.stockpile.medical.first_aid_kits += producedKits;
+        stateChanged = true;
+      }
+    }
+  }
+
+  // 1d. Advance manual building repairs. Repair work is governed by the same
+  // live builder assignment used by construction; zero builders means no work.
+  // Iterates BOTH adapted and freestanding structures — a damaged Watchtower
+  // or Wall receives manual repair exactly like an adapted Warehouse.
+  if (!isNight) {
+    for (const building of allBuildings) {
+      if (!building.isUnderRepair) continue;
+      const required = building.repairWorkRequired || Math.max(20, building.maxDurability - building.currentDurability);
+      const workers = building.isUnderRepair && repairCrewCapacity > 0 && (building.assignedWorkers || 0) <= 0
+        ? 1
+        : Math.max(0, building.assignedWorkers || 0);
+      if (workers <= 0) continue;
+      const work = workers * 3 * moraleProductivity * deltaSeconds;
+      building.repairWorkDone = Math.min(required, (building.repairWorkDone || 0) + work);
+      building.repairProgress = Math.round((building.repairWorkDone / required) * 100);
+      if (building.repairWorkDone >= required) {
+        building.currentDurability = building.maxDurability;
+        building.isUnderRepair = false;
+        building.repairProgress = 100;
+        stateChanged = true;
+      } else {
+        stateChanged = true;
+      }
+    }
   }
 
   // 1c. Building Production (§7.2) — completed buildings convert their inputs to
@@ -1466,6 +1805,10 @@ export function tickSettlementSimulation(
       tools: ['materials', 'tools'],
       fertilizer: ['materials', 'fertilizer'],
       beer: ['materials', 'beer'],
+      scientific_materials: ['materials', 'scientific_materials'],
+      clay: ['materials', 'clay'],
+      logs: ['materials', 'logs'],
+      scrap: ['materials', 'scrap'],
       fuel: ['fuel', 'gasoline'],
       ammo: ['ammo', 'sharedPool'],
     };
@@ -1475,23 +1818,13 @@ export function tickSettlementSimulation(
       return (state.stockpile[p[0]] as any)[p[1]] ?? 0;
     };
     // Total item units currently held — the same unit totalStorageCapacity uses.
-    // Defined locally to avoid a circular import with settlementService.
-    const stockpileUnits = (): number => {
-      let units = 0;
-      for (const category of Object.values(state.stockpile)) {
-        for (const value of Object.values(category as Record<string, number>)) {
-          if (typeof value === 'number') units += value;
-        }
-      }
-      return units;
-    };
     const addRes = (res: string, amount: number) => {
       const p = RESOURCE_PATHS[res];
       if (!p) return;
       if (amount > 0) {
-        // Finite physical storage: production gains stop at the capacity
-        // ceiling. Inputs/consumption (negative amounts) always apply.
-        const free = Math.max(0, state.totalStorageCapacity - stockpileUnits());
+        // Belt-and-braces clamp on top of the pre-consumption capacity check
+        // below (production gains never push past the ceiling).
+        const free = Math.max(0, state.totalStorageCapacity - getStockpileUnits(state.stockpile));
         amount = Math.min(amount, free);
         if (amount <= 0) return;
       }
@@ -1504,37 +1837,172 @@ export function tickSettlementSimulation(
     const productionBuildings = [
       ...Array.from(state.adaptedBuildings.values()),
       ...(state.freestandingBuildings || []),
-    ].filter((b) => b.constructionStatus === 'completed');
+    ].filter((b) => isBuildingOperational(b));
+    // §Terminus power grid: powered facilities run their machines 25% harder.
+    const poweredIds = getPoweredBuildingIds(state);
 
     for (const b of productionBuildings) {
       const def = FUNCTIONAL_BUILDING_DEFINITIONS[b.typeId];
-      if (!def || !def.outputs || def.outputs.length === 0) continue;
+      const recipes = def?.recipes?.length ? def.recipes : (def?.outputs?.length ? [{ id: 'default', name: 'Default', inputs: def.inputs || [], outputs: def.outputs }] : []);
+      if (!def || recipes.length === 0) continue;
       const slots = getBuildingWorkerSlots(b);
       const staff = Math.min(b.assignedWorkers ?? 0, slots);
       if (staff <= 0) continue;
       const staffRatio = staff / Math.max(1, slots);
 
-      // Input availability limits output (e.g. a Barn needs Grain feed).
+      // Recipe selection is the player's choice, persisted per building in
+      // `selectedRecipeId`. A single-recipe facility always runs its one
+      // recipe. With an explicit choice the crew runs ONLY that recipe — if
+      // its inputs are short the building idles rather than silently swapping
+      // to something else. Legacy saves without a choice fall back to the
+      // first affordable recipe.
+      // §IFZ gear lines: a production line is gated by its own research node
+      // (e.g. each Arms Factory firearm sits behind the weapon's research), so
+      // research genuinely unlocks what the factory can manufacture — a locked
+      // line never runs, even if a legacy save somehow had it selected.
+      const researchOk = (r: ProductionRecipe) =>
+        !r.researchRequirement || isResearchUnlocked(state, r.researchRequirement);
+      let recipe: ProductionRecipe | null;
+      if (recipes.length === 1) {
+        recipe = researchOk(recipes[0]) ? recipes[0] : null;
+      } else if (b.selectedRecipeId) {
+        const chosen = recipes.find((r) => r.id === b.selectedRecipeId);
+        recipe =
+          chosen &&
+          researchOk(chosen) &&
+          chosen.inputs.every((inp) => getRes(inp.resource) >= inp.amountPerDay * dayFraction)
+            ? chosen
+            : null;
+      } else {
+        recipe =
+          recipes.find((candidate) =>
+            researchOk(candidate) &&
+            candidate.inputs.every((inp) => getRes(inp.resource) >= inp.amountPerDay * dayFraction)
+          ) || null;
+      }
+      if (!recipe) continue;
       let inputRatio = 1;
-      for (const inp of def.inputs || []) {
+      for (const inp of recipe.inputs) {
         const need = inp.amountPerDay * dayFraction;
         if (need <= 0) continue;
         const avail = getRes(inp.resource);
         inputRatio = Math.min(inputRatio, avail / need);
       }
+      const isAgriculture = b.typeId === 'field' || b.typeId === 'vast_field' || b.typeId === 'greenhouse' || b.typeId === 'greenhouse_hydro';
+      const weatherMultiplier = isAgriculture && b.typeId !== 'greenhouse' && b.typeId !== 'greenhouse_hydro'
+        ? calculateCropYieldFactors(
+            state.weather?.currentSeason || 'summer',
+            state.weather?.currentWeather || 'clear',
+            state
+          ).outdoorMultiplier
+        : 1;
+      // Fertilizer is CONSUMED, not a permanent aura: a plot only enjoys the
+      // ×1.75 yield when the player toggled fertilization on AND the whole
+      // day's allotment is in the stockpile. Short supply = an unfertilized
+      // cycle (no consumption, no bonus). One Barn's daily 1 Fertilizer keeps
+      // two standard plots fed. Consumption happens only after the cycle is
+      // confirmed to run, so a blocked cycle never wastes fertilizer.
+      const FERTILIZER_PER_DAY = 0.5;
+      const wantsFertilizer = isAgriculture && (b as AdaptedBuilding).isFertilized === true;
+      const fertNeed = FERTILIZER_PER_DAY * dayFraction;
+      const canFertilize =
+        wantsFertilizer &&
+        fertNeed > 0 &&
+        (state.stockpile.materials.fertilizer || 0) >= fertNeed;
+      const fertilizerBonus = canFertilize ? 1.75 : 1;
       const ratio = Math.max(0, Math.min(staffRatio, inputRatio));
       if (ratio <= 0) continue;
 
-      for (const inp of def.inputs || []) {
+      // Gear line (§IFZ Arms Factory / Protective Gear Factory): the crew
+      // consumes the material flows continuously, and each full unit of work
+      // lands ONE real weapon/armor item in the colony armory (armory gear has
+      // no stockpile ceiling — items are assigned to squads/towers from there).
+      // Progress is tracked per line id on the building, so switching recipes
+      // preserves each line's partial work instead of discarding it.
+      if (recipe.gear) {
+        for (const inp of recipe.inputs) {
+          addRes(inp.resource, -inp.amountPerDay * dayFraction * ratio);
+        }
+        const gearMultiplier =
+          moraleProductivity * (poweredIds.has(String(b.buildingId)) ? 1.25 : 1);
+        const progress = (b.craftProgress && b.craftProgress[recipe.id]) || 0;
+        const nextProgress = progress + 1 * dayFraction * ratio * gearMultiplier;
+        const completed = Math.floor(nextProgress + 1e-9);
+        if (completed >= 1) {
+          if (!state.armory) state.armory = { weapons: [], armor: [] };
+          for (let i = 0; i < completed; i++) {
+            if (recipe.gear.kind === 'weapon') {
+              state.armory.weapons.push(recipe.gear.itemId as WeaponItemId);
+            } else {
+              state.armory.armor.push(recipe.gear.itemId as ArmorItemId);
+            }
+          }
+          stateChanged = true;
+        }
+        b.craftProgress = {
+          ...(b.craftProgress || {}),
+          [recipe.id]: Math.max(0, nextProgress - completed),
+        };
+        continue;
+      }
+
+      // Storage pre-check BEFORE consuming anything: if this cycle's full
+      // scaled output cannot fit in the stockpile, skip it entirely. Running
+      // the cycle would consume inputs for output that gets truncated to zero
+      // (an economic sink) — better to keep the inputs and idle the building.
+      const poweredBonus = poweredIds.has(String(b.buildingId)) ? 1.25 : 1;
+      const outputMultiplier = (isAgriculture ? weatherMultiplier * fertilizerBonus : 1) * moraleProductivity * poweredBonus;
+      let outputUnits = 0;
+      for (const out of recipe.outputs) {
+        const amount = out.amountPerDay * dayFraction * ratio * outputMultiplier;
+        if (amount > 0) outputUnits += amount;
+      }
+      if (outputUnits > 0) {
+        const free = Math.max(0, (state.totalStorageCapacity ?? Infinity) - getStockpileUnits(state.stockpile));
+        if (outputUnits > free) continue;
+      }
+
+      for (const inp of recipe.inputs) {
         addRes(inp.resource, -inp.amountPerDay * dayFraction * ratio);
       }
-      for (const out of def.outputs) {
-        addRes(out.resource, out.amountPerDay * dayFraction * ratio);
+      if (canFertilize) {
+        addRes('fertilizer', -fertNeed);
+      }
+      for (const out of recipe.outputs) {
+        // All production follows the same efficiency chain: recipe output,
+        // staffing, colony morale, then any agriculture-specific modifiers.
+        addRes(out.resource, out.amountPerDay * dayFraction * ratio * outputMultiplier);
       }
       stateChanged = true;
     }
   }
 
+
+  // Operational state is the single authority for settlement stats: recompute
+  // them EVERY tick so a building destroyed/breached in combat (its durability
+  // lands in the shared objects a pipeline pass earlier), stalled in repair, or
+  // just completed construction stops or starts contributing defense, storage,
+  // living and squad capacity immediately — not just on the next player build
+  // or demolition action. recalculateSettlementStats is cheap (one pass over
+  // the building list), so this is not a hot path.
+  const freshStats = recalculateSettlementStats(
+    state.headquarters,
+    state.primaryHQId,
+    state.adaptedBuildings,
+    state.freestandingBuildings
+  );
+  if (
+    freshStats.storageCap !== state.totalStorageCapacity ||
+    freshStats.livingCap !== state.totalLivingCapacity ||
+    freshStats.defenseRating !== state.totalDefenseRating ||
+    freshStats.squadCapacity !== state.squadCapacity
+  ) {
+    state.totalStorageCapacity = freshStats.storageCap;
+    state.totalLivingCapacity = freshStats.livingCap;
+    state.totalDefenseRating = freshStats.defenseRating;
+    state.squadCapacity = freshStats.squadCapacity;
+    stateChanged = true;
+  }
 
   if (stateChanged) {
     const intermediate: SettlementState = {

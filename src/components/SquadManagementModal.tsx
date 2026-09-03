@@ -50,6 +50,7 @@ export const SquadManagementModal: React.FC<SquadManagementModalProps> = ({
  const [newSquadName, setNewSquadName] = useState('');
  const [selectedLeaderId, setSelectedLeaderId] = useState('');
  const [newGeneralCount, setNewGeneralCount] = useState(1);
+ const [weaponLoadout, setWeaponLoadout] = useState<'knife' | 'pistol' | 'shotgun' | 'assault_rifle'>('knife');
  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
  if (!isOpen) return null;
@@ -95,13 +96,15 @@ export const SquadManagementModal: React.FC<SquadManagementModalProps> = ({
  onCreateSquad(
  newSquadName.trim() || `Tactical Squad ${squads.length + 1}`,
  leaderIdToUse,
- validGeneralCount
+ validGeneralCount,
+ weaponLoadout
  );
 
  setIsFormingNew(false);
  setNewSquadName('');
  setSelectedLeaderId('');
  setNewGeneralCount(1);
+ setWeaponLoadout('knife');
  };
 
  return (
@@ -240,6 +243,13 @@ export const SquadManagementModal: React.FC<SquadManagementModalProps> = ({
  </p>
  )}
  </div>
+ </div>
+
+ <div className="p-3 bg-slate-900/60 border border-slate-800 flex items-center justify-between">
+ <label className="text-xs font-semibold text-slate-200">Starting Weapon Loadout</label>
+ <select value={weaponLoadout} onChange={(e) => setWeaponLoadout(e.target.value as typeof weaponLoadout)} className="px-2 py-1 text-xs bg-slate-900 border border-slate-700 text-slate-100">
+ <option value="knife">Combat Knives</option><option value="pistol">Pistols</option><option value="shotgun">Shotguns</option><option value="assault_rifle">Assault Rifles</option>
+ </select>
  </div>
 
  {/* General Members Selector */}

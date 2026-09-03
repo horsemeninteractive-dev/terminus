@@ -1,4 +1,5 @@
 import { type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
+import { getPrimaryHQ, isBuildingOperational } from '../services/buildingOperational';
 import {
   appointBuildingHead,
   createSquad,
@@ -18,7 +19,7 @@ import { updateRadioDirectiveSystem } from '../services/radioDirectiveService';
 import { isSquadInsideBuilding } from '../services/scavengingService';
 import { soundService, ToastMessage } from '../services/soundService';
 import type { BuildingPolygon, MapData, Point2D } from '../types/map';
-import type { JobSector, HiddenSurvivorGroup } from '../types/population';
+import type { JobSector, HiddenSurvivorGroup, SquadWeaponLoadout } from '../types/population';
 import type { AdaptedBuilding } from '../types/settlement';
 import type { GameClockState, TacticalSquadUnit, ZombieUnit } from '../types/combat';
 import type { SettlementState } from '../types/settlement';
@@ -41,6 +42,7 @@ export interface SquadActionsRuntime {
   setSettlement: Dispatch<SetStateAction<SettlementState>>;
   setCombatSquads: Dispatch<SetStateAction<TacticalSquadUnit[]>>;
   setSelectedSquadId: Dispatch<SetStateAction<string | null>>;
+  setSelectedSquadIds: Dispatch<SetStateAction<string[]>>;
   setSelectedVehicleId: Dispatch<SetStateAction<string | null>>;
   setNoiseEvents: Dispatch<SetStateAction<import('../types/combat').NoiseEvent[]>>;
   setToastMessage: (msg: ToastMessage | null) => void;
@@ -79,6 +81,7 @@ export function useSquadActions(runtime: SquadActionsRuntime) {
     setSettlement,
     setCombatSquads,
     setSelectedSquadId,
+    setSelectedSquadIds,
     setSelectedVehicleId,
     setNoiseEvents,
     setToastMessage,
@@ -129,9 +132,9 @@ export function useSquadActions(runtime: SquadActionsRuntime) {
     });
   };
 
-  const handleCreateSquad = (squadName: string, leaderId: string, generalCount: number) => {
+  const handleCreateSquad = (squadName: string, leaderId: string, generalCount: number, weaponLoadout: SquadWeaponLoadout = 'knife') => {
     const currentSettlement = settlementRef.current || settlement;
-    const res = createSquad(currentSettlement, squadName, leaderId, generalCount);
+    const res = createSquad(currentSettlement, squadName, leaderId, generalCount, weaponLoadout);
 
     if (!res.success) {
       setToastMessage({
@@ -276,6 +279,14 @@ export function useSquadActions(runtime: SquadActionsRuntime) {
   // Phase 6 RTS Tactical Squad & Combat Handlers (§5, §5.1, §6.1)
   const handleSelectSquad = (squadId: string | null) => {
     setSelectedSquadId(squadId);
+    // A plain click is a single selection — it replaces any CTRL+drag box set.
+    setSelectedSquadIds(squadId ? [squadId] : []);
+  };
+
+  /** §IFZ CTRL+drag box selection: replaces the selection with the boxed squads. */
+  const handleSelectSquads = (squadIds: string[]) => {
+    setSelectedSquadIds(squadIds);
+    setSelectedSquadId(squadIds[0] ?? null);
   };
 
   const handleSelectVehicle = (vehicleId: string | null) => {
@@ -307,22 +318,36 @@ export function useSquadActions(runtime: SquadActionsRuntime) {
     squadId: string,
     pos: Point2D,
     targetBuildingId?: string | number,
-    targetBuildingName?: string
+    targetBuildingName?: string,
+    queue = false
   ) => {
+    if (queue) {
+      setCombatSquads((prev) => {
+        const updated = prev.map((s) => s.squadId === squadId ? {
+          ...s,
+          queuedOrders: [...((s as any).queuedOrders || []), { pos, targetBuildingId, targetBuildingName }],
+        } : s);
+        combatSquadsRef.current = updated;
+        return updated;
+      });
+      return;
+    }
+
     // Right-clicking the HQ or a completed warehouse/storage depot with a
     // vehicle selected is a DEPOSIT run, not a scavenge run: the vehicle drives
     // there, the squad gets out and empties BOTH its own inventory and the
     // vehicle cargo bay into the stockpile, then re-boards.
     const isStorageDropoffTarget = (() => {
       if (!targetBuildingId) return false;
-      if (settlement.hq && String(settlement.hq.buildingId) === String(targetBuildingId)) {
+      const commandCenter = getPrimaryHQ(settlement);
+      if (commandCenter && String(commandCenter.buildingId) === String(targetBuildingId)) {
         return true;
       }
       return Array.from(settlement.adaptedBuildings.values()).some(
         (b: AdaptedBuilding) =>
           (b.typeId === 'warehouse' || b.typeId === 'storage_depot') &&
           String(b.buildingId) === String(targetBuildingId) &&
-          b.constructionStatus === 'completed'
+          isBuildingOperational(b)
       );
     })();
 
@@ -447,6 +472,7 @@ export function useSquadActions(runtime: SquadActionsRuntime) {
     handleDisbandSquad,
     handleRecruitGroup,
     handleSelectSquad,
+    handleSelectSquads,
     handleSelectVehicle,
     handleOrderSquadMove,
   };

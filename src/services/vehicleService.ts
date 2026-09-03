@@ -8,7 +8,7 @@ import {
   VehicleType,
   WorldVehicle,
 } from '../types/vehicle';
-import { CombatVisualFx, NoiseEvent, TacticalSquadUnit, ZombieUnit } from '../types/combat';
+import { CombatVisualFx, NoiseEvent, TacticalSquadUnit, ZombieUnit, getWeaponDefinition } from '../types/combat';
 import { emitNoiseEvent } from './combatService';
 import { RoadNetworkGraph } from './roadPathfinder';
 import {
@@ -180,7 +180,9 @@ export function createWorldVehicleInstance(
     currentWaypointIndex: 0,
     targetPos: null,
     speed: def.speedMps,
-    isDiscovered: true,
+    // Found vehicles begin as unidentified/inert world objects. They become
+    // discovered when a squad successfully boards them.
+    isDiscovered: false,
     isSiphoned: false,
     isParkedAtHQ: false,
     totalDistanceDriven: 0,
@@ -225,7 +227,8 @@ export function depositItemsIntoVehicle(
 export function refuelVehicle(
   settlement: SettlementState,
   vehicle: WorldVehicle,
-  amountLiters: number = 20
+  amountLiters: number = 20,
+  manualFuelItem = false
 ): { success: boolean; updatedStockpile: SettlementState['stockpile']; updatedVehicle: WorldVehicle; error?: string } {
   const neededFuel = vehicle.maxFuel - vehicle.currentFuel;
   if (neededFuel <= 0) {
@@ -240,6 +243,12 @@ export function refuelVehicle(
   const transferAmount = Math.min(neededFuel, amountLiters);
   const fuelType = vehicle.fuelType; // 'gasoline' or 'diesel'
   const availableStock = settlement.stockpile.fuel[fuelType];
+  // Manual refuelling represents carrying a fuel item to the vehicle; callers
+  // must explicitly opt into that interaction rather than silently treating a
+  // remote stockpile button as physical delivery.
+  if (manualFuelItem && availableStock < amountLiters) {
+    return { success: false, updatedStockpile: settlement.stockpile, updatedVehicle: vehicle, error: `No ${fuelType} fuel item available to carry to the vehicle.` };
+  }
 
   if (availableStock < transferAmount) {
     return {
@@ -270,40 +279,191 @@ export function refuelVehicle(
   };
 }
 
-export function repairVehicle(
-  settlement: SettlementState,
-  vehicle: WorldVehicle
-): { success: boolean; updatedStockpile: SettlementState['stockpile']; updatedVehicle: WorldVehicle; error?: string } {
-  const def = VEHICLE_DEFINITIONS[vehicle.type];
-  const metalNeeded = def.repairMetalCost;
+// ==========================================
+// 2c. Manual Fuel-Item Delivery (§8, IFZ refueling)
+// ==========================================
 
-  if (settlement.stockpile.materials.metal < metalNeeded) {
+/**
+ * IFZ-style manual refuelling: fuel is NOT teleported from the stockpile into
+ * the tank. Instead the colony withdraws a physical fuel item from the
+ * stockpile into a squad's backpack, that squad carries it to the vehicle, and
+ * the fuel transfers when the squad arrives (deliverCarriedFuel). The
+ * warehouse-proximity auto-refuel is the only instant path.
+ *
+ * Refuses when the tank is full, the stockpile lacks the fuel, the squad has no
+ * free backpack slot, or the squad is already carrying a delivery.
+ */
+export function startManualFuelDelivery(
+  settlement: SettlementState,
+  vehicle: WorldVehicle,
+  squad: TacticalSquadUnit,
+  amountLiters: number = 25
+): { success: boolean; newState?: SettlementState; updatedSquad?: TacticalSquadUnit; error?: string } {
+  const neededFuel = vehicle.maxFuel - vehicle.currentFuel;
+  if (neededFuel <= 0) {
+    return { success: false, error: `${vehicle.name}'s fuel tank is already full.` };
+  }
+  const fuelType = vehicle.fuelType;
+  const transferAmount = Math.min(neededFuel, amountLiters);
+  if (transferAmount < 1) {
+    return { success: false, error: `The tank needs less than 1L — not worth carrying a can over.` };
+  }
+  const availableStock = settlement.stockpile.fuel[fuelType] || 0;
+  if (availableStock < transferAmount) {
     return {
       success: false,
-      updatedStockpile: settlement.stockpile,
-      updatedVehicle: vehicle,
-      error: `Insufficient metal scrap to repair vehicle. Required: ${metalNeeded} Metal.`,
+      error: `Only ${availableStock.toFixed(1)}L ${fuelType} in reserve — a ${transferAmount.toFixed(0)}L carry is not possible.`,
     };
   }
 
-  const updatedStockpile = {
-    ...settlement.stockpile,
-    materials: {
-      ...settlement.stockpile.materials,
-      metal: settlement.stockpile.materials.metal - metalNeeded,
-    },
+  const alive = squad.members.filter((m) => m.isAlive).length;
+  if (alive <= 0) return { success: false, error: `${squad.name} is incapacitated and cannot carry fuel.` };
+  if (squad.pendingFuelDeliveryVehicleId) {
+    return { success: false, error: `${squad.name} is already carrying a fuel delivery to another vehicle.` };
+  }
+  // One backpack slot per living member — the same rule scavenging uses.
+  const inv = settlement.squadInventories?.[squad.squadId];
+  const used = inv ? inv.items.length : 0;
+  if (used >= alive) {
+    return { success: false, error: `${squad.name} has no free backpack slot to carry the fuel item.` };
+  }
+
+  const item: SquadLootItem = {
+    id: `fuel_${fuelType}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    kind: 'resource',
+    // Uses the same label scavenged fuel uses, so an undelivered can is
+    // deposited back into the stockpile at any storage dropoff.
+    label: fuelType,
+    quantity: Math.round(transferAmount),
+    weight: 1,
   };
 
-  const updatedVehicle: WorldVehicle = {
-    ...vehicle,
-    condition: 'operational',
-    currentHp: vehicle.maxHp,
+  const updatedInv = inv
+    ? { ...inv, used: used + 1, items: [...inv.items, item] }
+    : { capacity: alive, used: 1, items: [item] };
+  const updatedStockpile = {
+    ...settlement.stockpile,
+    fuel: {
+      ...settlement.stockpile.fuel,
+      [fuelType]: availableStock - transferAmount,
+    },
+  };
+  const updatedSquad: TacticalSquadUnit = {
+    ...squad,
+    pendingFuelDeliveryVehicleId: vehicle.id,
+    // Walk to the vehicle (general targetPos pathing). Not a manualOrder: that
+    // flag is reserved for genuine player orders and is cleared on arrival.
+    targetPos: { x: vehicle.position.x, z: vehicle.position.z },
+    state: 'moving',
+    targetZombieId: null,
+    targetBuildingId: null,
+    targetBuildingName: null,
   };
 
   return {
     success: true,
-    updatedStockpile,
-    updatedVehicle,
+    newState: {
+      ...settlement,
+      stockpile: updatedStockpile,
+      squadInventories: {
+        ...(settlement.squadInventories || {}),
+        [squad.squadId]: updatedInv,
+      },
+    },
+    updatedSquad,
+  };
+}
+
+/**
+ * Chooses the squad that will carry a fuel item to `vehicle`:
+ * 1. The vehicle's own mounted squad (already standing at the tank), else
+ * 2. The nearest unmounted squad with a free backpack slot and no delivery in
+ *    flight. Returns null when nobody can carry the fuel.
+ */
+export function pickFuelCarrierSquad(
+  settlement: SettlementState,
+  vehicle: WorldVehicle,
+  squads: TacticalSquadUnit[]
+): TacticalSquadUnit | null {
+  const canCarry = (s: TacticalSquadUnit): boolean => {
+    const alive = s.members.filter((m) => m.isAlive).length;
+    if (alive <= 0 || s.pendingFuelDeliveryVehicleId) return false;
+    const inv = settlement.squadInventories?.[s.squadId];
+    const used = inv ? inv.items.length : 0;
+    return used < alive;
+  };
+
+  if (vehicle.assignedSquadId) {
+    const mounted = squads.find((s) => s.squadId === vehicle.assignedSquadId);
+    if (mounted && canCarry(mounted)) return mounted;
+  }
+
+  let best: TacticalSquadUnit | null = null;
+  let bestDist = Infinity;
+  for (const s of squads) {
+    if (s.mountedVehicleId || s.pendingMountVehicleId) continue;
+    if (!canCarry(s)) continue;
+    const d = Math.hypot(s.x - vehicle.position.x, s.z - vehicle.position.z);
+    if (d < bestDist) {
+      bestDist = d;
+      best = s;
+    }
+  }
+  return best;
+}
+
+/**
+ * A squad carrying a fuel item has arrived at the vehicle: pour the carried
+ * fuel into the tank (capped at maxFuel), consume the item from the backpack,
+ * and clear the delivery flag. Non-fuel items in the backpack are untouched.
+ */
+export function deliverCarriedFuel(
+  state: SettlementState,
+  squad: TacticalSquadUnit,
+  vehicle: WorldVehicle
+): { newState: SettlementState; updatedSquad: TacticalSquadUnit; deliveredLiters: number } {
+  const inv = state.squadInventories?.[squad.squadId];
+  const carried = (inv?.items || []).filter((i) => i.label === vehicle.fuelType);
+  const carriedLiters = carried.reduce((sum, i) => sum + (i.quantity || 0), 0);
+  const room = vehicle.maxFuel - vehicle.currentFuel;
+  const deliveredLiters = Math.min(room, carriedLiters);
+
+  // Tank already full or nothing carried → just clear the flag.
+  if (deliveredLiters <= 0 || !inv) {
+    return { newState: state, updatedSquad: { ...squad, pendingFuelDeliveryVehicleId: null }, deliveredLiters: 0 };
+  }
+
+  // Consume exactly `deliveredLiters` from the carried fuel stacks (in order,
+  // reducing quantity; drop stacks that hit zero). Other items stay.
+  let remaining = deliveredLiters;
+  const nextItems: SquadLootItem[] = [];
+  for (const item of inv.items) {
+    if (item.label === vehicle.fuelType && remaining > 0) {
+      const take = Math.min(item.quantity, remaining);
+      remaining -= take;
+      const leftover = item.quantity - take;
+      if (leftover > 0) nextItems.push({ ...item, quantity: leftover });
+    } else {
+      nextItems.push(item);
+    }
+  }
+
+  const updatedVehicle: WorldVehicle = {
+    ...vehicle,
+    currentFuel: Math.min(vehicle.maxFuel, vehicle.currentFuel + deliveredLiters),
+  };
+
+  return {
+    newState: {
+      ...state,
+      vehicles: (state.vehicles || []).map((v) => (v.id === vehicle.id ? updatedVehicle : v)),
+      squadInventories: {
+        ...(state.squadInventories || {}),
+        [squad.squadId]: { ...inv, used: nextItems.length, items: nextItems },
+      },
+    },
+    updatedSquad: { ...squad, pendingFuelDeliveryVehicleId: null },
+    deliveredLiters,
   };
 }
 
@@ -502,7 +662,8 @@ export function updateVehiclesTick(
   mapData?: MapData,
   roadGraph?: RoadNetworkGraph | null,
   freestandingBuildings?: AdaptedBuilding[],
-  freestandingRevision = 0
+  freestandingRevision = 0,
+  ammoPool?: { value: number }
 ): VehicleTickResult {
   const visualFx: CombatVisualFx[] = [];
   const noiseEvents: NoiseEvent[] = [];
@@ -530,6 +691,7 @@ export function updateVehiclesTick(
         if (sq.mountedVehicleId === current.id && sq.currentHp > 0) {
           current.assignedSquadId = sq.squadId;
           current.assignedSquadName = sq.name;
+          current.isDiscovered = true;
           break;
         }
       }
@@ -542,6 +704,7 @@ export function updateVehiclesTick(
         if (dist <= 3.8) {
           current.assignedSquadId = sq.squadId;
           current.assignedSquadName = sq.name;
+          current.isDiscovered = true;
           sq.mountedVehicleId = current.id;
           sq.pendingMountVehicleId = null;
           sq.state = 'idle';
@@ -776,6 +939,34 @@ export function updateVehiclesTick(
       activeSquad.rotation = current.rotation;
       activeSquad.state = current.isMoving ? 'moving' : 'idle';
       squadsMap.set(activeSquad.squadId, activeSquad);
+    }
+
+    // Mounted squads retain their own weapons and can fire from the vehicle.
+    // The vehicle is their firing position; the squad's weapon/ammo stats remain
+    // authoritative, while the vehicle turret (when present) fires separately.
+    if (mountedSquad && current.condition === 'operational') {
+      const aliveMembers = mountedSquad.members.filter((member) => member.isAlive);
+      const rangedMembers = aliveMembers.filter((member) => {
+        const weapon = getWeaponDefinition(member.weaponId);
+        return weapon.ammoPerVolley > 0;
+      });
+      const volleyAmmo = rangedMembers.reduce((sum, member) => sum + getWeaponDefinition(member.weaponId).ammoPerVolley, 0);
+      const target = zombiesList
+        .filter((z) => z.currentHp > 0)
+        .map((z) => ({ zombie: z, distance: Math.hypot(z.x - current.position.x, z.z - current.position.z) }))
+        .filter(({ distance }) => distance <= Math.max(8.5, mountedSquad.attackRange))
+        .sort((a, b) => a.distance - b.distance)[0];
+      if (target && rangedMembers.length > 0 && (ammoPool?.value ?? 0) >= volleyAmmo && now - mountedSquad.lastFireTime >= mountedSquad.fireRate * 1000) {
+        mountedSquad.lastFireTime = now;
+        if (ammoPool) ammoPool.value -= volleyAmmo;
+        const damage = Math.max(1, Math.round(mountedSquad.damagePerVolley * (0.85 + Math.random() * 0.3)));
+        target.zombie.currentHp = Math.max(0, target.zombie.currentHp - damage);
+        mountedSquad.killCount += target.zombie.currentHp <= 0 ? 1 : 0;
+        visualFx.push({ id: `vehicle-squad-muzzle-${current.id}-${now}`, type: 'muzzle_flash', startX: current.position.x, startY: 1.5, startZ: current.position.z, createdAt: now, durationMs: 100 });
+        visualFx.push({ id: `vehicle-squad-tracer-${current.id}-${now}`, type: 'bullet_tracer', startX: current.position.x, startY: 1.5, startZ: current.position.z, endX: target.zombie.x, endY: 1.2, endZ: target.zombie.z, createdAt: now, durationMs: 140 });
+        visualFx.push({ id: `vehicle-squad-dmg-${target.zombie.id}-${now}`, type: 'damage_number', startX: target.zombie.x, startY: 2.2, startZ: target.zombie.z, text: `-${damage}`, color: '#f87171', createdAt: now, durationMs: 800 });
+        emitNoiseEvent('gunfire', current.position.x, current.position.z, `${mountedSquad.name} Vehicle Fire`);
+      }
     }
 
     // 3. Armed Truck Mounted Turret Combat (§8)

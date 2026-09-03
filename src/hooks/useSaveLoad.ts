@@ -28,6 +28,8 @@ export interface SaveLoadRuntime {
   activePlacement: SettlementPlacement | null;
   currentPreset: LocationPreset;
   mapData: MapData | null;
+  /** Live sim-owned map (carries accumulated resource-node depletion). */
+  mapDataRef: MutableRefObject<MapData | null>;
   caravans: TradeCaravan[];
   radioDirectiveState: RadioDirectiveState;
   combatSquads: TacticalSquadUnit[];
@@ -98,6 +100,7 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
     activePlacement,
     currentPreset,
     mapData,
+    mapDataRef,
     caravans,
     radioDirectiveState,
     combatSquads,
@@ -183,7 +186,8 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
             gameClock,
             activePlacement: activePlacementRecord,
             currentPreset,
-            mapData,
+            // Save the sim-owned map so reloaded games keep node depletion.
+            mapData: mapDataRef.current || mapData,
             caravans,
             radioState: radioDirectiveState,
             hasCompletedFirstScavenge: true,
@@ -221,6 +225,7 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
       activePlacement,
       currentPreset,
       mapData,
+      mapDataRef,
       caravans,
       radioDirectiveState,
       combatSquads,
@@ -255,7 +260,7 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
           gameClock,
           activePlacement: activePlacementRecord,
           currentPreset,
-          mapData,
+          mapData: mapDataRef.current || mapData,
           caravans,
           radioState: radioDirectiveState,
           hasCompletedFirstScavenge: true,
@@ -291,6 +296,7 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
     activePlacement,
     currentPreset,
     mapData,
+    mapDataRef,
     caravans,
     radioDirectiveState,
     combatSquads,
@@ -408,22 +414,10 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
     (scenario: GameScenarioSettings, preset: LocationPreset, openGlobeDirectly: boolean) => {
       const newSettlement = createInitialSettlementState(scenario.colonyName, scenario);
 
-      if (scenario.startingSupplies === 'plentiful') {
-        newSettlement.stockpile.food.canned_goods = 80;
-        newSettlement.stockpile.food.fresh_harvest = 40;
-        newSettlement.stockpile.materials.wood = 120;
-        newSettlement.stockpile.materials.metal = 80;
-        newSettlement.stockpile.ammo.sharedPool = 120;
-        newSettlement.stockpile.medical.first_aid_kits = 10;
-        newSettlement.stockpile.medical.antibiotics = 6;
-      } else if (scenario.startingSupplies === 'scarce') {
-        newSettlement.stockpile.food.canned_goods = 20;
-        newSettlement.stockpile.materials.wood = 30;
-        newSettlement.stockpile.materials.metal = 15;
-        newSettlement.stockpile.ammo.sharedPool = 30;
-        newSettlement.stockpile.medical.first_aid_kits = 2;
-        newSettlement.stockpile.medical.antibiotics = 0;
-      }
+      // Starting supplies are intentionally difficulty-independent: every new
+      // colony gets five food-days, seven water-days, four pistols, 150 rounds,
+      // 50 fuel, and 50 units of each building material. Population is normalized
+      // below, so recalculate the two population-scaled reserves after that.
 
       // Align the actual starting population to the player's chosen option
       // (LOW 5 / MED 10 / HIGH 18 — or the difficulty-preset count).
@@ -431,6 +425,13 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
       // total + unassigned so the colony starts with exactly the chosen number.
       newSettlement.generalPopulation.total = Math.max(0, scenario.startingPopulation - newSettlement.namedSurvivors.length);
       newSettlement.generalPopulation.unassigned = newSettlement.generalPopulation.total;
+      const totalStartingPopulation = newSettlement.namedSurvivors.length + newSettlement.generalPopulation.total;
+      newSettlement.stockpile.food = { canned_goods: Math.round(totalStartingPopulation * 0.5 * 5), mre_rations: 0, dried_rations: 0, fresh_harvest: 0 };
+      newSettlement.stockpile.water = { bottled_water: Math.round(totalStartingPopulation * 1.5 * 7), purified_water: 0, rainwater: 0 };
+      newSettlement.stockpile.fuel = { gasoline: 50, diesel: 0, biofuel: 0 };
+      newSettlement.stockpile.ammo = { sharedPool: 150 };
+      newSettlement.stockpile.materials = { wood: 50, metal: 50, bricks: 50, tools: 20 };
+      newSettlement.armory = { weapons: ['pistol', 'pistol', 'pistol', 'pistol'], armor: [] };
 
       newSettlement.weather = {
         currentSeason: scenario.startingSeason,

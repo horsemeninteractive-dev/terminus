@@ -12,6 +12,8 @@ export type EntityMarkerKind =
   | 'unexplored_building'
   | 'loot_pin'
   | 'leftover_loot'
+  | 'stranded_loot'
+  | 'no_path'
   | 'street_label';
 
 export type MarkerFaction = 'friendly' | 'neutral' | 'hostile' | 'unknown';
@@ -559,6 +561,53 @@ function drawCircularUnknownCanvas(marker: EntityMarker): HTMLCanvasElement {
   return canvas;
 }
 
+/** IFZ "no path" indicator: a red warning badge rendered over a building the
+ *  pathfinder proved unreachable. Reads clearly at small screen sizes. */
+function drawNoPathCanvas(marker: EntityMarker): HTMLCanvasElement {
+  const SIZE = CIRCLE_DIM;
+  const canvas = document.createElement('canvas');
+  canvas.width = SIZE;
+  canvas.height = SIZE;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return canvas;
+
+  const cx = SIZE / 2;
+  const colors = FACTION_COLORS.hostile;
+
+  ctx.clearRect(0, 0, SIZE, SIZE);
+
+  // Glow halo
+  ctx.beginPath();
+  ctx.arc(cx, cx, 54, 0, Math.PI * 2);
+  ctx.fillStyle = colors.glow;
+  ctx.fill();
+
+  // Dark body
+  ctx.beginPath();
+  ctx.arc(cx, cx, 48, 0, Math.PI * 2);
+  ctx.fillStyle = colors.darkBg;
+  ctx.fill();
+
+  // Red border
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = colors.border;
+  ctx.stroke();
+
+  // Exclamation mark
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '900 54px "Courier New", monospace, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('!', cx, cx - 8);
+
+  // "NO PATH" label
+  ctx.fillStyle = colors.accent;
+  ctx.font = '900 15px "Courier New", monospace, sans-serif';
+  ctx.fillText('NO PATH', cx, cx + 42);
+
+  return canvas;
+}
+
 /** Main squad / vehicle / NPC rectangular badge (taller than wide) */
 function drawRectangularBadgeCanvas(marker: EntityMarker): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
@@ -1020,15 +1069,20 @@ function getMarkerTexture(marker: EntityMarker): THREE.CanvasTexture {
     );
   }
 
-  if (marker.kind === 'leftover_loot') {
+  if (marker.kind === 'leftover_loot' || marker.kind === 'stranded_loot') {
     const cat = marker.lootCategory || 'assorted';
     const count = marker.leftoverCount || 0;
-    const cacheKey = `leftover_${cat}_${count}`;
+    const cacheKey = `${marker.kind}_${cat}_${count}`;
     return getOrCreateSharedTexture(cacheKey, () => drawLeftoverLootCanvas(marker));
   }
 
   if (marker.kind === 'street_label') {
     return new THREE.CanvasTexture(drawStreetLabelCanvas(marker));
+  }
+
+  if (marker.kind === 'no_path') {
+    const cacheKey = `no_path_${marker.faction}`;
+    return getOrCreateSharedTexture(cacheKey, () => drawNoPathCanvas(marker));
   }
 
   if (marker.kind === 'zombie' || marker.kind === 'lair') {
@@ -1116,6 +1170,7 @@ export class EntityMarkerRenderer {
       const isShared =
         marker.kind === 'loot_pin' ||
         marker.kind === 'leftover_loot' ||
+        marker.kind === 'stranded_loot' ||
         marker.kind === 'zombie' ||
         marker.kind === 'unexplored_building';
 
@@ -1257,7 +1312,7 @@ export class EntityMarkerRenderer {
 
       const isLootPin = marker.kind === 'loot_pin';
       const isDetailedLoot = isLootPin && marker.detailMode === 'detailed';
-      const isLeftoverLoot = marker.kind === 'leftover_loot';
+      const isLeftoverLoot = marker.kind === 'leftover_loot' || marker.kind === 'stranded_loot';
 
       // Target fixed screen height in CSS pixels across zoom
       let targetPxH = 46;
@@ -1282,6 +1337,10 @@ export class EntityMarkerRenderer {
       } else if (marker.kind === 'street_label') {
         targetPxH = 26;
         aspect = 280 / 70;
+      } else if (marker.kind === 'no_path') {
+        // Compact square warning badge — visible but never crowding the roof.
+        targetPxH = 40;
+        aspect = 1.0;
       }
 
       let worldHeight: number;

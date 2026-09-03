@@ -3,6 +3,7 @@ import {
   getFreestandingCollisionPolygon,
   isFreestandingGate,
 } from './freestandingFootprint';
+import { getCanonicalDefenseDef } from '../data/functionalBuildings';
 
 /**
  * Grid-based weighted A* pathfinding (§5 movement).
@@ -134,6 +135,12 @@ export class PathGrid {
   // fences, towers). Tracked so they can be cleared when a structure is removed
   // (deconstructed) or the obstacle set is refreshed.
   private freestandingCells: number[] = [];
+  // §7.1 Hazard cells (barbed wire): passable terrain that slows infected and
+  // bleeds them per second. Zero = not a hazard. Tracked separately from
+  // freestandingCells so hazards never become hard obstacles.
+  private hazardSlow: Float32Array;
+  private hazardDamage: Float32Array;
+  private hazardCells: number[] = [];
   // Gate cells are passable at normal cost but recorded here so hostile
   // factions (gatesOpen: false) can treat them as hard barriers while
   // friendlies still walk/drive through.
@@ -164,6 +171,8 @@ export class PathGrid {
     this.cellCosts = new Float32Array(totalCells).fill(1.0);
     this.isBuildingCell = new Uint8Array(totalCells);
     this.gateCells = new Uint8Array(totalCells);
+    this.hazardSlow = new Float32Array(totalCells);
+    this.hazardDamage = new Float32Array(totalCells);
 
     // Rasterize roads as lower-cost traversal (0.75x)
     if (mapData.roads) {
@@ -264,26 +273,51 @@ export class PathGrid {
     // Bump the revision so every cached path computed against the old obstacle
     // layout is invalidated and re-routed immediately (wall placed/removed).
     this.obstacleRevision++;
-    // Clear previously applied freestanding cells.
+    // Clear previously applied freestanding cells (walls/gates AND hazards).
     for (const id of this.freestandingCells) {
       this.isBuildingCell[id] = 0;
       this.cellCosts[id] = 1.0;
       this.gateCells[id] = 0;
     }
+    for (const id of this.hazardCells) {
+      this.hazardSlow[id] = 0;
+      this.hazardDamage[id] = 0;
+    }
     this.freestandingCells = [];
+    this.hazardCells = [];
     // Walls may have been removed or a route may have opened — re-evaluate.
     this.failedGoalCache.clear();
     if (!freestanding) return;
 
     const marked = new Set<number>();
+    const hazardMarked = new Set<number>();
     for (const free of freestanding) {
       const poly = getFreestandingCollisionPolygon(free);
-      this.rasterizeObstacle(poly, marked, isFreestandingGate(free.typeId));
+      // §7.1 three-concept classification: hard barriers block, gates open for
+      // friendlies only, and hazards (barbed wire) stay fully passable while
+      // slowing + damaging infected. Read from the canonical def's explicit
+      // flags — never from the type-id string.
+      const def = getCanonicalDefenseDef(free.typeId);
+      const hazardSlowPct = def?.slowsInfectedPct || 0;
+      const hazardDamage = def?.damageOnContact || 0;
+      if (hazardSlowPct > 0 || hazardDamage > 0) {
+        this.rasterizeObstacle(poly, marked, false, hazardMarked, hazardSlowPct, hazardDamage);
+      } else {
+        this.rasterizeObstacle(poly, marked, isFreestandingGate(free.typeId));
+      }
     }
     this.freestandingCells = Array.from(marked);
+    this.hazardCells = Array.from(hazardMarked);
   }
 
-  private rasterizeObstacle(poly: Point2D[], marked: Set<number>, isGate: boolean) {
+  private rasterizeObstacle(
+    poly: Point2D[],
+    marked: Set<number>,
+    isGate: boolean,
+    hazardMarked?: Set<number>,
+    hazardSlowPct = 0,
+    hazardDamage = 0
+  ) {
     if (!poly || poly.length < 3) return;
 
     let minX = Infinity;
@@ -316,19 +350,29 @@ export class PathGrid {
           pointInPolygon(cx + half, cz + half, poly);
         if (inside) {
           const id = this.idx(c, r);
-          if (marked.has(id)) continue;
-          marked.add(id);
-          if (isGate) {
-            // Gates stay passable at normal cost for friendlies (they are the
-            // intended way through a fence line); the cell is recorded so
-            // hostile factions can be blocked from it.
-            this.gateCells[id] = 1;
+          if (marked.has(id) || hazardMarked?.has(id)) continue;
+          const isHazard = (hazardSlowPct > 0 || hazardDamage > 0) && hazardMarked !== undefined;
+          if (isHazard) {
+            // Hazards stay fully passable at normal cost — they never become
+            // obstacles. Movement code applies the slow + contact damage while
+            // an infected stands on the cell.
+            hazardMarked!.add(id);
+            this.hazardSlow[id] = Math.max(this.hazardSlow[id], hazardSlowPct);
+            this.hazardDamage[id] = Math.max(this.hazardDamage[id], hazardDamage);
           } else {
-            this.isBuildingCell[id] = 1;
-            // Walls/fences are hard barriers: astronomically expensive to cross, so
-            // A* only traverses them when no route exists at all (fully enclosed
-            // perimeter with no gate).
-            this.cellCosts[id] = 1e5;
+            marked.add(id);
+            if (isGate) {
+              // Gates stay passable at normal cost for friendlies (they are the
+              // intended way through a fence line); the cell is recorded so
+              // hostile factions can be blocked from it.
+              this.gateCells[id] = 1;
+            } else {
+              this.isBuildingCell[id] = 1;
+              // Walls/fences are hard barriers: astronomically expensive to cross, so
+              // A* only traverses them when no route exists at all (fully enclosed
+              // perimeter with no gate).
+              this.cellCosts[id] = 1e5;
+            }
           }
         }
       }
@@ -339,6 +383,21 @@ export class PathGrid {
     const cell = this.worldToCell(x, z);
     if (!cell) return false;
     return this.isBuildingCell[this.idx(cell.col, cell.row)] === 1;
+  }
+
+  /**
+   * §7.1 Hazard sampling (barbed wire): returns the slow percentage and
+   * per-second contact damage for the cell under a world point, or null when
+   * the point is on ordinary terrain. Hazards never block pathing.
+   */
+  public getHazardAt(x: number, z: number): { slowPct: number; damagePerSec: number } | null {
+    const cell = this.worldToCell(x, z);
+    if (!cell) return null;
+    const id = this.idx(cell.col, cell.row);
+    const slowPct = this.hazardSlow[id];
+    const damage = this.hazardDamage[id];
+    if (slowPct <= 0 && damage <= 0) return null;
+    return { slowPct, damagePerSec: damage };
   }
 
   /**

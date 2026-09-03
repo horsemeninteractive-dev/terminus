@@ -1,14 +1,20 @@
 import * as THREE from 'three';
 import { CombatVisualFx, DroppedItem, HostileHumanUnit, TacticalSquadUnit, ZombieLair, ZombieUnit, getWeaponDefinition } from '../types/combat';
+import { findPileAt, getStrandedLootOrderId } from '../services/strandedLootService';
 import { BuildingPolygon, MapData, Point2D, ResourceNode, RoadSegment } from '../types/map';
 import { ResourceWorkOrder } from '../types/resourceGathering';
 import { HiddenSurvivorGroup } from '../types/population';
 import { RivalHideout } from '../types/rivalFaction';
-import { AdaptedBuilding, ConstructionWorkOrder, DeconstructionJob, FogOfWarState, FunctionalBuildingTypeId } from '../types/settlement';
+import { BuildingOccupation } from '../types/occupation';
+import { AdaptedBuilding, ConstructionWorkOrder, DeconstructionJob, FogOfWarState, FunctionalBuildingTypeId, SettlementState } from '../types/settlement';
+import { PowerGridVisual, getPowerGridVisual } from '../services/powerService';
 import { BuildingSearchState } from '../types/scavenging';
 import { WorldVehicle } from '../types/vehicle';
 import { classifyPoint } from '../services/fogOfWarService';
 import { sampleElevation } from '../services/elevationService';
+import { polygonArea, sweepFootprintSelection } from '../services/adaptationGeometry';
+import { getAdaptedCost } from '../data/functionalBuildings';
+import type { ResourceCost } from '../types/settlement';
 import { getFreestandingDimensions, getFreestandingCollisionPolygon } from '../services/freestandingFootprint';
 import { BuildingRenderer } from './BuildingRenderer';
 import { CameraController } from './CameraController';
@@ -23,6 +29,8 @@ import { VehicleRenderer } from './VehicleRenderer';
 import { VisionSource } from '../services/fogOfWarService';
 import type { SatelliteQuality } from '../types/saveGame';
 import { SkyAtmosphere } from './SkyAtmosphere';
+import { WeatherFX } from './WeatherFX';
+import type { WeatherType, MoonPhase } from '../types/weather';
 
 /** Yields to the browser so the loading overlay can animate between heavy build stages. */
 const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
@@ -157,6 +165,8 @@ export interface WorldSceneOptions {
   onHoverBuilding?: (building: BuildingPolygon | null) => void;
   onSelectPosition?: (pos: Point2D) => void;
   onSelectSquad?: (squadId: string | null) => void;
+  /** §IFZ CTRL+drag box selection: fired on release with every squad inside the rectangle. */
+  onSelectSquads?: (squadIds: string[]) => void;
   onSelectResourceNode?: (node: import('../types/map').ResourceNode | null) => void;
   onSelectVehicle?: (vehicleId: string | null) => void;
   onOrderSquadMove?: (squadId: string, pos: Point2D, targetBuildingId?: string | number, targetBuildingName?: string) => void;
@@ -167,7 +177,23 @@ export interface WorldSceneOptions {
     typeId: FunctionalBuildingTypeId,
     placements: FreestandingPlacementPoint[]
   ) => void;
+  /**
+   * §7.1 IFZ-style drag adaptation: fired when the player finishes a paint
+   * sweep across a building's OWN footprint while a conversion type is armed.
+   * `polygon` is the swept portion, clipped to the real building footprint and
+   * measured in the building's local axis frame (never an arbitrary world
+   * rectangle); a plain click (no meaningful drag) passes the whole footprint
+   * so the caller can convert the entire structure.
+   */
+  onAdaptArea?: (
+    typeId: FunctionalBuildingTypeId,
+    bldg: BuildingPolygon,
+    polygon: Point2D[]
+  ) => void;
 }
+
+/** Clicking within this radius of a stranded pile dispatches a recovery order. */
+const STRANDED_DISPATCH_RADIUS = 12;
 
 interface PrecomputedLootPin {
   id: string | number;
@@ -211,23 +237,37 @@ export class WorldScene {
   private hemiLight: THREE.HemisphereLight;
   private fog: THREE.FogExp2;
   public skyAtmosphere: SkyAtmosphere;
+  public weatherFX: WeatherFX;
+  private currentWeather: WeatherType = 'clear';
+  private currentMoonPhase: MoonPhase = 'full';
+  private scratchWeather = new THREE.Color();
 
   // Interaction
   private raycaster = new THREE.Raycaster();
   private mouse = new THREE.Vector2();
+  /** Stranded field-loot piles (gatherer / demolition overflow) rendered as
+   *  crates and orderable via right-click recovery. Refreshed every tick with
+   *  updateEntityMarkers. */
+  private strandedPiles: import('../types/settlement').FieldLootPile[] = [];
   private onSelectBuilding?: (building: BuildingPolygon | null) => void;
   private onHoverBuilding?: (building: BuildingPolygon | null) => void;
   private onSelectPosition?: (pos: Point2D) => void;
   private onSelectSquad?: (squadId: string | null) => void;
+  private onSelectSquads?: (squadIds: string[]) => void;
   private onSelectResourceNode?: (node: import('../types/map').ResourceNode | null) => void;
   private onSelectVehicle?: (vehicleId: string | null) => void;
-  private onOrderSquadMove?: (squadId: string, pos: Point2D, targetBuildingId?: string | number, targetBuildingName?: string) => void;
+  private onOrderSquadMove?: (squadId: string, pos: Point2D, targetBuildingId?: string | number, targetBuildingName?: string, queue?: boolean) => void;
   private onOrderSquadAttack?: (squadId: string, zombieId: string) => void;
   private onMountVehicle?: (squadId: string, vehicleId: string) => void;
   public onScavengeViewToggle?: (active: boolean) => void;
   private onPlaceFreestandingRun?: (
     typeId: FunctionalBuildingTypeId,
     placements: FreestandingPlacementPoint[]
+  ) => void;
+  private onAdaptArea?: (
+    typeId: FunctionalBuildingTypeId,
+    bldg: BuildingPolygon,
+    polygon: Point2D[]
   ) => void;
 
   private pointerDownX = 0;
@@ -236,6 +276,14 @@ export class WorldScene {
   private pointerType = 'mouse';
   private pointerDragged = false;
   private longPressTimer: number | null = null;
+
+  // §IFZ CTRL+drag box selection: multi-squad selection state plus the
+  // screen-space rectangle overlay that follows the drag.
+  private selectedSquadIds = new Set<string>();
+  private boxSelectActive = false;
+  private boxSelectStartX = 0;
+  private boxSelectStartY = 0;
+  private boxSelectEl: HTMLDivElement | null = null;
   private tapFeedbackMesh: THREE.Mesh | null = null;
   private tapFeedbackTime = 0;
 
@@ -243,6 +291,8 @@ export class WorldScene {
 
   private selectedSquadId: string | null = null;
   private selectedVehicleId: string | null = null;
+  /** Latest squad list from updateCombat — used to resolve box-selection hits. */
+  private liveSquads: TacticalSquadUnit[] = [];
   private isRunning = false;
   private animationFrameId = 0;
   private lastTime = 0;
@@ -273,8 +323,16 @@ export class WorldScene {
   private hiddenGroups: Map<string | number, HiddenSurvivorGroup> = new Map();
   private rivalHideouts: Map<string | number, RivalHideout> = new Map();
   private zombieLairs: Map<string | number, ZombieLair> = new Map();
+  private occupiedBuildings: Map<string | number, BuildingOccupation> = new Map();
   private deconstructionJobs: Map<string | number, DeconstructionJob> = new Map();
   private demolishedBuildings: Map<string | number, true> = new Map();
+
+  // Power-grid overlay: translucent generator/battery reach discs plus a
+  // floating status marker over every powered consumer (green = powered,
+  // amber = in reach but shed, red = outside the live grid). Toggled from the
+  // minimap Layers panel; refreshed whenever the settlement state changes.
+  private showPowerGrid = false;
+  private powerOverlayGroup = new THREE.Group();
 
   // Ghost blueprint holographic placement helper (§7.1)
   private pendingFreestandingType: FunctionalBuildingTypeId | null = null;
@@ -291,6 +349,30 @@ export class WorldScene {
   // walls/towers/gates on water: the ghost turns red while the cursor is over
   // water and placement is cancelled on release.
   private waterPolygons: Point2D[][] = [];
+
+  // §7.1 IFZ-style drag adaptation: while a conversion type is armed, pressing
+  // on a building and dragging ACROSS ITS OWN FOOTPRINT paints the physical
+  // portion to convert. The live preview is a translucent fill clipped to the
+  // real footprint (floating at roof level) plus a % coverage readout; release
+  // commits the painted region through onAdaptArea. A plain click converts the
+  // whole building — full adaptation never requires drawing a box.
+  private pendingAdaptType: FunctionalBuildingTypeId | null = null;
+  private adaptDragActive = false;
+  private adaptDragStart: THREE.Vector3 | null = null;
+  private adaptDragBldg: BuildingPolygon | null = null;
+  /** Sweep axis (building-long vs cross-section) latched for this gesture. */
+  private adaptPaintAlongLong = true;
+  private adaptAxisLocked = false;
+  /** Full-size material cost of the armed conversion for the pressed building
+   *  (size-derived §Terminus economics), shown live next to the % readout. */
+  private adaptPaintFullCost: ResourceCost | null = null;
+  /** Live paint preview: footprint-clipped fill + outline + % readout pill. */
+  private adaptPaintGroup: THREE.Group = new THREE.Group();
+  private adaptPaintFill: THREE.Mesh | null = null;
+  private adaptPaintEdge: THREE.LineSegments | null = null;
+  private adaptPaintReadout: HTMLDivElement | null = null;
+  private adaptReadoutHideTimer: number | null = null;
+
 
   // Fog of war state (§3.5)
   private fogGrid: FogOfWarState | null = null;
@@ -317,12 +399,14 @@ export class WorldScene {
     this.onHoverBuilding = options.onHoverBuilding;
     this.onSelectPosition = options.onSelectPosition;
     this.onSelectSquad = options.onSelectSquad;
+    this.onSelectSquads = options.onSelectSquads;
     this.onSelectResourceNode = options.onSelectResourceNode;
     this.onSelectVehicle = options.onSelectVehicle;
     this.onOrderSquadMove = options.onOrderSquadMove;
     this.onOrderSquadAttack = options.onOrderSquadAttack;
     this.onMountVehicle = options.onMountVehicle;
     this.onPlaceFreestandingRun = options.onPlaceFreestandingRun;
+    this.onAdaptArea = options.onAdaptArea;
 
     const width = this.container.clientWidth || window.innerWidth;
     const height = this.container.clientHeight || window.innerHeight;
@@ -380,6 +464,10 @@ export class WorldScene {
     this.skyAtmosphere = new SkyAtmosphere();
     this.scene.add(this.skyAtmosphere.group);
 
+    // 4c. Weather visuals (rain, snow, cloud canopy, lightning) + weather lighting
+    this.weatherFX = new WeatherFX();
+    this.scene.add(this.weatherFX.group);
+
     // 5. Initialize Sub-renderers
     this.groundRenderer = new GroundRenderer();
     this.roadRenderer = new RoadRenderer();
@@ -406,12 +494,45 @@ export class WorldScene {
     this.scene.add(this.blueprintGhostGroup);
     this.blueprintGhostGroup.visible = false;
 
+    // §7.1 drag-adaptation paint preview: a translucent polygon rebuilt on
+    // every pointermove showing the portion of the footprint being painted,
+    // with a crisp outline, floating just above the building's roof so the
+    // coverage reads against the structure itself (never a map rectangle).
+    this.adaptPaintFill = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1),
+      new THREE.MeshBasicMaterial({
+        color: 0x38bdf8,
+        transparent: true,
+        opacity: 0.38,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      })
+    );
+    this.adaptPaintFill.rotation.x = -Math.PI / 2;
+    this.adaptPaintEdge = new THREE.LineSegments(
+      new THREE.BufferGeometry(),
+      new THREE.LineBasicMaterial({ color: 0x7dd3fc, transparent: true, opacity: 0.95 })
+    );
+    this.adaptPaintEdge.rotation.x = -Math.PI / 2;
+    this.adaptPaintGroup.add(this.adaptPaintFill);
+    this.adaptPaintGroup.add(this.adaptPaintEdge);
+    this.adaptPaintGroup.visible = false;
+    this.scene.add(this.adaptPaintGroup);
+
+    // Power-grid overlay group (added last so it renders above terrain/buildings).
+    this.powerOverlayGroup.name = 'PowerOverlayGroup';
+    this.powerOverlayGroup.visible = false;
+    this.scene.add(this.powerOverlayGroup);
+
     // 6. Event listeners
     this.container.addEventListener('pointerdown', this.onPointerDown);
     this.container.addEventListener('pointermove', this.onPointerMove);
     this.container.addEventListener('pointerup', this.onPointerUp);
     this.container.addEventListener('click', this.onClick);
     this.container.addEventListener('contextmenu', this.onContextMenu);
+    // A CTRL+drag released OUTSIDE the scene (cursor escaped the container)
+    // must not leave the box-select active or the camera locked — clear it.
+    window.addEventListener('pointerup', this.onWindowPointerUp);
     window.addEventListener('resize', this.onWindowResize);
 
     this.applyContinuousLighting(this.clockHour);
@@ -581,6 +702,158 @@ export class WorldScene {
     }
   }
 
+  /**
+   * Toggle the power-grid overlay (generator/battery reach + powered/shed
+   * consumer markers). Pass the settlement so turning it on paints instantly;
+   * otherwise it appears on the next state push via updatePowerOverlay.
+   */
+  public setPowerGridOverlay(visible: boolean, settlement: SettlementState | null = null) {
+    this.showPowerGrid = visible;
+    if (settlement) this.updatePowerOverlay(settlement);
+    this.powerOverlayGroup.visible = visible && !!this.currentMapData;
+  }
+
+  /** Refresh the power-grid overlay from the latest settlement allocation. */
+  public updatePowerOverlay(settlement: SettlementState) {
+    if (!this.showPowerGrid || !this.currentMapData) return;
+    this.renderPowerOverlay(getPowerGridVisual(settlement));
+    this.powerOverlayGroup.visible = true;
+  }
+
+  private clearPowerOverlay() {
+    while (this.powerOverlayGroup.children.length > 0) {
+      const mesh = this.powerOverlayGroup.children[0] as THREE.Mesh;
+      if (mesh.geometry) mesh.geometry.dispose();
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const m of mats) if (m) m.dispose();
+      this.powerOverlayGroup.remove(mesh);
+    }
+  }
+
+  private renderPowerOverlay(visual: PowerGridVisual) {
+    this.clearPowerOverlay();
+    const elevation = this.disableElevation ? null : (this.currentMapData?.elevation ?? null);
+    const groundY = (x: number, z: number) =>
+      elevation ? sampleElevation(elevation, x, z, this.currentExaggeration) : 0;
+    const flatMesh = (
+      geo: THREE.BufferGeometry,
+      color: number,
+      opacity: number,
+      y: number
+    ): THREE.Mesh => {
+      const mesh = new THREE.Mesh(
+        geo,
+        new THREE.MeshBasicMaterial({
+          color,
+          transparent: true,
+          opacity,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+        })
+      );
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.position.y = y;
+      return mesh;
+    };
+
+    // 1. Generator reach discs — bright amber rim while running (Advanced
+    // Power Systems reach included via the record's powerRadiusM), grey when
+    // the tank is dry so an outage is visible at a glance.
+    for (const g of visual.generators) {
+      const y = groundY(g.x, g.z) + 0.5;
+      const on = g.running;
+      const disc = flatMesh(
+        new THREE.CircleGeometry(g.radiusM, 96),
+        on ? 0xf59e0b : 0x94a3b8,
+        on ? 0.09 : 0.04,
+        y
+      );
+      disc.position.set(g.x, y, g.z);
+      const rim = flatMesh(
+        new THREE.RingGeometry(Math.max(1.2, g.radiusM - 1.4), g.radiusM, 96),
+        on ? 0xfbbf24 : 0x64748b,
+        on ? 0.55 : 0.3,
+        y + 0.05
+      );
+      rim.position.set(g.x, y, g.z);
+      this.powerOverlayGroup.add(disc, rim);
+    }
+
+    // 2. Battery reach — GRID EXTENSION / EMERGENCY RESERVE. A charged bank is
+    // NOT a generator: instead of a solid supply ring it paints a soft reserve
+    // footprint with a DASHED cyan boundary, so it reads as "backup reach"
+    // rather than live generation. While the bank is actually feeding the grid
+    // the dashes fuse into a bright, near-solid arc.
+    for (const b of visual.batteries) {
+      if (b.storedKwh <= 0) continue;
+      const y = groundY(b.x, b.z) + 0.5;
+      const feeding = b.discharging;
+      const disc = flatMesh(
+        new THREE.CircleGeometry(b.radiusM, 96),
+        0x22d3ee,
+        feeding ? 0.1 : 0.05,
+        y
+      );
+      disc.position.set(b.x, y, b.z);
+      this.powerOverlayGroup.add(disc);
+      // Dashed ring: 14 short arcs with gaps (armed), near-continuous when
+      // discharging. Arc span mirrors "this reach is on standby vs live now".
+      const dashCount = 14;
+      const pitch = (2 * Math.PI) / dashCount;
+      const drawn = feeding ? 0.92 : 0.5; // fraction of each pitch actually drawn
+      for (let i = 0; i < dashCount; i++) {
+        const seg = flatMesh(
+          new THREE.RingGeometry(
+            Math.max(1.2, b.radiusM - 1.4),
+            b.radiusM,
+            10,
+            1,
+            i * pitch,
+            pitch * drawn
+          ),
+          feeding ? 0x67e8f9 : 0x22d3ee,
+          feeding ? 0.85 : 0.4,
+          y + 0.05
+        );
+        seg.position.set(b.x, y, b.z);
+        this.powerOverlayGroup.add(seg);
+      }
+    }
+
+    // 3. Consumer status markers — only while grid infrastructure exists, so a
+    // settlement with no power plant isn't covered in red dots. A coloured
+    // pillar floats off the roof: green = powered this tick, amber = inside a
+    // live radius but shed (not enough supply / fuel), red = outside the grid.
+    if (!visual.hasInfrastructure) return;
+    for (const c of visual.consumers) {
+      const roofY = this.getBuildingTopY(c.meshId);
+      const statusColor = c.powered ? 0x22c55e : c.inReach ? 0xf59e0b : 0xef4444;
+      const pillar = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.8, 1.5, 5.4, 10),
+        new THREE.MeshBasicMaterial({
+          color: statusColor,
+          transparent: true,
+          opacity: 0.6,
+          depthWrite: false,
+        })
+      );
+      pillar.position.set(c.x, roofY + 3.2, c.z);
+      pillar.renderOrder = 80;
+      this.powerOverlayGroup.add(pillar);
+      // Flat ring around the pillar base on the roof so the marker reads even
+      // edge-on from a shallow camera angle.
+      const ring = flatMesh(
+        new THREE.RingGeometry(2.4, 3.6, 28),
+        statusColor,
+        0.8,
+        roofY + 0.4
+      );
+      ring.position.set(c.x, roofY + 0.4, c.z);
+      ring.renderOrder = 80;
+      this.powerOverlayGroup.add(ring);
+    }
+  }
+
   public setDisableElevation(disable: boolean) {
     if (this.disableElevation === disable || !this.currentMapData) return;
     this.disableElevation = disable;
@@ -636,6 +909,18 @@ export class WorldScene {
     this.targetLightingHour = TIME_OF_DAY_HOURS[time];
   }
 
+  /**
+   * Feed the simulation's current weather + moon phase into the scene so it is
+   * visually represented: rain/snow particles, overcast cloud canopy, lightning,
+   * moon phase sprite and weather-tinted fog/lighting.
+   */
+  public setWeather(weather: WeatherType, moonPhase?: MoonPhase) {
+    this.currentWeather = weather || 'clear';
+    if (moonPhase) this.currentMoonPhase = moonPhase;
+    this.weatherFX.setWeather(this.currentWeather, this.currentMoonPhase);
+    this.skyAtmosphere.setMoonPhase(this.currentMoonPhase);
+  }
+
   private lerpColor(out: THREE.Color, a: number, b: number, t: number): THREE.Color {
     this.scratchA.setHex(a);
     this.scratchB.setHex(b);
@@ -660,27 +945,65 @@ export class WorldScene {
     const t = span <= 0 ? 0 : (h - k0.hour) / span;
     const mix = (a: number, b: number) => a + (b - a) * t;
 
+    // Weather modulation: cloud dimming, fog scale/tint, lightning flash boost
+    // and moon phase brightness applied to the day/night baseline.
+    const weatherDim = this.weatherFX.getDim();
+    const lightning = this.weatherFX.getLightning();
+    const flashBoost = lightning * 1.6;
+    const moonPhaseBrightness = this.skyAtmosphere.getMoonPhaseBrightness();
+    // Full moons light the colony at night; new moons leave it near-black.
+    const moonDim = 1 - (1 - moonPhaseBrightness) * 0.35;
+
     // Celestial atmosphere, scene background & atmospheric fog
     const topCol = this.scratchA.setHex(k0.skyTop).clone().lerp(this.scratchB.setHex(k1.skyTop), t);
     const horizCol = this.scratchA.setHex(k0.horizon).clone().lerp(this.scratchB.setHex(k1.horizon), t);
     const sunCol = this.scratchA.setHex(k0.sunColor).clone().lerp(this.scratchB.setHex(k1.sunColor), t);
     const moonCol = new THREE.Color(0xa5c4e8);
 
+    // Weather sky tint (overcast grey, storm slate, heat haze, snow white)
+    const skyTintWeight = this.weatherFX.getSkyTintWeight();
+    if (skyTintWeight > 0.001) {
+      this.weatherFX.getSkyTint(this.scratchWeather);
+      topCol.lerp(this.scratchWeather, 0.35 * skyTintWeight);
+      horizCol.lerp(this.scratchWeather, 0.55 * skyTintWeight);
+    }
+
     this.skyAtmosphere.setSkyColors(topCol, horizCol, sunCol, moonCol);
     this.skyAtmosphere.update(h, this.camera.position, performance.now() / 1000);
 
-    this.lerpColor(this.scene.background as THREE.Color, k0.horizon, k1.horizon, t);
+    const sceneBg = this.scene.background instanceof THREE.Color ? this.scene.background : null;
+    if (sceneBg) this.lerpColor(sceneBg, k0.horizon, k1.horizon, t);
+    if (sceneBg && skyTintWeight > 0.001) {
+      this.weatherFX.getSkyTint(this.scratchWeather);
+      sceneBg.lerp(this.scratchWeather, 0.4 * skyTintWeight);
+    }
     this.lerpColor(this.fog.color, k0.fog, k1.fog, t);
-    this.fog.density = mix(k0.fogDensity, k1.fogDensity);
+    this.fog.density = mix(k0.fogDensity, k1.fogDensity) * this.weatherFX.getFogScale();
 
-    // Ambient, hemisphere & sun
+    // Weather fog tint (rain blue-grey, smoke haze, blizzard white)
+    const fogTintWeight = this.weatherFX.getFogTintWeight();
+    if (fogTintWeight > 0.001) {
+      this.weatherFX.getFogTint(this.scratchWeather);
+      this.fog.color.lerp(this.scratchWeather, 0.55 * fogTintWeight);
+    }
+
+    // Ambient, hemisphere & sun — dimmed by cloud cover, boosted by lightning,
+    // and at night scaled by moon phase brightness.
     this.lerpColor(this.ambientLight.color, k0.ambient, k1.ambient, t);
-    this.ambientLight.intensity = mix(k0.ambientIntensity, k1.ambientIntensity);
+    this.ambientLight.intensity = mix(k0.ambientIntensity, k1.ambientIntensity)
+      * (1 - weatherDim * 0.55)
+      * (k1.sunElevation < 0.05 ? moonDim : 1)
+      + flashBoost * 0.35;
     this.lerpColor(this.hemiLight.color, k0.hemiSky, k1.hemiSky, t);
     this.lerpColor(this.hemiLight.groundColor, k0.hemiGround, k1.hemiGround, t);
-    this.hemiLight.intensity = mix(k0.hemiIntensity, k1.hemiIntensity);
+    this.hemiLight.intensity = mix(k0.hemiIntensity, k1.hemiIntensity)
+      * (1 - weatherDim * 0.45)
+      * (k1.sunElevation < 0.05 ? moonDim : 1)
+      + flashBoost * 0.25;
     this.lerpColor(this.sunLight.color, k0.sunColor, k1.sunColor, t);
-    this.sunLight.intensity = mix(k0.sunIntensity, k1.sunIntensity);
+    this.sunLight.intensity = mix(k0.sunIntensity, k1.sunIntensity)
+      * (1 - weatherDim * 0.85)
+      + flashBoost;
 
     // Sun position: smooth elevation curve + east-to-west azimuth sweep
     const elevation = mix(k0.sunElevation, k1.sunElevation);
@@ -773,6 +1096,56 @@ export class WorldScene {
       return;
     }
 
+    // §7.1 Armed conversion: pointer-down on a building anchors a paint sweep
+    // across that building's OWN footprint. The camera is locked while dragging
+    // so the painted band stays anchored to the building (same as freestanding
+    // placement); release commits the swept portion.
+    if (this.pendingAdaptType && e.button === 0) {
+      const rect = this.container.getBoundingClientRect();
+      this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      this.raycaster.setFromCamera(this.mouse, this.camera);
+      const buildingHits = this.raycaster.intersectObjects(this.buildingRenderer.group.children, true);
+      if (buildingHits.length > 0) {
+        const bldgId = buildingHits[0].object.userData?.buildingId;
+        const bldg = bldgId !== undefined && bldgId !== null
+          ? this.buildingRenderer.getBuildingById(bldgId) || null
+          : null;
+        if (bldg && bldg.polygon && bldg.polygon.length >= 3) {
+          const groundHits = this.raycaster.intersectObjects(this.groundRenderer.group.children, true);
+          const ground = groundHits.length > 0 ? groundHits[0].point : buildingHits[0].point;
+          this.adaptDragActive = true;
+          this.adaptDragBldg = bldg;
+          this.adaptDragStart = new THREE.Vector3(ground.x, ground.y, ground.z);
+          this.adaptAxisLocked = false;
+          this.adaptPaintAlongLong = true;
+          // §Terminus economics: the price shown while painting is the real,
+          // size-derived cost for THIS structure (footprint × height × share).
+          this.adaptPaintFullCost = getAdaptedCost(
+            this.pendingAdaptType as FunctionalBuildingTypeId,
+            bldg.type,
+            polygonArea(bldg.polygon),
+            bldg.height
+          );
+          this.cameraController.placementActive = true;
+          this.updateAdaptPaint(ground.x, ground.z, e.clientX, e.clientY);
+          return;
+        }
+      }
+    }
+
+    // §IFZ CTRL+drag box selection: pressing CTRL (or CMD on macOS) with the
+    // left button drags a selection rectangle over squads. The camera is
+    // locked while the gesture is active so the box stays put.
+    if (e.button === 0 && (e.ctrlKey || e.metaKey) && !this.pendingFreestandingType && !this.pendingAdaptType) {
+      this.boxSelectActive = true;
+      this.boxSelectStartX = e.clientX;
+      this.boxSelectStartY = e.clientY;
+      this.cameraController.placementActive = true;
+      this.showBoxSelectRect(e.clientX, e.clientY, e.clientX, e.clientY);
+      return;
+    }
+
     // On touch devices, set up long-press timer for context actions (movement, combat focus, enter building)
     if (this.pointerType === 'touch') {
       const clientX = e.clientX;
@@ -797,11 +1170,31 @@ export class WorldScene {
         this.longPressTimer = null;
       }
     }
+
+    // §IFZ CTRL+drag box selection — stretch the rectangle from the anchor to
+    // the live cursor. Everything else (hover, camera) is suspended while the
+    // gesture owns the pointer.
+    if (this.boxSelectActive) {
+      this.showBoxSelectRect(this.boxSelectStartX, this.boxSelectStartY, e.clientX, e.clientY);
+      return;
+    }
+
     const rect = this.container.getBoundingClientRect();
     this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
     this.raycaster.setFromCamera(this.mouse, this.camera);
+
+    // §7.1 Drag-adaptation: paint the footprint-clipped band from the anchor to
+    // the live cursor, relative to the building's own local axes, and refresh
+    // the % readout so the player sees exactly what will be converted.
+    if (this.adaptDragActive && this.adaptDragStart) {
+      const groundHits = this.raycaster.intersectObjects(this.groundRenderer.group.children, true);
+      if (groundHits.length > 0) {
+        this.updateAdaptPaint(groundHits[0].point.x, groundHits[0].point.z, e.clientX, e.clientY);
+      }
+      return;
+    }
 
     // While placing, the ghost follows the cursor. After the gesture starts,
     // fences become a live run stretched between the anchored start and the cursor;
@@ -1066,6 +1459,25 @@ export class WorldScene {
       this.longPressTimer = null;
     }
 
+    // §IFZ CTRL+drag box selection: on release, select every deployed squad
+    // whose on-screen position falls inside the rectangle. A ctrl+CLICK (no
+    // meaningful drag) falls through to the normal click path (which adds the
+    // clicked squad to the selection instead of replacing it).
+    if (this.boxSelectActive) {
+      this.endSquadBoxSelect(e.clientX, e.clientY);
+      return;
+    }
+
+    // Finishing an IFZ-style drag-adaptation selection. A release without a
+    // meaningful drag (a plain click) converts the whole building footprint; a
+    // real drag commits the footprint-relative band the preview showed.
+    if (this.adaptDragActive && this.adaptDragStart) {
+      this.cameraController.placementActive = false;
+      this.finalizeAdaptDrag(e.clientX, e.clientY);
+      this.lastProcessedTapTime = performance.now();
+      return;
+    }
+
     // Finishing a freestanding placement gesture (click + drag + release).
     if (this.placementGestureActive && this.pendingFreestandingType) {
       this.cameraController.placementActive = false;
@@ -1079,6 +1491,296 @@ export class WorldScene {
       this.lastProcessedTapTime = performance.now();
     }
   };
+
+  /**
+   * Arms / disarms IFZ-style drag adaptation. While armed, pressing on a
+   * building and dragging across its footprint paints the physical area to
+   * convert; releasing reports the swept sub-region through `onAdaptArea`. A
+   * plain click (no meaningful drag) converts the whole building.
+   */
+  public setPendingAdaptType(type: FunctionalBuildingTypeId | null) {
+    this.pendingAdaptType = type;
+    if (!type) {
+      this.cancelAdaptDrag();
+    }
+  }
+
+  /**
+   * Live paint preview: measures the band the cursor has swept across the
+   * building's own footprint (in the building's local axis frame), rebuilds the
+   * clipped fill at roof level, and reports the % coverage next to the cursor.
+   */
+  private updateAdaptPaint(x: number, z: number, clientX: number, clientY: number) {
+    const start = this.adaptDragStart;
+    const bldg = this.adaptDragBldg;
+    if (!start || !bldg || !bldg.polygon) return;
+
+    const dragDist = Math.hypot(x - start.x, z - start.z);
+    if (!this.adaptAxisLocked && dragDist >= 2.5) {
+      // Latch the sweep axis at the first meaningful drag so a wobbling cursor
+      // can't flip the band between the building's axes mid-gesture.
+      const decided = sweepFootprintSelection(bldg.polygon, { x: start.x, z: start.z }, { x, z });
+      if (decided) this.adaptPaintAlongLong = decided.alongLongAxis;
+      this.adaptAxisLocked = true;
+    }
+
+    const sel = sweepFootprintSelection(
+      bldg.polygon,
+      { x: start.x, z: start.z },
+      { x, z },
+      this.adaptAxisLocked ? this.adaptPaintAlongLong : undefined
+    );
+    if (!sel) {
+      this.hideAdaptPaint();
+      return;
+    }
+    const pct = Math.min(100, Math.max(0, Math.round(sel.fraction * 100)));
+    this.setAdaptPaintPolygon(sel.polygon.length >= 3 ? sel.polygon : []);
+
+    // Float the fill just above the building's roof (same plane as the
+    // committed region overlays), regardless of how far the cursor wandered.
+    const roofY = this.buildingRenderer.getBuildingRoofY(bldg.id) ?? start.y + (bldg.height || 6);
+    this.adaptPaintGroup.position.y = roofY;
+    const title = pct >= 100 ? '100% · FULL STRUCTURE' : `${pct}%`;
+    let costLine: string | undefined;
+    if (this.adaptPaintFullCost && pct > 0) {
+      const share = sel.fraction;
+      costLine = `~${Math.ceil(this.adaptPaintFullCost.wood * share)}W / ${Math.ceil(this.adaptPaintFullCost.metal * share)}M / ${Math.ceil(this.adaptPaintFullCost.bricks * share)}B`;
+    }
+    this.showAdaptReadout(title, costLine, clientX, clientY);
+  }
+
+  /** Rebuilds the paint fill + outline from a footprint-clipped polygon. */
+  private setAdaptPaintPolygon(poly: Point2D[]) {
+    if (!this.adaptPaintFill || !this.adaptPaintEdge) return;
+    if (poly.length < 3) {
+      this.adaptPaintFill.visible = false;
+      this.adaptPaintEdge.visible = false;
+      this.adaptPaintGroup.visible = false;
+      return;
+    }
+    const shape = new THREE.Shape();
+    shape.moveTo(poly[0].x, -poly[0].z);
+    for (let i = 1; i < poly.length; i++) shape.lineTo(poly[i].x, -poly[i].z);
+    shape.closePath();
+    const geom = new THREE.ShapeGeometry(shape);
+    this.adaptPaintFill.geometry.dispose();
+    this.adaptPaintFill.geometry = geom;
+    const edgeGeom = new THREE.EdgesGeometry(geom);
+    this.adaptPaintEdge.geometry.dispose();
+    this.adaptPaintEdge.geometry = edgeGeom;
+    this.adaptPaintFill.visible = true;
+    this.adaptPaintEdge.visible = true;
+    this.adaptPaintGroup.visible = true;
+  }
+
+  private hideAdaptPaint() {
+    if (this.adaptPaintGroup) this.adaptPaintGroup.visible = false;
+    if (this.adaptPaintFill) this.adaptPaintFill.visible = false;
+    if (this.adaptPaintEdge) this.adaptPaintEdge.visible = false;
+  }
+
+  private ensureAdaptReadoutEl(): HTMLDivElement {
+    if (this.adaptPaintReadout) return this.adaptPaintReadout;
+    const el = document.createElement('div');
+    el.style.cssText =
+      'position:absolute;pointer-events:none;z-index:41;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;' +
+      'background:rgba(8,12,16,0.92);border:1px solid #38bdf8;color:#7dd3fc;padding:4px 8px;' +
+      'font-size:12px;font-weight:700;letter-spacing:0.04em;display:none;white-space:pre-line;' +
+      'line-height:1.35;box-shadow:0 0 14px rgba(56,189,248,0.25);';
+    this.container.appendChild(el);
+    this.adaptPaintReadout = el;
+    return el;
+  }
+
+  private showAdaptReadout(text: string, costLine?: string, clientX?: number, clientY?: number) {
+    const el = this.ensureAdaptReadoutEl();
+    if (costLine) {
+      el.textContent = `${text}\n${costLine}`;
+    } else {
+      el.textContent = text;
+    }
+    if (clientX !== undefined && clientY !== undefined) {
+      const rect = this.container.getBoundingClientRect();
+      const pad = 8;
+      const left = Math.min(clientX - rect.left + 16, rect.width - 210);
+      const top = Math.max(pad, clientY - rect.top - 44);
+      el.style.left = `${Math.max(pad, left)}px`;
+      el.style.top = `${top}px`;
+    }
+    el.style.display = 'block';
+    if (this.adaptReadoutHideTimer !== null) {
+      window.clearTimeout(this.adaptReadoutHideTimer);
+      this.adaptReadoutHideTimer = null;
+    }
+  }
+
+  /** Shows the readout pill for a moment (feedback that needs no gesture). */
+  private showAdaptReadoutAuto(text: string, ms: number) {
+    const el = this.ensureAdaptReadoutEl();
+    el.textContent = text;
+    el.style.left = '50%';
+    el.style.top = '46%';
+    el.style.transform = 'translateX(-50%)';
+    el.style.display = 'block';
+    if (this.adaptReadoutHideTimer !== null) window.clearTimeout(this.adaptReadoutHideTimer);
+    this.adaptReadoutHideTimer = window.setTimeout(() => {
+      el.style.display = 'none';
+      this.adaptReadoutHideTimer = null;
+    }, ms);
+  }
+
+  private hideAdaptReadout() {
+    if (this.adaptReadoutHideTimer !== null) {
+      window.clearTimeout(this.adaptReadoutHideTimer);
+      this.adaptReadoutHideTimer = null;
+    }
+    if (this.adaptPaintReadout) this.adaptPaintReadout.style.display = 'none';
+  }
+
+  private cancelAdaptDrag() {
+    this.adaptDragActive = false;
+    this.adaptDragStart = null;
+    this.adaptDragBldg = null;
+    this.adaptAxisLocked = false;
+    this.hideAdaptPaint();
+    this.hideAdaptReadout();
+  }
+
+  // ---------------- §IFZ CTRL+drag squad box selection ----------------
+
+  private ensureBoxSelectEl(): HTMLDivElement {
+    if (this.boxSelectEl) return this.boxSelectEl;
+    const el = document.createElement('div');
+    el.style.cssText =
+      'position:absolute;pointer-events:none;z-index:40;border:2px dashed #22d3ee;' +
+      'background:rgba(34,211,238,0.10);box-shadow:0 0 18px rgba(34,211,238,0.35);' +
+      'display:none;';
+    this.container.appendChild(el);
+    this.boxSelectEl = el;
+    return el;
+  }
+
+  private showBoxSelectRect(x1: number, y1: number, x2: number, y2: number) {
+    const el = this.ensureBoxSelectEl();
+    const rect = this.container.getBoundingClientRect();
+    const left = Math.min(x1, x2) - rect.left;
+    const top = Math.min(y1, y2) - rect.top;
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+    el.style.width = `${Math.abs(x2 - x1)}px`;
+    el.style.height = `${Math.abs(y2 - y1)}px`;
+    el.style.display = 'block';
+  }
+
+  private hideBoxSelectRect() {
+    if (this.boxSelectEl) this.boxSelectEl.style.display = 'none';
+  }
+
+  /** Shared release path for CTRL+drag (also used by the window-level fallback). */
+  private endSquadBoxSelect(endX: number, endY: number) {
+    this.cameraController.placementActive = false;
+    this.boxSelectActive = false;
+    this.hideBoxSelectRect();
+    if (this.pointerDragged) {
+      this.finalizeSquadBoxSelect(endX, endY);
+      this.lastProcessedTapTime = performance.now();
+    }
+  }
+
+  private onWindowPointerUp = (e: PointerEvent) => {
+    if (this.boxSelectActive) this.endSquadBoxSelect(e.clientX, e.clientY);
+    // A conversion paint released OUTSIDE the scene must not leave the camera
+    // locked or the preview frozen — abort the gesture cleanly.
+    if (this.adaptDragActive) {
+      this.cameraController.placementActive = false;
+      this.cancelAdaptDrag();
+      this.showAdaptReadoutAuto('CONVERSION CANCELLED', 1400);
+    }
+  };
+
+  /** Squads inside the dragged screen-space rectangle become the selection. */
+  private finalizeSquadBoxSelect(endX: number, endY: number) {
+    const rect = this.container.getBoundingClientRect();
+    const minX = Math.min(this.boxSelectStartX, endX);
+    const maxX = Math.max(this.boxSelectStartX, endX);
+    const minY = Math.min(this.boxSelectStartY, endY);
+    const maxY = Math.max(this.boxSelectStartY, endY);
+    if (maxX - minX < 4 || maxY - minY < 4) return;
+
+    const v = new THREE.Vector3();
+    const inside = this.liveSquads.filter((sq) => {
+      if (!sq.isDeployed || sq.currentHp <= 0 || sq.mountedVehicleId) return false;
+      v.set(sq.x, 0, sq.z).project(this.camera);
+      // Projected point is behind the camera on a far view — cull it.
+      if (v.z > 1) return false;
+      const sx = ((v.x + 1) / 2) * rect.width + rect.left;
+      const sy = ((-v.y + 1) / 2) * rect.height + rect.top;
+      return sx >= minX && sx <= maxX && sy >= minY && sy <= maxY;
+    });
+
+    if (inside.length === 0) return; // empty box keeps the current selection
+    this.selectedSquadIds = new Set(inside.map((s) => s.squadId));
+    this.selectedSquadId = inside[0].squadId;
+    // onSelectSquads alone drives the state: the hook sets both the full set
+    // and the primary id, so calling onSelectSquad here too would collapse the
+    // multi-selection back to a single squad.
+    this.onSelectSquads?.(Array.from(this.selectedSquadIds));
+    // A box of squads replaces the building/vehicle inspection selection.
+    this.buildingRenderer.setSelected(null);
+    this.onSelectBuilding?.(null);
+    this.onSelectVehicle?.(null);
+  }
+
+  private finalizeAdaptDrag(clientX: number, clientY: number) {
+    const type = this.pendingAdaptType;
+    const start = this.adaptDragStart;
+    const bldg = this.adaptDragBldg;
+    if (!type || !start || !bldg || !bldg.polygon) {
+      this.cancelAdaptDrag();
+      return;
+    }
+
+    const rect = this.container.getBoundingClientRect();
+    this.mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    this.mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    this.raycaster.setFromCamera(this.mouse, this.camera);
+    const groundHits = this.raycaster.intersectObjects(this.groundRenderer.group.children, true);
+    const end = groundHits.length > 0 ? groundHits[0].point : null;
+    const axisLock = this.adaptAxisLocked ? this.adaptPaintAlongLong : undefined;
+    this.cancelAdaptDrag();
+
+    if (!end || !this.onAdaptArea) return;
+
+    const dragDist = Math.hypot(end.x - start.x, end.z - start.z);
+    // A plain click (no meaningful drag) converts the whole building — full
+    // adaptation never requires dragging a box.
+    if (dragDist < 2) {
+      this.onAdaptArea(type, bldg, bldg.polygon);
+      return;
+    }
+
+    // A real drag commits the swept footprint-relative band (mirroring exactly
+    // what the live preview showed).
+    const sel = sweepFootprintSelection(
+      bldg.polygon,
+      { x: start.x, z: start.z },
+      { x: end.x, z: end.z },
+      axisLock
+    );
+    if (!sel || sel.polygon.length < 3) return;
+    const pct = sel.fraction * 100;
+    if (pct < 4) {
+      // Sub-4% slivers are accidental noise — reject with feedback, keep the
+      // player in control to retry the sweep.
+      this.showAdaptReadoutAuto(
+        `SELECTION TOO SMALL (${Math.max(1, Math.round(pct))}%) — DRAG FURTHER ACROSS THE BUILDING`,
+        2200
+      );
+      return;
+    }
+    this.onAdaptArea(type, bldg, pct >= 99 ? bldg.polygon : sel.polygon);
+  }
 
   private finalizeFreestandingPlacement(clientX: number, clientY: number) {
     const type = this.pendingFreestandingType;
@@ -1168,10 +1870,25 @@ export class WorldScene {
   private onClick = (e: MouseEvent) => {
     if (e.button !== 0 || this.pointerDragged) return;
     if (performance.now() - this.lastProcessedTapTime < 350) return; // already handled by touch pointerup
-    this.handleTapAt(e.clientX, e.clientY);
+    this.handleTapAt(e.clientX, e.clientY, e.ctrlKey || e.metaKey);
   };
 
-  private handleTapAt(clientX: number, clientY: number) {
+  /** CTRL (or CMD on macOS) adds a clicked squad to the selection; a ground
+   *  click with CTRL held leaves the current selection untouched. */
+  private selectSquadInternal(squadId: string, additive: boolean) {
+    if (additive) {
+      if (this.selectedSquadIds.has(squadId)) return; // already selected
+      this.selectedSquadIds.add(squadId);
+      this.onSelectSquads?.(Array.from(this.selectedSquadIds));
+      return;
+    }
+    this.selectedSquadIds = new Set([squadId]);
+    this.selectedSquadId = squadId;
+    this.onSelectSquads?.(Array.from(this.selectedSquadIds));
+    this.onSelectSquad?.(squadId);
+  }
+
+  private handleTapAt(clientX: number, clientY: number, ctrl = false) {
     // Freestanding placement is fully driven by the pointerdown/drag/up gesture
     // (finalizeFreestandingPlacement), so taps while armed must not double-place.
     if (this.pendingFreestandingType) return;
@@ -1201,10 +1918,7 @@ export class WorldScene {
         return;
       }
       if (markerHit.kind === 'squad') {
-        this.selectedSquadId = markerHit.id;
-        if (this.onSelectSquad) {
-          this.onSelectSquad(markerHit.id);
-        }
+        this.selectSquadInternal(markerHit.id, ctrl);
         return;
       }
     }
@@ -1212,10 +1926,7 @@ export class WorldScene {
     // 1. Check if a Tactical Squad unit was clicked
     const squadHit = this.combatRenderer.raycastSquad(this.raycaster);
     if (squadHit) {
-      this.selectedSquadId = squadHit;
-      if (this.onSelectSquad) {
-        this.onSelectSquad(squadHit);
-      }
+      this.selectSquadInternal(squadHit, ctrl);
       return;
     }
 
@@ -1253,9 +1964,12 @@ export class WorldScene {
       }
     }
 
-    // 5. Clicked ground (Left-click / single tap: Selection only, NEVER move/attack order)
+    // 5. Clicked ground (Left-click / single tap: Selection only, NEVER move/attack order).
+    //    A CTRL-held ground click is a box-select gesture affordance — it must
+    //    NOT clear the current multi-selection.
     const groundIntersects = this.raycaster.intersectObjects(this.groundRenderer.group.children, true);
     if (groundIntersects.length > 0) {
+      if (ctrl) return;
       const pt = groundIntersects[0].point;
       const position = { x: Math.round(pt.x * 10) / 10, z: Math.round(pt.z * 10) / 10 };
 
@@ -1275,7 +1989,23 @@ export class WorldScene {
     }
   }
 
-  private executeTacticalOrderAtScreenPos(clientX: number, clientY: number) {
+  /** With a multi-squad selection, orders fan out to EVERY selected squad. */
+  private orderSquadIdsFor(targetSquadId: string | null): string[] {
+    if (this.selectedSquadIds.size > 1) return Array.from(this.selectedSquadIds);
+    return targetSquadId ? [targetSquadId] : [];
+  }
+
+  private issueMoveOrder(
+    ids: string[],
+    pos: Point2D,
+    targetBuildingId?: string | number,
+    targetBuildingName?: string,
+    queue = false
+  ) {
+    for (const id of ids) this.onOrderSquadMove?.(id, pos, targetBuildingId, targetBuildingName, queue);
+  }
+
+  private executeTacticalOrderAtScreenPos(clientX: number, clientY: number, queue = false) {
     const rect = this.container.getBoundingClientRect();
     this.mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
     this.mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
@@ -1313,6 +2043,38 @@ export class WorldScene {
     }
     if (!targetSquadId) return;
 
+    // 1.45 Stranded field-loot recovery — right-clicking a stranded pile
+    // (gatherer / demolition overflow) dispatches the squad to collect it.
+    // Checked before building raycasts so a pile inside a demolished structure
+    // wins over enter/scavenge orders.
+    {
+      const ground = this.raycaster.intersectObjects([
+        ...this.groundRenderer.group.children,
+        ...this.roadRenderer.group.children,
+      ], true)[0]?.point;
+      const at = ground
+        ? { x: ground.x, z: ground.z }
+        : (() => {
+            const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+            const p = new THREE.Vector3();
+            return this.raycaster.ray.intersectPlane(plane, p) ? { x: p.x, z: p.z } : null;
+          })();
+      if (at && this.strandedPiles.length > 0 && this.onOrderSquadMove) {
+        const pile = findPileAt(this.strandedPiles, at, STRANDED_DISPATCH_RADIUS);
+        if (pile) {
+          this.spawnTapFeedback(pile.position.x, 0, pile.position.z, 0xf59e0b);
+          this.issueMoveOrder(
+            this.orderSquadIdsFor(targetSquadId),
+            { x: Math.round(pile.position.x * 10) / 10, z: Math.round(pile.position.z * 10) / 10 },
+            getStrandedLootOrderId(pile.id),
+            `Stranded Field Loot (${pile.wood + pile.metal + pile.bricks} units)`,
+            queue
+          );
+          return;
+        }
+      }
+    }
+
     // 1.5 Check if clicked on a loot pin / leftover crate marker
     const lootHit = markerHit?.kind === 'loot_pin' || markerHit?.kind === 'leftover_loot' ? markerHit.id : null;
     if (lootHit && this.onOrderSquadMove) {
@@ -1324,14 +2086,15 @@ export class WorldScene {
         const hit = this.raycaster.intersectObjects(this.buildingRenderer.group.children, true)[0];
         const pt = hit?.point || new THREE.Vector3(bldg.center.x, 0, bldg.center.z);
         this.spawnTapFeedback(pt.x, pt.y, pt.z, 0x10b981);
-        this.onOrderSquadMove(
-          targetSquadId,
+        this.issueMoveOrder(
+          this.orderSquadIdsFor(targetSquadId),
           {
             x: Math.round(pt.x * 10) / 10,
             z: Math.round(pt.z * 10) / 10,
           },
           bldg.id,
-          bldg.name || bldg.type
+          bldg.name || bldg.type,
+          queue
         );
         return;
       }
@@ -1347,7 +2110,7 @@ export class WorldScene {
         const pt = zombieIntersects[0].point;
         this.spawnTapFeedback(pt.x, pt.y, pt.z, 0xef4444);
       }
-      this.onOrderSquadAttack(targetSquadId, zombieHit);
+      for (const id of this.orderSquadIdsFor(targetSquadId)) this.onOrderSquadAttack(id, zombieHit);
       return;
     }
 
@@ -1363,14 +2126,15 @@ export class WorldScene {
           // order can deliberately position a squad inside the structure.
           const hitPoint = buildingIntersects[0]?.point || new THREE.Vector3(bldg.center.x, 0, bldg.center.z);
           this.spawnTapFeedback(hitPoint.x, hitPoint.y, hitPoint.z, 0x10b981);
-          this.onOrderSquadMove(
-            targetSquadId,
+          this.issueMoveOrder(
+            this.orderSquadIdsFor(targetSquadId),
             {
               x: Math.round(hitPoint.x * 10) / 10,
               z: Math.round(hitPoint.z * 10) / 10,
             },
             bldg.id,
-            bldg.name || bldg.type
+            bldg.name || bldg.type,
+            queue
           );
           return;
         }
@@ -1381,27 +2145,26 @@ export class WorldScene {
     const groundIntersects = this.raycaster.intersectObjects([
       ...this.groundRenderer.group.children,
       ...this.roadRenderer.group.children,
-    ], true);
-
-    if (groundIntersects.length > 0 && this.onOrderSquadMove) {
+    ], true);    if (groundIntersects.length > 0 && this.onOrderSquadMove) {
       const pt = groundIntersects[0].point;
       this.spawnTapFeedback(pt.x, pt.y, pt.z, 0x10b981);
-      this.onOrderSquadMove(targetSquadId, {
+      this.issueMoveOrder(this.orderSquadIdsFor(targetSquadId), {
         x: Math.round(pt.x * 10) / 10,
         z: Math.round(pt.z * 10) / 10,
-      });
+      }, undefined, undefined, queue);
       return;
     }
 
     // 5. Fallback: Raycast infinite mathematical ground plane (y = 0)
     const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     const hitPos = new THREE.Vector3();
+
     if (this.raycaster.ray.intersectPlane(plane, hitPos) && this.onOrderSquadMove) {
       this.spawnTapFeedback(hitPos.x, 0, hitPos.z, 0x10b981);
-      this.onOrderSquadMove(targetSquadId, {
+      this.issueMoveOrder(this.orderSquadIdsFor(targetSquadId), {
         x: Math.round(hitPos.x * 10) / 10,
         z: Math.round(hitPos.z * 10) / 10,
-      });
+      }, undefined, undefined, queue);
     }
   }
 
@@ -1508,7 +2271,7 @@ export class WorldScene {
   private onContextMenu = (e: MouseEvent) => {
     e.preventDefault(); // Prevent default browser context menu
     if (this.pointerDragged) return; // If user dragged with right-click to rotate/elevate camera, do NOT execute squad order
-    this.executeTacticalOrderAtScreenPos(e.clientX, e.clientY);
+    this.executeTacticalOrderAtScreenPos(e.clientX, e.clientY, e.shiftKey);
   };
 
   public setSelectedSquadId(squadId: string | null) {
@@ -1566,9 +2329,14 @@ export class WorldScene {
     droppedItems: DroppedItem[] = [],
     hostileHumans: HostileHumanUnit[] = [],
     workers: ResourceWorkOrder[] = [],
-    constructionOrders: ConstructionWorkOrder[] = []
+    constructionOrders: ConstructionWorkOrder[] = [],
+    selectedSquadIds?: string[]
   ) {
     this.selectedSquadId = selectedSquadId;
+    this.liveSquads = squads;
+    if (selectedSquadIds) {
+      this.selectedSquadIds = new Set(selectedSquadIds);
+    }
     this.gateTriggerSquads = squads
       .filter((s) => s.currentHp > 0)
       .map((s) => ({ x: s.x, z: s.z }));
@@ -1651,14 +2419,18 @@ export class WorldScene {
     fogEnabled: boolean,
     rivalHideouts?: Map<string | number, RivalHideout>,
     zombieLairs?: Map<string | number, ZombieLair>,
+    occupiedBuildings?: Map<string | number, BuildingOccupation>,
     resourceWorkOrders: ResourceWorkOrder[] = [],
     constructionOrders: ConstructionWorkOrder[] = [],
-    buildingSearches?: Map<string | number, BuildingSearchState>
+    buildingSearches?: Map<string | number, BuildingSearchState>,
+    strandedPiles: import('../types/settlement').FieldLootPile[] = []
   ) {
+    this.strandedPiles = strandedPiles;
     const safeHidden = toSafeMap<string | number, HiddenSurvivorGroup>(hiddenGroups);
     this.hiddenGroups = safeHidden;
     if (rivalHideouts) this.rivalHideouts = toSafeMap<string | number, RivalHideout>(rivalHideouts);
     if (zombieLairs) this.zombieLairs = toSafeMap<string | number, ZombieLair>(zombieLairs);
+    if (occupiedBuildings) this.occupiedBuildings = toSafeMap<string | number, BuildingOccupation>(occupiedBuildings);
 
     const classify = (x: number, z: number) =>
       this.fogGrid && fogEnabled ? classifyPoint(this.fogGrid, this.visibleCells, x, z) : 'visible';
@@ -1699,7 +2471,8 @@ export class WorldScene {
       else if (squad.searchProgress !== undefined && squad.searchProgress > 0) activity = 'scavenging';
       else if (squad.state === 'moving' || Boolean(squad.targetPos)) activity = 'moving';
 
-      const isSelected = squad.squadId === this.selectedSquadId;
+      // §IFZ multi-select: every squad inside the CTRL+drag box highlights.
+      const isSelected = this.selectedSquadIds.has(squad.squadId);
       const damageRatio = squad.maxHp > 0 ? Math.max(0, squad.currentHp / squad.maxHp) : 1;
       const squadNum = squad.name ? squad.name.replace(/[^0-9]/g, '') || squad.name.slice(0, 2) : '1';
 
@@ -1728,6 +2501,45 @@ export class WorldScene {
       });
     }
 
+    // 1b. IFZ "no path" indicators: an ordered building the pathfinder proved
+    // unreachable gets a red warning badge over its roof. One icon per building
+    // even when several squads are blocked on it; squads without a building
+    // target anchor the icon at their own stuck position.
+    {
+      const noPathTargets = new Map<string, { x: number; z: number; label: string }>();
+      for (const squad of squads) {
+        if (!squad.noPath || squad.currentHp <= 0) continue;
+        const key =
+          squad.noPath.buildingId !== undefined
+            ? String(squad.noPath.buildingId)
+            : `pos_${squad.noPath.x.toFixed(1)}_${squad.noPath.z.toFixed(1)}`;
+        if (noPathTargets.has(key)) continue;
+        const bldg = mapData?.buildings.find((b) => String(b.id) === String(squad.noPath.buildingId));
+        if (bldg) {
+          noPathTargets.set(key, { x: bldg.center.x, z: bldg.center.z, label: bldg.name || 'NO PATH' });
+        } else {
+          noPathTargets.set(key, { x: squad.noPath.x, z: squad.noPath.z, label: 'NO PATH' });
+        }
+      }
+      for (const [bldgKey, target] of noPathTargets.entries()) {
+        if (classify(target.x, target.z) !== 'visible') continue;
+        const elev = activeElevation ? sampleElevation(activeElevation, target.x, target.z, this.currentExaggeration) : 0;
+        const anchorY = Math.max(elev, this.getBuildingTopY(bldgKey));
+        markers.push({
+          key: `no_path_${bldgKey}`,
+          kind: 'no_path',
+          faction: 'hostile',
+          x: target.x,
+          z: target.z,
+          y: anchorY + 5.0,
+          anchorY,
+          label: target.label,
+          sublabel: 'UNREACHABLE',
+          detailMode: detail,
+        });
+      }
+    }
+
     // 2. Player vehicles — friendly if occupied/driven, neutral if parked
     for (const vehicle of vehicles) {
       if (vehicle.condition === 'wrecked') continue;
@@ -1740,6 +2552,7 @@ export class WorldScene {
 
       const mountedSquad = vehicle.assignedSquadId ? squads.find((s) => s.squadId === vehicle.assignedSquadId) : null;
       const isOccupied = Boolean(mountedSquad);
+      const isUnknownVehicle = !vehicle.isDiscovered && !isOccupied;
       const isSelected = vehicle.id === this.selectedVehicleId || Boolean(mountedSquad && mountedSquad.squadId === this.selectedSquadId);
       const isMoving = Boolean(vehicle.isMoving);
       const damageRatio = vehicle.maxHp > 0 ? Math.max(0, vehicle.currentHp / vehicle.maxHp) : 1;
@@ -1754,14 +2567,15 @@ export class WorldScene {
         z: vehicle.position.z,
         y: anchorY + 3.2,
         anchorY,
-        label: vehicle.name,
-        squadNumber: vehNum,
+        label: isUnknownVehicle ? 'UNKNOWN VEHICLE' : vehicle.name,
+        squadNumber: isUnknownVehicle ? '?' : vehNum,
         sublabel: mountedSquad ? mountedSquad.name : undefined,
         isSelected,
         isMoving,
         isOccupied,
         isArmed: isOccupied,
         memberCount: mountedAlive,
+        bestWeaponName: isUnknownVehicle ? 'Unidentified vehicle' : undefined,
         maxMembers: mountedSquad ? mountedSquad.members.length : undefined,
         damageRatio,
         inBuilding: Boolean(insideBldg),
@@ -1858,10 +2672,38 @@ export class WorldScene {
         y: topY + 3.0,
         anchorY: topY,
         label: 'LAIR',
+        // Fill vs the founding garrison (baselinePopulation) — full at/above
+        // baseline; a swollen nest simply shows a full badge.
         damageRatio:
-          lair.initialOccupantCount > 0
-            ? Math.max(0, Math.min(1, lair.occupantCount / lair.initialOccupantCount))
+          lair.baselinePopulation > 0
+            ? Math.max(0, Math.min(1, lair.population / lair.baselinePopulation))
             : 1,
+        detailMode: detail,
+      });
+    }
+
+    // 7b. Occupied buildings (§IFZ) — unadapted structures taken over by
+    // infected. A red badge sits over the building until every infected inside
+    // is dead (the occupation clears and the marker disappears).
+    for (const occ of this.occupiedBuildings.values()) {
+      if (occ.isCleared) continue;
+      const bldg = mapData?.buildings.find((b) => String(b.id) === String(occ.buildingId));
+      if (!bldg) continue;
+      if (classify(bldg.center.x, bldg.center.z) !== 'visible') continue;
+
+      const topY = this.getBuildingTopY(bldg.id);
+      markers.push({
+        key: `occupied_${occ.id}`,
+        kind: 'lair',
+        faction: 'hostile',
+        x: bldg.center.x,
+        z: bldg.center.z,
+        y: topY + 4.0,
+        anchorY: topY,
+        label: 'OCCUPIED',
+        sublabel: `${occ.infectedRemaining} INSIDE`,
+        damageRatio:
+          occ.maxInfected > 0 ? Math.max(0, Math.min(1, occ.infectedRemaining / occ.maxInfected)) : 1,
         detailMode: detail,
       });
     }
@@ -1922,9 +2764,11 @@ export class WorldScene {
       });
     }
 
-    // 10. Scavenge View Loot Pins (unscavenged buildings with item categories)
+    // 10. Scavenge View Loot Pins (unscavenged buildings with item categories).
+    // The headquarters is never a loot target, so it never gets a pin.
     if (this.isScavengeViewActive && this.precomputedLootPins.length > 0) {
       for (const pin of this.precomputedLootPins) {
+        if (String(pin.id) === String(this.hqBuildingId)) continue;
         const searchState = buildingSearches?.get(pin.id) || buildingSearches?.get(String(pin.id));
         const isScavenged = searchState?.searched === true || (searchState?.unlootedItems && searchState.unlootedItems.length === 0 && searchState?.lootedItems && searchState.lootedItems.length > 0);
         if (isScavenged || classify(pin.x, pin.z) === 'unexplored') continue;
@@ -1950,6 +2794,7 @@ export class WorldScene {
       }
     } else if (this.isScavengeViewActive && mapData?.buildings) {
       for (const bldg of mapData.buildings) {
+        if (String(bldg.id) === String(this.hqBuildingId)) continue;
         const bldgIdStr = String(bldg.id);
         const searchState = buildingSearches?.get(bldg.id) || buildingSearches?.get(bldgIdStr);
         const isScavenged = searchState?.searched === true || (searchState?.unlootedItems && searchState.unlootedItems.length === 0 && searchState?.lootedItems && searchState.lootedItems.length > 0);
@@ -1984,6 +2829,8 @@ export class WorldScene {
     // send someone back. Hidden inside unexplored fog like the loot pins.
     if (mapData?.buildings) {
       for (const bldg of mapData.buildings) {
+        // The HQ never leaves leftover crates behind — it can't be scavenged.
+        if (String(bldg.id) === String(this.hqBuildingId)) continue;
         const searchState =
           buildingSearches?.get(bldg.id) || buildingSearches?.get(String(bldg.id));
         if (!searchState) continue;
@@ -2013,7 +2860,33 @@ export class WorldScene {
       }
     }
 
-    // 11. Street labels are rendered directly on the road surface by RoadRenderer (flat text with no boxes)
+    // 11. Stranded field-loot piles — gatherer / demolition overflow left at
+    // the worksite when storage was full. Always shown once explored so the
+    // player can spot and recover them (right-click dispatch).
+    if (this.strandedPiles.length > 0) {
+      for (const pile of this.strandedPiles) {
+        const pileUnits =
+          pile.wood + pile.metal + pile.bricks +
+          (pile.items || []).reduce((sum, it) => sum + it.quantity, 0);
+        if (pileUnits <= 0) continue;
+        if (classify(pile.position.x, pile.position.z) === 'unexplored') continue;
+        markers.push({
+          key: `stranded_${pile.id}`,
+          kind: 'stranded_loot',
+          faction: 'unknown',
+          x: pile.position.x,
+          z: pile.position.z,
+          y: 2.2,
+          anchorY: 0,
+          label: `Stranded Field Loot — ${pileUnits} units`,
+          lootCategory: pile.wood + pile.metal + pile.bricks > 0 ? 'materials' : 'assorted',
+          leftoverCount: pileUnits,
+          detailMode: detail,
+        });
+      }
+    }
+
+    // 12. Street labels are rendered directly on the road surface by RoadRenderer (flat text with no boxes)
 
     this.markerRenderer.updateMarkers(markers);
   }
@@ -2139,6 +3012,12 @@ export class WorldScene {
     // Update Ground water caustics & animations
     this.groundRenderer.update(delta, now / 1000);
 
+    // Update weather visuals (rain/snow fall, cloud drift, lightning, easing)
+    this.weatherFX.update(delta, now / 1000, this.camera.position);
+
+    // Update resource-node depletion animations (felling trees, dissolving cars)
+    this.resourceRenderer.update(delta, now / 1000);
+
     // Keep the satellite focal bands following the camera target (re-burn the
     // canvas around the view if the player has panned far enough).
     this.groundRenderer.setSatelliteFollowPoint(
@@ -2201,14 +3080,17 @@ export class WorldScene {
   public dispose() {
     this.isRunning = false;
     cancelAnimationFrame(this.animationFrameId);
+    this.weatherFX.dispose();
 
     this.container.removeEventListener('pointerdown', this.onPointerDown);
     this.container.removeEventListener('pointermove', this.onPointerMove);
     this.container.removeEventListener('pointerup', this.onPointerUp);
     this.container.removeEventListener('click', this.onClick);
     this.container.removeEventListener('contextmenu', this.onContextMenu);
+    window.removeEventListener('pointerup', this.onWindowPointerUp);
     window.removeEventListener('resize', this.onWindowResize);
 
+    this.clearPowerOverlay();
     this.cameraController.dispose();
     this.buildingRenderer.dispose();
     this.roadRenderer.dispose();

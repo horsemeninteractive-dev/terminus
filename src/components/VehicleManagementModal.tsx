@@ -22,10 +22,15 @@ import { VEHICLE_DEFINITIONS, VehicleType, WorldVehicle } from '../types/vehicle
 import {
  dismountSquadFromVehicle,
  mountSquadToVehicle,
- refuelVehicle,
- repairVehicle,
+ pickFuelCarrierSquad,
  siphonVehicleFuel,
+ startManualFuelDelivery,
 } from '../services/vehicleService';
+import {
+ cancelVehicleWorkshopOrder,
+ createVehicleWorkshopOrder,
+ getVehicleWorkshopOrder,
+} from '../services/vehicleWorkshopService';
 import { TacticalSquadUnit } from '../types/combat';
 
 interface VehicleManagementModalProps {
@@ -57,6 +62,7 @@ export const VehicleManagementModal: React.FC<VehicleManagementModalProps> = ({
  if (!isOpen) return null;
 
  const vehicles = settlement.vehicles || [];
+ const workshopOrders = settlement.vehicleWorkshopOrders || [];
  const filteredVehicles = vehicles.filter(
  (v) => filterType === 'all' || v.type === filterType
  );
@@ -64,53 +70,92 @@ export const VehicleManagementModal: React.FC<VehicleManagementModalProps> = ({
  const activeVehicle =
  vehicles.find((v) => v.id === selectedVehicleId) || vehicles[0] || null;
 
- // Handle Refueling
+ // Handle Refueling — IFZ manual refuel: fuel is withdrawn from the stockpile
+ // into a squad's backpack and the squad must CARRY it to the vehicle. The
+ // tank fills when they arrive, not on button press. (Parking beside an
+ // operational Warehouse still auto-refuels instantly.)
  const handleRefuel = (vehicle: WorldVehicle, amountLiters: number = 25) => {
- const res = refuelVehicle(settlement, vehicle, amountLiters);
- if (!res.success) {
- setActionFeedback(res.error || 'Refueling failed.');
+ const liters = Math.min(
+   amountLiters,
+   vehicle.maxFuel - vehicle.currentFuel,
+   settlement.stockpile.fuel[vehicle.fuelType] || 0
+ );
+ const carrier = pickFuelCarrierSquad(settlement, vehicle, combatSquads);
+ if (!carrier) {
+ setActionFeedback(
+ 'No squad with a free backpack slot is available to carry fuel to this vehicle.'
+ );
  return;
  }
-
- const updatedVehicles = settlement.vehicles.map((v) =>
- v.id === vehicle.id ? res.updatedVehicle : v
+ const res = startManualFuelDelivery(settlement, vehicle, carrier, amountLiters);
+ if (!res.success || !res.newState || !res.updatedSquad) {
+ setActionFeedback(res.error || 'Refuel dispatch failed.');
+ return;
+ }
+ onUpdateSettlement(res.newState);
+ onUpdateCombatSquads(
+ combatSquads.map((s) =>
+   s.squadId === carrier.squadId ? res.updatedSquad! : s
+ )
  );
-
- onUpdateSettlement({
- ...settlement,
- stockpile: res.updatedStockpile,
- vehicles: updatedVehicles,
- });
-
  setActionFeedback(
- `Fueled ${vehicle.name} with ${vehicle.fuelType.toUpperCase()}. Tank at ${(
- (res.updatedVehicle.currentFuel / res.updatedVehicle.maxFuel) *
- 100
- ).toFixed(0)}%.`
+ `${carrier.name} withdrew ${liters.toFixed(0)}L of ${vehicle.fuelType.toUpperCase()} into a fuel item and is carrying it to ${vehicle.name}. The tank fills when the squad arrives.`
+ );
+ }; // Handle Repairing — §8 the Vehicle Workshop repairs over TIME. Parking a
+ // damaged vehicle inside a staffed workshop queues a bay job; mechanics heal
+ // it over mechanic-hours while metal is consumed per HP restored. The old
+ // instant pay-metal → full HP button no longer exists.
+ const handleRepair = (vehicle: WorldVehicle) => {
+ const res = createVehicleWorkshopOrder(settlement, {
+ type: 'repair',
+ vehicleId: vehicle.id,
+ });
+ if (!res.success || !res.newState) {
+ setActionFeedback(res.error || 'Repair dispatch failed.');
+ return;
+ }
+ onUpdateSettlement(res.newState);
+ setActionFeedback(
+ `Repair queued: ${vehicle.name} occupies a workshop bay until the mechanics finish.`
  );
  };
 
- // Handle Repairing
- const handleRepair = (vehicle: WorldVehicle) => {
- const res = repairVehicle(settlement, vehicle);
- if (!res.success) {
- setActionFeedback(res.error || 'Repair failed.');
+ // Handle Dismantling — §8 break a parked chassis down for scrap metal.
+ const handleDismantle = (vehicle: WorldVehicle) => {
+ const res = createVehicleWorkshopOrder(settlement, {
+ type: 'dismantle',
+ vehicleId: vehicle.id,
+ });
+ if (!res.success || !res.newState) {
+ setActionFeedback(res.error || 'Dismantle dispatch failed.');
  return;
  }
-
- const updatedVehicles = settlement.vehicles.map((v) =>
- v.id === vehicle.id ? res.updatedVehicle : v
- );
-
- onUpdateSettlement({
- ...settlement,
- stockpile: res.updatedStockpile,
- vehicles: updatedVehicles,
- });
-
+ onUpdateSettlement(res.newState);
  setActionFeedback(
- `Restored ${vehicle.name} to 100% operational condition using metal scrap.`
+ `Dismantle queued: ${vehicle.name} will be broken down for ${VEHICLE_DEFINITIONS[vehicle.type].scrapMetalYield} metal.`
  );
+ };
+
+ // Handle Fabrication — §8 order a new vehicle from the workshop.
+ const handleFabricate = (type: VehicleType) => {
+ const res = createVehicleWorkshopOrder(settlement, {
+ type: 'fabricate',
+ vehicleType: type,
+ });
+ if (!res.success || !res.newState) {
+ setActionFeedback(res.error || 'Fabrication failed.');
+ return;
+ }
+ onUpdateSettlement(res.newState);
+ setActionFeedback(
+ `Fabrication queued: ${VEHICLE_DEFINITIONS[type].name} will roll out of the workshop when done.`
+ );
+ };
+
+ const handleCancelOrder = (orderId: string) => {
+ const res = cancelVehicleWorkshopOrder(settlement, orderId);
+ if (res.success) onUpdateSettlement(res.newState);
+ setActionFeedback(res.success ? 'Workshop order cancelled.' : 'Could not cancel order.');
  };
 
  // Handle Siphoning Fuel
@@ -137,6 +182,9 @@ export const VehicleManagementModal: React.FC<VehicleManagementModalProps> = ({
  };
 
  // Handle Squad Boarding / Mounting
+ const isDeliveringFuelTo = (vehicle: WorldVehicle) =>
+ combatSquads.some((s) => s.pendingFuelDeliveryVehicleId === vehicle.id);
+
  const handleMountSquad = (vehicle: WorldVehicle, squadId: string) => {
  const squad = combatSquads.find((s) => s.squadId === squadId);
  if (!squad) return;
@@ -194,7 +242,7 @@ export const VehicleManagementModal: React.FC<VehicleManagementModalProps> = ({
  <h2 className="text-lg font-black tracking-wide text-white uppercase flex items-center gap-2">
  <span>Motor Pool & Vehicle Fleet (§8)</span>
  <span className="text-xs px-2 py-0.5 bg-[#0F172A] text-[#CBD5E1] border border-[#1E293B]">
- {vehicles.length} Discovered
+ {vehicles.filter((v) => v.isDiscovered).length} Discovered
  </span>
  </h2>
  <p className="text-xs text-slate-400">
@@ -536,19 +584,121 @@ export const VehicleManagementModal: React.FC<VehicleManagementModalProps> = ({
  <div className="flex gap-2">
  <button
  onClick={() => handleRefuel(activeVehicle, 25)}
- disabled={settlement.stockpile.fuel[activeVehicle.fuelType] < 5}
+ disabled={
+   settlement.stockpile.fuel[activeVehicle.fuelType] < 5 ||
+   isDeliveringFuelTo(activeVehicle)
+ }
  className="px-3 py-1 bg-amber-600 hover:bg-amber-500 disabled:bg-slate-800 disabled:text-slate-600 text-white font-bold text-xs transition-colors cursor-pointer"
+ title="A squad withdraws a fuel item from the stockpile and carries it to the vehicle — the tank fills on arrival."
  >
  +25L Refuel
  </button>
  <button
  onClick={() => handleRefuel(activeVehicle, activeVehicle.maxFuel)}
- disabled={settlement.stockpile.fuel[activeVehicle.fuelType] < 5}
+ disabled={
+   settlement.stockpile.fuel[activeVehicle.fuelType] < 5 ||
+   isDeliveringFuelTo(activeVehicle)
+ }
  className="px-3 py-1 bg-amber-700 hover:bg-amber-600 disabled:bg-slate-800 disabled:text-slate-600 text-white font-bold text-xs transition-colors cursor-pointer"
+ title="Withdraws enough fuel to top the tank and dispatches a squad to carry it here."
  >
  Top Off Tank
  </button>
  </div>
+
+ {isDeliveringFuelTo(activeVehicle) && (
+ <div className="mt-2 text-[10px] bg-amber-950/40 border border-amber-700/40 px-2 py-1 text-amber-300">
+ {combatSquads.find((s) => s.pendingFuelDeliveryVehicleId === activeVehicle.id)?.name} is
+ carrying {activeVehicle.fuelType} to this vehicle — the tank fills when the squad arrives.
+ </div>
+ )}
+ </div>
+ </div>
+
+ {/* §8 Vehicle Workshop — orders, fabrication & dismantling */}
+ <div className="p-4 bg-[#10151d] border border-[#1f2b3a] space-y-2.5 text-xs">
+ <div className="flex items-center gap-2 font-bold text-white">
+ <Wrench className="w-4 h-4 text-cyan-400" />
+ <span>Vehicle Workshop (§8)</span>
+ <span className="ml-auto text-[10px] font-mono text-slate-400">
+ {workshopOrders.length} ORDER{workshopOrders.length === 1 ? '' : 'S'}
+ </span>
+ </div>
+
+ {workshopOrders.length === 0 ? (
+ <p className="text-[11px] text-slate-400">
+ No jobs queued. Park a damaged vehicle in the bay for repair, dismantle a
+ chassis for scrap, or fabricate a new one — a staffed workshop is required.
+ </p>
+ ) : (
+ <div className="space-y-1.5">
+ {workshopOrders.map((order) => {
+ const pct = Math.min(
+ 100,
+ Math.round((order.mechanicHoursDone / order.mechanicHoursRequired) * 100)
+ );
+ return (
+ <div
+ key={order.id}
+ className="flex items-center gap-2 bg-[#0d1117] border border-[#1c2530] px-2 py-1.5"
+ >
+ <div className="flex-1 min-w-0">
+ <div className="flex items-center justify-between gap-2">
+ <span className="text-[11px] font-bold text-slate-200 truncate">
+ {order.label}
+ </span>
+ <span className="text-[10px] font-mono text-cyan-300">{pct}%</span>
+ </div>
+ <div className="h-1.5 bg-slate-800 mt-1 overflow-hidden">
+ <div className="h-full bg-cyan-500" style={{ width: `${pct}%` }} />
+ </div>
+ </div>
+ <button
+ onClick={() => handleCancelOrder(order.id)}
+ className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-400 text-[10px] font-bold cursor-pointer"
+ title="Cancel order"
+ >
+ Cancel
+ </button>
+ </div>
+ );
+ })}
+ </div>
+ )}
+
+ <div className="border-t border-[#1c2530] pt-2 space-y-1.5">
+ <div className="text-[10px] font-bold uppercase text-slate-400">
+ Fabricate (metal consumed over time)
+ </div>
+ <div className="grid grid-cols-3 gap-1.5">
+ {(Object.keys(VEHICLE_DEFINITIONS) as VehicleType[]).map((type) => {
+ const def = VEHICLE_DEFINITIONS[type];
+ const tooPoor = settlement.stockpile.materials.metal < def.fabricationMetalCost;
+ return (
+ <button
+ key={type}
+ onClick={() => handleFabricate(type)}
+ disabled={tooPoor}
+ className="p-1.5 bg-[#14232f] hover:bg-[#1b3342] disabled:opacity-40 border border-[#1f2b3a] text-left text-[10px] cursor-pointer disabled:cursor-not-allowed"
+ >
+ <div className="font-bold text-slate-200 truncate">{def.name}</div>
+ <div className="text-amber-300 font-mono">{def.fabricationMetalCost} Metal</div>
+ </button>
+ );
+ })}
+ </div>
+
+ {!getVehicleWorkshopOrder(settlement, activeVehicle.id) &&
+ !activeVehicle.assignedSquadId &&
+ !activeVehicle.isMoving && (
+ <button
+ onClick={() => handleDismantle(activeVehicle)}
+ className="w-full py-1.5 bg-[#3b1216] hover:bg-[#5a1a20] border border-red-900 text-red-300 text-[11px] font-bold cursor-pointer flex items-center justify-center gap-1.5"
+ >
+ <Wrench className="w-3.5 h-3.5" />
+ DISMANTLE THIS VEHICLE ({VEHICLE_DEFINITIONS[activeVehicle.type].scrapMetalYield} Metal)
+ </button>
+ )}
  </div>
  </div>
 
@@ -573,27 +723,54 @@ export const VehicleManagementModal: React.FC<VehicleManagementModalProps> = ({
  />
  </div>
 
- <div className="flex items-center justify-between text-[11px] pt-2">
- <span className="text-slate-400">
- Cost:{' '}
- <strong className="text-white">
- {VEHICLE_DEFINITIONS[activeVehicle.type].repairMetalCost} Metal
- </strong>
- </span>
-
+ {(() => {
+ const activeOrder = workshopOrders.find(
+ (o) => String(o.vehicleId) === String(activeVehicle.id)
+ );
+ if (activeOrder) {
+ const pct = Math.min(
+ 100,
+ Math.round((activeOrder.mechanicHoursDone / activeOrder.mechanicHoursRequired) * 100)
+ );
+ return (
+ <div className="flex items-center justify-between text-[11px] pt-2 bg-[#0d1117] border border-[#1e293b] p-2">
+ <div className="flex-1">
+ <div className="text-cyan-300 font-bold uppercase text-[10px]">
+ {activeOrder.type === 'repair' ? 'Repair in progress' : activeOrder.type === 'dismantle' ? 'Dismantling' : 'Order queued'}
+ </div>
+ <div className="h-1.5 w-full bg-slate-800 mt-1 overflow-hidden">
+ <div className="h-full bg-cyan-500" style={{ width: `${pct}%` }} />
+ </div>
+ </div>
  <button
- onClick={() => handleRepair(activeVehicle)}
- disabled={
- activeVehicle.currentHp >= activeVehicle.maxHp ||
- settlement.stockpile.materials.metal <
- VEHICLE_DEFINITIONS[activeVehicle.type].repairMetalCost
- }
- className="px-3 py-1 bg-[#334155] hover:bg-[#334155] disabled:bg-slate-800 disabled:text-slate-600 text-white font-bold text-xs transition-colors cursor-pointer flex items-center gap-1"
+ onClick={() => handleCancelOrder(activeOrder.id)}
+ className="ml-2 px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold cursor-pointer"
  >
- <Wrench className="w-3.5 h-3.5" />
- <span>Repair Vehicle</span>
+ Cancel
  </button>
  </div>
+ );
+ }
+ return (
+ <div className="flex items-center justify-between text-[11px] pt-2">
+ <span className="text-slate-400">
+ Total metal:{' '}
+ <strong className="text-white">
+ {VEHICLE_DEFINITIONS[activeVehicle.type].repairMetalCost}
+ </strong>{' '}
+ (consumed as HP is restored)
+ </span>
+ <button
+ onClick={() => handleRepair(activeVehicle)}
+ disabled={activeVehicle.currentHp >= activeVehicle.maxHp}
+ className="px-3 py-1 bg-[#334155] hover:bg-[#4b5b6d] disabled:bg-slate-800 disabled:text-slate-600 text-white font-bold text-xs transition-colors cursor-pointer flex items-center gap-1"
+ >
+ <Wrench className="w-3.5 h-3.5" />
+ <span>Workshop Repair</span>
+ </button>
+ </div>
+ );
+ })()}
  </div>
  </div>
 

@@ -1,9 +1,11 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { ConvexGeometry } from 'three/examples/jsm/geometries/ConvexGeometry.js';
 import { sampleElevation } from '../services/elevationService';
 import { getFreestandingDimensions } from '../services/freestandingFootprint';
 import { BuildingCategory, BuildingPolygon, ElevationGrid } from '../types/map';
 import { AdaptedBuilding, FunctionalCategory } from '../types/settlement';
+import { getPrimaryAdaptedEntry, isBuildingOperational } from '../services/buildingOperational';
 import { getBuildingTextureSet, getFreestandingMaterialTexture, buildingVariantForId } from './buildingTextures';
 
 /** Yields to the browser so the loading overlay can animate between heavy chunks. */
@@ -102,22 +104,31 @@ function polygonArea(pts: { x: number; z: number }[]): number {
   return Math.abs(a) / 2;
 }
 
-/** True when every interior angle of the ring is (near-)convex. */
-function isConvexPolygon(pts: { x: number; z: number }[]): boolean {
-  const n = pts.length;
-  if (n < 3) return false;
-  let sign = 0;
-  for (let i = 0; i < n; i++) {
-    const a = pts[i];
-    const b = pts[(i + 1) % n];
-    const c = pts[(i + 2) % n];
-    const cross = (b.x - a.x) * (c.z - b.z) - (b.z - a.z) * (c.x - b.x);
-    if (Math.abs(cross) < 1e-6) continue; // collinear
-    const s = Math.sign(cross);
-    if (sign === 0) sign = s;
-    else if (s !== sign) return false;
+/**
+ * Andrew's monotone chain convex hull — lets every building (even concave or
+ * L-shaped OSM footprints) get a pitched roof over its overall silhouette.
+ */
+function convexHull(pts: { x: number; z: number }[]): { x: number; z: number }[] {
+  const sorted = pts
+    .map((p) => ({ x: p.x, z: p.z }))
+    .sort((a, b) => a.x - b.x || a.z - b.z);
+  if (sorted.length <= 3) return sorted;
+  const cross = (o: { x: number; z: number }, a: { x: number; z: number }, b: { x: number; z: number }) =>
+    (a.x - o.x) * (b.z - o.z) - (a.z - o.z) * (b.x - o.x);
+  const lower: { x: number; z: number }[] = [];
+  for (const p of sorted) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
   }
-  return true;
+  const upper: { x: number; z: number }[] = [];
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const p = sorted[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  upper.pop();
+  lower.pop();
+  return lower.concat(upper);
 }
 
 /**
@@ -148,17 +159,28 @@ function dominantFootprintAxis(pts: { x: number; z: number }[]) {
 }
 
 /**
- * Builds an indexed hip roof over a convex footprint. Every wall edge gets a
- * sloped face rising to a ridge that runs along the footprint's dominant axis
- * (PCA), so the roof is one continuous non-self-intersecting surface for convex
- * polygons. Geometry is in local metres (y measured above the building base,
- * matching the ExtrudeGeometry); callers translate by baseY. Also returns the
- * ridge + hip lines used for the crisp illustrated silhouette.
+ * Builds a TRUE gable roof (like a classic house: full-length ridge, two long
+ * slopes, and VERTICAL triangular gable ends) over a convex footprint — ANY
+ * convex polygon, since complex OSM footprints arrive via their hull).
+ *
+ * The roof is the 3D convex hull of the eave ring (basic polygon at wall-top
+ * height) plus the two ridge endpoints above the footprint's dominant axis.
+ * For a rectangle that yields exactly the reference look: two long sloped
+ * faces + two vertical gable-end triangles. The hull handles every other
+ * shape (tapered / L / multi-vertex hulls) as a tidy tent.
+ *
+ * Geometry is in local metres (y above the building base, matching the
+ * ExtrudeGeometry); callers translate by baseY. Emits NON-indexed triangles:
+ * this three version's ExtrudeGeometry caps are non-indexed, and
+ * mergeGeometries rejects mixed index/non-index inputs, so the pitched roof
+ * must match the caps it merges with in the LOD build. Also returns the ridge
+ * + hip lines used for the crisp illustrated silhouette.
  */
-function buildPitchedRoof(
+export function buildPitchedRoof(
   pts: { x: number; z: number }[],
   wallTopLocalY: number,
-  height: number
+  height: number,
+  ridgeScale = 1
 ): { geom: THREE.BufferGeometry; ridgeGeom: THREE.BufferGeometry } | null {
   const n = pts.length;
   if (n < 4) return null;
@@ -175,49 +197,97 @@ function buildPitchedRoof(
   }
   if (maxD < 1 || tMax - tMin < 2) return null; // sliver footprint
 
-  // ~35° pitch, clamped to a believable band (small sheds stay low-key).
-  const ridgeH = Math.min(5.5, Math.max(1.4, maxD * 0.7));
+  // ~38° pitch (50° on narrow buildings), scaled per building (seeded by its
+  // id) so roof heights vary across the city instead of one identical ridge.
+  const ridgeH = Math.min(7.0, Math.max(1.2, maxD * 0.8 * ridgeScale));
   // Lift the roof clear of the flat cap underneath to avoid z-fighting.
   const y0 = wallTopLocalY + 0.06;
-  const hAt = (d: number) => y0 + ridgeH * (1 - Math.abs(d) / maxD);
+  const ridgeY = y0 + ridgeH;
 
-  // Emit NON-indexed triangles: this three version's ExtrudeGeometry caps are
-  // non-indexed, and mergeGeometries rejects mixed index/non-index inputs, so
-  // the pitched roof must match the caps it merges with in the LOD build.
-  const positions: number[] = [];
-  const uvs: number[] = [];
-  for (let i = 0; i < n; i++) {
-    const p = pts[i];
-    const q = pts[(i + 1) % n];
-    const dp = (p.x - cx) * nx + (p.z - cz) * nz;
-    const dq = (q.x - cx) * nx + (q.z - cz) * nz;
-    const tp = (p.x - cx) * ax + (p.z - cz) * az;
-    const tq = (q.x - cx) * ax + (q.z - cz) * az;
-    const yp = hAt(dp), yq = hAt(dq);
-    positions.push(p.x, y0, p.z,  q.x, y0, q.z,  q.x, yq, q.z);
-    uvs.push(tp / 8, Math.abs(dp) / 8,  tq / 8, Math.abs(dq) / 8,  tq / 8, Math.abs(dq) / 8);
-    positions.push(p.x, y0, p.z,  q.x, yq, q.z,  p.x, yp, p.z);
-    uvs.push(tp / 8, Math.abs(dp) / 8,  tq / 8, Math.abs(dq) / 8,  tp / 8, Math.abs(dp) / 8);
+  // 3D hull inputs: eave ring at wall-top height + both ridge endpoints.
+  const hullPoints: THREE.Vector3[] = pts.map((p) => new THREE.Vector3(p.x, y0, p.z));
+  hullPoints.push(
+    new THREE.Vector3(cx + ax * tMin, ridgeY, cz + az * tMin),
+    new THREE.Vector3(cx + ax * tMax, ridgeY, cz + az * tMax)
+  );
+
+  let convexGeom: THREE.BufferGeometry;
+  try {
+    // ConvexGeometry already emits non-indexed triangles, matching the
+    // extrude caps that mergeGeometries expects in the LOD build.
+    convexGeom = new ConvexGeometry(hullPoints);
+  } catch {
+    return null; // degenerate point set — keep the flat cap as a fallback
   }
 
-  const geom = new THREE.BufferGeometry();
-  geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-  geom.computeVertexNormals();
+  // Roof-texture UVs from the dominant-axis frame (t along the ridge, |d|
+  // across it) — the same planar mapping the flat caps already use. BUT the
+  // near-vertical gable-end triangles get their own face-plane mapping: the
+  // planar (t, |d|) frame collapses t to a constant on those, smearing the
+  // whole course pattern into a single vertical stripe ("rotated weirdly").
+  // Instead, map the face by its own local frame so slate courses run
+  // horizontally and stack up the triangle — like a real slate-clad gable.
+  const pos = convexGeom.attributes.position as THREE.BufferAttribute;
+  const uvArr = new Float32Array(pos.count * 2);
+  const e1 = new THREE.Vector3();
+  const e2 = new THREE.Vector3();
+  const fNrm = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i += 3) {
+    const x0 = pos.getX(i), y0f = pos.getY(i), z0 = pos.getZ(i);
+    e1.set(pos.getX(i + 1) - x0, pos.getY(i + 1) - y0f, pos.getZ(i + 1) - z0);
+    e2.set(pos.getX(i + 2) - x0, pos.getY(i + 2) - y0f, pos.getZ(i + 2) - z0);
+    fNrm.crossVectors(e1, e2);
+    const fLen = fNrm.length() || 1;
+    const nyAbs = Math.abs(fNrm.y / fLen);
+    for (let k = 0; k < 3; k++) {
+      const vi = i + k;
+      const x = pos.getX(vi), y = pos.getY(vi), z = pos.getZ(vi);
+      const dx = x - cx, dz = z - cz;
+      if (nyAbs < 0.5) {
+        // Vertical gable face: u across the face (cross-section direction),
+        // v up the face from the eave, so slate courses stay horizontal.
+        uvArr[vi * 2] = (dx * nx + dz * nz) / 4;
+        uvArr[vi * 2 + 1] = (y - y0) / 4;
+      } else {
+        uvArr[vi * 2] = (dx * ax + dz * az) / 4;
+        uvArr[vi * 2 + 1] = Math.abs(dx * nx + dz * nz) / 4;
+      }
+    }
+  }
+  convexGeom.setAttribute('uv', new THREE.Float32BufferAttribute(uvArr, 2));
 
-  // Ridge + hip lines (non-indexed line segments).
-  const ridgeTopY = y0 + ridgeH;
+  // Flat (per-face) normals so each roof plane shades crisply instead of
+  // appearing rounded at the ridge.
+  const normArr = new Float32Array(pos.count * 3);
+  const ax1 = new THREE.Vector3();
+  const bx = new THREE.Vector3();
+  const nrm = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i += 3) {
+    ax1.set(pos.getX(i + 1) - pos.getX(i), pos.getY(i + 1) - pos.getY(i), pos.getZ(i + 1) - pos.getZ(i));
+    bx.set(pos.getX(i + 2) - pos.getX(i), pos.getY(i + 2) - pos.getY(i), pos.getZ(i + 2) - pos.getZ(i));
+    nrm.crossVectors(ax1, bx).normalize();
+    for (let k = 0; k < 3; k++) {
+      normArr[(i + k) * 3] = nrm.x;
+      normArr[(i + k) * 3 + 1] = nrm.y;
+      normArr[(i + k) * 3 + 2] = nrm.z;
+    }
+  }
+  convexGeom.setAttribute('normal', new THREE.Float32BufferAttribute(normArr, 3));
+
+  // Ridge + gable/hip silhouette: the ridge line between both ridge endpoints,
+  // plus rising corner lines for non-rectangular hulls.
   const linePts: number[] = [
-    cx + ax * tMin, ridgeTopY, cz + az * tMin,
-    cx + ax * tMax, ridgeTopY, cz + az * tMax,
+    cx + ax * tMin, ridgeY, cz + az * tMin,
+    cx + ax * tMax, ridgeY, cz + az * tMax,
   ];
   for (const p of pts) {
     const d = (p.x - cx) * nx + (p.z - cz) * nz;
-    linePts.push(p.x, y0, p.z,  p.x, hAt(d), p.z);
+    const py = y0 + ridgeH * (1 - Math.abs(d) / Math.max(1e-9, maxD));
+    if (py - y0 > 0.05) linePts.push(p.x, y0, p.z, p.x, py, p.z);
   }
   const ridgeGeom = new THREE.BufferGeometry();
   ridgeGeom.setAttribute('position', new THREE.Float32BufferAttribute(linePts, 3));
-  return { geom, ridgeGeom };
+  return { geom: convexGeom, ridgeGeom };
 }
 
 /**
@@ -240,7 +310,38 @@ function remapRoofUvs(geom: THREE.BufferGeometry, pts: { x: number; z: number }[
     const dx = x - cx, dz = z - cz;
     const t = dx * ax + dz * az;
     const d = dx * nx + dz * nz;
-    uv.setXY(vi, t / 8, Math.abs(d) / 8);
+    uv.setXY(vi, t / 4, Math.abs(d) / 4);
+  }
+  uv.needsUpdate = true;
+}
+
+/**
+ * Confines the ground-floor door/shopfront band to the building's real ground
+ * floor. The facade tile spans 18m and RepeatWrapping would otherwise re-show
+ * the door band on every 18m storey block of a tall building; above 18m we
+ * tile only the upper-storey window region (v' ∈ 0–0.78) so doors can never
+ * appear to open out of upper floors.
+ */
+function remapWallUvs(geom: THREE.BufferGeometry) {
+  const g1 = geom.groups[1]; // side walls (group 0 = caps / roof)
+  if (!g1) return;
+  const uv = geom.attributes.uv as THREE.BufferAttribute | undefined;
+  if (!uv) return;
+  const index = geom.index;
+  for (let i = g1.start; i < g1.start + g1.count; i++) {
+    const vi = index ? index.getX(i) : i;
+    const v = uv.getY(vi);
+    const yM = 1 - v; // metres above the building base (facade convention)
+    let target: number;
+    if (yM <= 18) {
+      target = yM / 18; // full tile: door band anchored at street level
+    } else {
+      // Above one tile: loop the upper-storey window band only.
+      const t = ((yM - 18) % 18) / 18;
+      target = 0.78 - t * 0.78;
+    }
+    // Undo the material's v→v' transform (v' = (1 - v)/18).
+    uv.setY(vi, 1 - 18 * target);
   }
   uv.needsUpdate = true;
 }
@@ -249,6 +350,10 @@ export class BuildingRenderer {
   public group = new THREE.Group();
   public edgeGroup = new THREE.Group();
   public overlayGroup = new THREE.Group();
+  /** §7.1 flat polygons drawn on top of each building showing the PHYSICALLY
+   *  selected adapted region (IFZ-style drag adaptation). Rebuilt whenever the
+   *  settlement's adapted entries change. */
+  public regionOverlayGroup = new THREE.Group();
 
   /**
    * Zoomed-out LOD: every building wall and edge merged into a handful of draw
@@ -344,12 +449,12 @@ export class BuildingRenderer {
   private generatorPositions(): { x: number; z: number }[] {
     const out: { x: number; z: number }[] = [];
     for (const [, a] of this.adaptedMap) {
-      if (a.typeId === 'generator_station' && a.constructionStatus === 'completed') {
+      if (a.typeId === 'generator_station' && isBuildingOperational(a)) {
         out.push(a.position);
       }
     }
     for (const f of this.freestandingBuildings) {
-      if (f.typeId === 'generator_station' && f.constructionStatus === 'completed') {
+      if (f.typeId === 'generator_station' && isBuildingOperational(f)) {
         out.push(f.position);
       }
     }
@@ -391,8 +496,69 @@ export class BuildingRenderer {
     this.group.name = 'BuildingsGroup';
     this.edgeGroup.name = 'BuildingEdgesGroup';
     this.overlayGroup.name = 'BuildingOverlayGroup';
+    this.regionOverlayGroup.name = 'AdaptedRegionOverlayGroup';
     this.group.add(this.edgeGroup);
     this.group.add(this.overlayGroup);
+    this.group.add(this.regionOverlayGroup);
+  }
+
+  /**
+   * Rebuilds the flat adapted-region overlays (§7.1): one translucent polygon
+   * per adapted entry that carries an `adaptedPolygon` (a partial conversion or
+   * a split section). The shape sits just above the source building's roof so
+   * the player sees exactly which physical part of the structure is converted.
+   */
+  public updateAdaptedRegions(
+    adaptedBuildings: Map<string | number, AdaptedBuilding> = new Map()
+  ) {
+    while (this.regionOverlayGroup.children.length > 0) {
+      const c = this.regionOverlayGroup.children[0] as THREE.Mesh;
+      if (c.geometry) c.geometry.dispose();
+      this.regionOverlayGroup.remove(c);
+    }
+
+    for (const [key, adapted] of adaptedBuildings) {
+      const poly = adapted.adaptedPolygon;
+      if (!poly || poly.length < 3) continue;
+      const sourceId = adapted.sourceBuildingId ?? key;
+      const mesh = this.buildingMeshes.get(sourceId);
+      const bldg = this.buildingData.get(sourceId);
+      if (!mesh || !bldg) continue;
+
+      const shape = new THREE.Shape();
+      shape.moveTo(poly[0].x, -poly[0].z);
+      for (let i = 1; i < poly.length; i++) {
+        shape.lineTo(poly[i].x, -poly[i].z);
+      }
+      shape.closePath();
+      const geom = new THREE.ShapeGeometry(shape);
+      const color = FUNCTIONAL_CATEGORY_COLORS[adapted.category]?.beacon ?? 0x38bdf8;
+      const mat = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: adapted.adaptationPercentage >= 100 ? 0.5 : 0.35,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const region = new THREE.Mesh(geom, mat);
+      region.rotation.x = -Math.PI / 2;
+      // Sit just above the building's roof.
+      region.position.y = mesh.position.y + (bldg.height || 6) + 0.35;
+      region.renderOrder = 5;
+      this.regionOverlayGroup.add(region);
+
+      // Crisp outline so the selected area reads clearly against the roof.
+      const edgeGeom = new THREE.EdgesGeometry(geom);
+      const edgeMat = new THREE.LineBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.9,
+      });
+      const edge = new THREE.LineSegments(edgeGeom, edgeMat);
+      edge.rotation.x = -Math.PI / 2;
+      edge.position.y = region.position.y + 0.02;
+      this.regionOverlayGroup.add(edge);
+    }
   }
 
   private getBuildingMaterials(
@@ -402,9 +568,10 @@ export class BuildingRenderer {
     isHQ = false,
     constructionStatus?: 'planned' | 'in_progress' | 'completed' | 'paused' | 'deconstructing',
     variant = 0,
-    powered = false
+    powered = false,
+    adaptationPct = 100
   ): THREE.MeshLambertMaterial[] {
-    const key = `${type}_${isOccupied}_${adaptedCategory || 'none'}_${isHQ}_${constructionStatus || 'none'}_v${variant}_p${powered ? 1 : 0}`;
+    const key = `${type}_${isOccupied}_${adaptedCategory || 'none'}_${isHQ}_${constructionStatus || 'none'}_v${variant}_p${powered ? 1 : 0}_a${Math.round(adaptationPct)}`;
     if (this.materialsCache.has(key)) {
       return this.materialsCache.get(key)!;
     }
@@ -431,6 +598,16 @@ export class BuildingRenderer {
     } else if (isOccupied) {
       // Zombie-occupied ruins: darker, sicklier green
       wallTint = 0x7fae8d;
+    }
+    if (adaptedCategory && constructionStatus === 'completed') {
+      // §7.1 Partial adaptation: a converted share of the roof/shell shows as
+      // a blend between blueprint blue (unconverted) and colony green (fully
+      // converted), so a 25% facility reads as one quarter green from the map.
+      const t = Math.min(1, Math.max(0, (adaptationPct || 100) / 100));
+      const r = Math.round(0x9d + (0x9f - 0x9d) * t);
+      const g = Math.round(0xb9 + (0xd8 - 0xb9) * t);
+      const b = Math.round(0xff + (0xb0 - 0xff) * t);
+      wallTint = (r << 16) | (g << 8) | b;
     }
     const roofTint = 0xffffff;
 
@@ -569,7 +746,7 @@ export class BuildingRenderer {
     const bldg = this.buildingData.get(src.buildingId);
     if (!bldg) return;
     const isHQ = this.currentHqId !== null && String(bldg.id) === String(this.currentHqId);
-    const adapted = this.adaptedMap.get(bldg.id);
+    const adapted = getPrimaryAdaptedEntry(this.adaptedMap, bldg.id);
     const mats = this.getBuildingMaterials(
       bldg.type,
       bldg.isOccupied,
@@ -577,7 +754,8 @@ export class BuildingRenderer {
       isHQ,
       adapted?.constructionStatus,
       buildingVariantForId(bldg.id),
-      this.isBuildingPowered(bldg)
+      this.isBuildingPowered(bldg),
+      adapted?.adaptationPercentage ?? 100
     );
     src.wallMats = mats;
     src.wallMatKey = mats.map((m) => m.uuid).join('|');
@@ -871,9 +1049,12 @@ export class BuildingRenderer {
         // Roof cap UVs follow the footprint's dominant axis so the roof texture
         // runs parallel to the walls instead of at arbitrary world angles.
         remapRoofUvs(geom, pts);
+        // The facade tile spans 18m and repeats vertically; remap the side-wall
+        // UVs so the ground-floor door band never tiles onto upper storeys.
+        remapWallUvs(geom);
 
         const isHQ = hqBuildingId !== null && String(bldg.id) === String(hqBuildingId);
-        const adapted = adaptedBuildings.get(bldg.id);
+        const adapted = getPrimaryAdaptedEntry(adaptedBuildings, bldg.id);
         const isOccupiedOrInUse = Boolean(
           bldg.isOccupied ||
           isHQ ||
@@ -886,7 +1067,8 @@ export class BuildingRenderer {
           isHQ,
           adapted?.constructionStatus,
           buildingVariantForId(bldg.id),
-          this.isBuildingPowered(bldg)
+          this.isBuildingPowered(bldg),
+          adapted?.adaptationPercentage ?? 100
         );
 
         const mesh = new THREE.Mesh(geom, materials);
@@ -901,16 +1083,32 @@ export class BuildingRenderer {
         this.buildingMeshes.set(bldg.id, mesh);
         this.buildingData.set(bldg.id, bldg);
 
-        // Pitched hip roof for small, convex footprints — tall blocks, big
-        // halls and complex shapes keep flat roofs (realistic and cheaper).
+        // Pitched roof ONLY on regular footprints: the gable is built from the
+        // footprint's own convex hull, so the footprint must already be
+        // near-convex (its area ≈ its hull's area). Irregular shapes —
+        // L/U/courtyard blocks, notched or multi-wing footprints — keep the
+        // flat cap instead of wearing a hull-sized gable that doesn't match
+        // their outline. Tall blocks, oversized halls and tiny sheds stay flat
+        // too; every roof's ridge height varies per building (seeded by its
+        // id) for silhouette diversity.
+        const idSeed = String(bldg.id).split('').reduce((a: number, c: string) => (a * 31 + c.charCodeAt(0)) >>> 0, 7);
+        const ridgeScale = 0.65 + ((idSeed % 100) / 100) * 0.85; // 0.65–1.5
         const footprintArea = polygonArea(pts);
+        const hullPts = convexHull(pts);
+        const hullArea = polygonArea(hullPts);
+        const prefersFlat = idSeed % 7 === 0 && footprintArea < 180; // a few low sheds stay flat for contrast
+        const isRegularFootprint =
+          hullPts.length >= 4 &&
+          hullPts.length <= 8 &&
+          footprintArea / Math.max(1e-9, hullArea) >= 0.93 &&
+          hullArea <= 9000;
         const roofLocal =
-          (bldg.height || 4) < 16 &&
-          pts.length <= 40 &&
+          !prefersFlat &&
+          (bldg.height || 4) < 24 &&
+          isRegularFootprint &&
           footprintArea >= 25 &&
-          footprintArea <= 4000 &&
-          isConvexPolygon(pts)
-            ? buildPitchedRoof(pts, totalExtrudeHeight, bldg.height || 4)
+          footprintArea <= 6000
+            ? buildPitchedRoof(hullPts, totalExtrudeHeight, bldg.height || 4, ridgeScale)
             : null;
         if (roofLocal) {
           const roofMesh = new THREE.Mesh(roofLocal.geom, materials[0]);
@@ -1725,13 +1923,14 @@ export class BuildingRenderer {
     this.currentHqId = hqBuildingId;
     this.adaptedMap = adaptedBuildings;
     this.freestandingBuildings = freestandingBuildings;
+    this.updateAdaptedRegions(adaptedBuildings);
 
     // 1. Reset material for previous HQ if changed
     if (oldHqId !== null && String(oldHqId) !== String(hqBuildingId)) {
       const oldMesh = this.buildingMeshes.get(oldHqId);
       const oldBldg = this.buildingData.get(oldHqId);
       if (oldMesh && oldBldg) {
-        const oldAdapted = adaptedBuildings.get(oldHqId);
+        const oldAdapted = getPrimaryAdaptedEntry(adaptedBuildings, oldHqId);
         oldMesh.material = this.getBuildingMaterials(
           oldBldg.type,
           oldBldg.isOccupied,
@@ -1739,7 +1938,8 @@ export class BuildingRenderer {
           false,
           oldAdapted?.constructionStatus,
           buildingVariantForId(oldBldg.id),
-          this.isBuildingPowered(oldBldg)
+          this.isBuildingPowered(oldBldg),
+          oldAdapted?.adaptationPercentage ?? 100
         );
       }
     }
@@ -1749,7 +1949,7 @@ export class BuildingRenderer {
       const newMesh = this.buildingMeshes.get(hqBuildingId);
       const newBldg = this.buildingData.get(hqBuildingId);
       if (newMesh && newBldg) {
-        const newAdapted = adaptedBuildings.get(hqBuildingId);
+        const newAdapted = getPrimaryAdaptedEntry(adaptedBuildings, hqBuildingId);
         newMesh.material = this.getBuildingMaterials(
           newBldg.type,
           newBldg.isOccupied,
@@ -1757,16 +1957,22 @@ export class BuildingRenderer {
           true,
           newAdapted?.constructionStatus,
           buildingVariantForId(newBldg.id),
-          this.isBuildingPowered(newBldg)
+          this.isBuildingPowered(newBldg),
+          newAdapted?.adaptationPercentage ?? 100
         );
       }
     }
 
-    // 3. Update adapted building materials
-    for (const [bldgId, adapted] of adaptedBuildings) {
-      if (hqBuildingId !== null && String(bldgId) === String(hqBuildingId)) continue;
-      const mesh = this.buildingMeshes.get(bldgId);
-      const bldg = this.buildingData.get(bldgId);
+    // 3. Update adapted building materials (sections resolve through the source
+    // building's primary entry so split buildings still tint correctly).
+    const seen = new Set<string>();
+    for (const adapted of adaptedBuildings.values()) {
+      const sourceId = String(adapted.sourceBuildingId ?? adapted.buildingId);
+      if (seen.has(sourceId)) continue;
+      seen.add(sourceId);
+      if (hqBuildingId !== null && String(sourceId) === String(hqBuildingId)) continue;
+      const mesh = this.buildingMeshes.get(sourceId);
+      const bldg = this.buildingData.get(sourceId);
       if (mesh && bldg) {
         mesh.material = this.getBuildingMaterials(
           bldg.type,
@@ -1775,7 +1981,8 @@ export class BuildingRenderer {
           false,
           adapted.constructionStatus,
           buildingVariantForId(bldg.id),
-          this.isBuildingPowered(bldg)
+          this.isBuildingPowered(bldg),
+          adapted.adaptationPercentage ?? 100
         );
       }
     }
@@ -1874,7 +2081,7 @@ export class BuildingRenderer {
       if (prevMesh && bldg) {
         const isHQ = this.currentHqId !== null && String(bldg.id) === String(this.currentHqId);
         const adapted = this.adaptedMap.get(bldg.id);
-        prevMesh.material = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg));
+        prevMesh.material = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg), adapted?.adaptationPercentage ?? 100);
       }
     }
 
@@ -1887,7 +2094,7 @@ export class BuildingRenderer {
       if (mesh && bldg) {
         const isHQ = this.currentHqId !== null && String(bldg.id) === String(this.currentHqId);
         const adapted = this.adaptedMap.get(bldg.id);
-        const base = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg));
+        const base = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg), adapted?.adaptationPercentage ?? 100);
         mesh.material = this.cloneWithTint(base, 0xffeec9, 0xffeec9);
       }
     }
@@ -1903,7 +2110,7 @@ export class BuildingRenderer {
       if (prevMesh && bldg) {
         const isHQ = this.currentHqId !== null && String(bldg.id) === String(this.currentHqId);
         const adapted = this.adaptedMap.get(bldg.id);
-        prevMesh.material = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg));
+        prevMesh.material = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg), adapted?.adaptationPercentage ?? 100);
       }
     }
 
@@ -1916,7 +2123,7 @@ export class BuildingRenderer {
       if (mesh && bldg) {
         const isHQ = this.currentHqId !== null && String(bldg.id) === String(this.currentHqId);
         const adapted = this.adaptedMap.get(bldg.id);
-        const base = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg));
+        const base = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg), adapted?.adaptationPercentage ?? 100);
         mesh.material = this.cloneWithTint(base, 0xffd27a, 0xffd27a);
       }
     }
@@ -1932,7 +2139,7 @@ export class BuildingRenderer {
         if (mesh && bldg) {
           const isHQ = this.currentHqId !== null && String(bldg.id) === String(this.currentHqId);
           const adapted = this.adaptedMap.get(bldg.id);
-          mesh.material = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg));
+          mesh.material = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg), adapted?.adaptationPercentage ?? 100);
         }
       }
       this.demolishCandidateIds.clear();
@@ -1947,7 +2154,7 @@ export class BuildingRenderer {
       if (mesh && bldg) {
         const isHQ = this.currentHqId !== null && String(bldg.id) === String(this.currentHqId);
         const adapted = this.adaptedMap.get(bldg.id);
-        const base = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg));
+        const base = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg), adapted?.adaptationPercentage ?? 100);
         mesh.material = this.cloneWithTint(base, 0xff9d92, 0xff9d92);
       }
     }
@@ -1955,6 +2162,19 @@ export class BuildingRenderer {
 
   public getBuildingById(id: string | number): BuildingPolygon | undefined {
     return this.buildingData.get(id);
+  }
+
+  /**
+   * Roof-top world Y for a built OSM building — the plane the §7.1 adapted-
+   * region overlays (and the live drag-paint preview) float on. Same formula
+   * as updateAdaptedRegions so committed regions and the in-progress paint
+   * share one visual layer.
+   */
+  public getBuildingRoofY(id: string | number): number | null {
+    const mesh = this.buildingMeshes.get(id);
+    const bldg = this.buildingData.get(id);
+    if (!mesh || !bldg) return null;
+    return mesh.position.y + (bldg.height || 6) + 0.35;
   }
 
   /**

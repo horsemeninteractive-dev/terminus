@@ -106,6 +106,7 @@ export const PopulationRosterModal: React.FC<PopulationRosterModalProps> = ({
  infections,
  fallenHeroes,
  } = settlement;
+ const committedResourceWorkers = (settlement.resourceWorkOrders || []).reduce((sum, order) => sum + (order.workerCount || 0), 0);
 
  const allBuildings: AdaptedBuilding[] = [
  ...Array.from(adaptedBuildings.values()),
@@ -192,6 +193,18 @@ export const PopulationRosterModal: React.FC<PopulationRosterModalProps> = ({
  <div className="text-base font-bold text-emerald-300 mt-0.5">
  {(Object.values(generalPopulation.assignedJobs) as number[]).reduce((a, b) => a + b, 0)} Workers
  </div>
+ </div>
+
+ <div className="p-2.5 bg-cyan-950/20 border border-cyan-700/30">
+ <div className="text-cyan-400">Resource Crews</div>
+ <div className="text-base font-bold text-cyan-300 mt-0.5">
+ {committedResourceWorkers} Committed
+ </div>
+ </div>
+
+ <div className="p-2.5 bg-cyan-950/20 border border-cyan-700/30">
+ <div className="text-cyan-400">Resource Crews</div>
+ <div className="text-base font-bold text-cyan-300 mt-0.5">{committedResourceWorkers} Committed</div>
  </div>
 
  <div className="p-2.5 bg-[#0F172A]/20 border border-[#334155]/30">

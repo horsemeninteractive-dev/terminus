@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  Archive,
   Calendar,
   Clock,
   Cloud,
@@ -16,6 +17,7 @@ import {
   Radio,
   Scale,
   Sun,
+  TriangleAlert,
   Wheat,
 } from 'lucide-react';
 import { GameClockState, NoiseEvent, WEAPON_IDS, WeaponItemId, getWeaponDefinition } from '../types/combat';
@@ -60,6 +62,13 @@ interface TacticalHeaderStripProps {
   /** Radio directives modal trigger */
   onOpenRadio?: () => void;
   radioUnreadCount?: number;
+  /** Laws & Policy (§IFZ Major Update #5) — Gathering Place forum */
+  onOpenLawModal?: () => void;
+  lawsUnlocked?: boolean;
+  lawsUnlockReason?: string;
+  /** Expeditions (§IFZ) — off-map scavenging via the Antenna */
+  onOpenExpeditionModal?: () => void;
+  antennaOperational?: boolean;
 }
 
 interface ResourceDropdownItem {
@@ -126,11 +135,16 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
   onToggleQuestTracker,
   onOpenRadio,
   radioUnreadCount = 0,
+  onOpenLawModal,
+  lawsUnlocked = false,
+  lawsUnlockReason,
+  onOpenExpeditionModal,
+  antennaOperational = false,
 }) => {
   const {
     stockpile,
     totalStorageCapacity,
-    fieldLootUnits = 0,
+    overflowLootUnits = 0,
     totalLivingCapacity,
     totalDefenseRating,
     hq,
@@ -156,16 +170,18 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
     ? Math.min(100, Math.max(0, ((settlement.research?.activeProgressSec || 0) / activeResearchNode.baseTimeSec) * 100))
     : 0;
 
-  // Resource totals & per-item breakdowns — all read from the real stockpile
+  // Resource totals & per-item breakdowns — all read from the real stockpile.
+  // Amounts accumulate continuously (production rates × dt), so every meter is
+  // floored to whole units for display: you can't hold half a canned good.
   const foodItems = [
-    { label: 'Canned Goods', value: stockpile.food?.canned_goods || 0 },
-    { label: 'MRE Rations', value: stockpile.food?.mre_rations || 0 },
-    { label: 'Dried Rations', value: stockpile.food?.dried_rations || 0 },
-    { label: 'Fresh Harvest', value: stockpile.food?.fresh_harvest || 0 },
+    { label: 'Canned Goods', value: Math.floor(stockpile.food?.canned_goods || 0) },
+    { label: 'MRE Rations', value: Math.floor(stockpile.food?.mre_rations || 0) },
+    { label: 'Dried Rations', value: Math.floor(stockpile.food?.dried_rations || 0) },
+    { label: 'Fresh Harvest', value: Math.floor(stockpile.food?.fresh_harvest || 0) },
   ];
   const totalFood = foodItems.reduce((acc, it) => acc + it.value, 0);
 
-  const ammoItems = [{ label: 'Ammunition (Shared Pool)', value: stockpile.ammo?.sharedPool || 0 }];
+  const ammoItems = [{ label: 'Ammunition (Shared Pool)', value: Math.floor(stockpile.ammo?.sharedPool || 0) }];
   const totalAmmo = ammoItems[0].value;
 
   // Firearms: armory stock + weapons equipped by squad members, per weapon type.
@@ -185,27 +201,28 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
   const totalWeapons = weaponItems.reduce((acc, it) => acc + it.value, 0);
 
   const medItems = [
-    { label: 'First Aid Kits', value: stockpile.medical?.first_aid_kits || 0 },
-    { label: 'Sterile Bandages', value: stockpile.medical?.sterile_bandages || 0 },
-    { label: 'Antibiotics', value: stockpile.medical?.antibiotics || 0 },
-    { label: 'Painkillers', value: stockpile.medical?.painkillers || 0 },
+    { label: 'First Aid Kits', value: Math.floor(stockpile.medical?.first_aid_kits || 0) },
+    { label: 'Sterile Bandages', value: Math.floor(stockpile.medical?.sterile_bandages || 0) },
+    { label: 'Antibiotics', value: Math.floor(stockpile.medical?.antibiotics || 0) },
+    { label: 'Painkillers', value: Math.floor(stockpile.medical?.painkillers || 0) },
   ];
   const totalMeds = medItems.reduce((acc, it) => acc + it.value, 0);
 
   const liquidItems = [
-    { label: 'Bottled Water', value: stockpile.water?.bottled_water || 0, unit: 'L' },
-    { label: 'Purified Water', value: stockpile.water?.purified_water || 0, unit: 'L' },
-    { label: 'Rainwater', value: stockpile.water?.rainwater || 0, unit: 'L' },
-    { label: 'Gasoline', value: stockpile.fuel?.gasoline || 0, unit: 'L' },
-    { label: 'Diesel', value: stockpile.fuel?.diesel || 0, unit: 'L' },
-    { label: 'Biofuel', value: stockpile.fuel?.biofuel || 0, unit: 'L' },
+    { label: 'Bottled Water', value: Math.floor(stockpile.water?.bottled_water || 0), unit: 'L' },
+    { label: 'Purified Water', value: Math.floor(stockpile.water?.purified_water || 0), unit: 'L' },
+    { label: 'Rainwater', value: Math.floor(stockpile.water?.rainwater || 0), unit: 'L' },
+    { label: 'Gasoline', value: Math.floor(stockpile.fuel?.gasoline || 0), unit: 'L' },
+    { label: 'Diesel', value: Math.floor(stockpile.fuel?.diesel || 0), unit: 'L' },
+    { label: 'Biofuel', value: Math.floor(stockpile.fuel?.biofuel || 0), unit: 'L' },
   ];
   const totalLiquids = liquidItems.reduce((acc, it) => acc + it.value, 0);
 
   const materialItems = [
-    { label: 'Wood', value: stockpile.materials?.wood || 0 },
-    { label: 'Metal', value: stockpile.materials?.metal || 0 },
-    { label: 'Bricks', value: stockpile.materials?.bricks || 0 },
+    { label: 'Wood', value: Math.floor(stockpile.materials?.wood || 0) },
+    { label: 'Metal', value: Math.floor(stockpile.materials?.metal || 0) },
+    { label: 'Bricks', value: Math.floor(stockpile.materials?.bricks || 0) },
+    { label: 'Tools', value: Math.floor(stockpile.materials?.tools || 0) },
   ];
   const totalMaterials = materialItems.reduce((acc, it) => acc + it.value, 0);
   const stockpileUnits = totalFood + totalAmmo + totalMeds + totalLiquids + totalMaterials;
@@ -248,6 +265,9 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
   const isAmmoLow = totalAmmo < 20;
   const isShelterLow = totalLivingCapacity < totalPop;
   const isFoodLow = totalFood < 30;
+  // Real, active water shortage — waterService.consumeSettlementWater could not
+  // meet the colony's draw (store and cistern reserves exhausted) last tick.
+  const isWaterShortage = (settlement.waterState?.shortageDays || 0) > 0;
 
   // Render Morale Bar with hover tooltip dropdown
   const renderMoraleBar = (compact: boolean = false) => {
@@ -327,7 +347,9 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
           </div>
           <div className="mt-1.5 pt-1.5 border-t border-[#1E293B] text-[9px] font-mono text-[#64748B] flex justify-between">
             <span>Food: {morale?.daysOfFoodRemaining ?? '—'}d</span>
-            <span>Water: {morale?.daysOfWaterRemaining ?? '—'}d</span>
+            <span className={isWaterShortage ? 'text-[#FF4D4D] font-bold animate-pulse' : ''}>
+              Water: {isWaterShortage ? 'SHORTAGE' : `${morale?.daysOfWaterRemaining ?? '—'}d`}
+            </span>
           </div>
         </div>
       </div>
@@ -336,7 +358,7 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
 
   // Render Warning Alert Dropdown Ribbons
   const renderWarningRibbons = () => {
-    if (!isAmmoLow && !isShelterLow && !isFoodLow) return null;
+    if (!isAmmoLow && !isShelterLow && !isFoodLow && !isWaterShortage) return null;
     return (
       <div className="flex items-start justify-center gap-1 z-20 pointer-events-auto">
         {/* Yellow Ammo Low Ribbon */}
@@ -369,6 +391,17 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
             style={{ clipPath: 'polygon(0 0, 100% 0, 100% 80%, 50% 100%, 0 80%)' }}
           >
             !
+          </div>
+        )}
+
+        {/* Red Water Shortage Ribbon — real unmet draw, not a forecast */}
+        {isWaterShortage && (
+          <div
+            title="Water Shortage: the colony cannot meet its water draw — stores and cisterns are dry!"
+            className="w-5 h-6 bg-[#EF4444] border-x border-b border-[#B91C1C] flex items-center justify-center text-white font-black text-[9px] animate-bounce shadow-md"
+            style={{ clipPath: 'polygon(0 0, 100% 0, 100% 80%, 50% 100%, 0 80%)' }}
+          >
+            ~
           </div>
         )}
       </div>
@@ -467,21 +500,39 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
   // Render Stockpile Resources
   const renderStockpileResources = (compact: boolean = false) => (
     <div className="flex items-center gap-2 sm:gap-2.5 px-1 sm:px-3 text-[10px] sm:text-xs font-mono shrink-0">
-      {/* Storage capacity / field loot overflow */}
+      {/* Storage capacity / overflow — hazard marker. The red pulsing triangle
+          appears ONLY when storage is actually full; the crate stays visible so
+          the tooltip remains discoverable. The stored-vs-capacity readout moved
+          into the hover tooltip so the strip stays iconographic. */}
       <div className="relative group">
         <div
-          className={`flex items-center gap-1 cursor-default ${fieldLootUnits > 0 ? 'text-amber-300' : storageFull ? 'text-red-400' : 'text-slate-200'}`}
-          title={fieldLootUnits > 0 ? `${fieldLootUnits} loot units left in the field because storage is full` : `Storage: ${stockpileUnits}/${totalStorageCapacity}`}
+          className={`flex items-center gap-0.5 cursor-default ${storageFull ? 'text-red-400' : 'text-slate-300'}`}
         >
-          <span className="font-bold">STO {stockpileUnits}/{totalStorageCapacity}</span>
-          {fieldLootUnits > 0 && <span className="font-black animate-pulse">· FIELD +{fieldLootUnits}</span>}
+          {storageFull ? (
+            <TriangleAlert className="w-3.5 h-3.5 text-red-500 animate-pulse" />
+          ) : (
+            <Archive className="w-3.5 h-3.5 text-slate-300" />
+          )}
         </div>
-        {fieldLootUnits > 0 && (
-          <div className="hidden group-hover:block absolute top-full right-0 mt-1.5 z-50 w-56 bg-[#0B0F17]/98 border border-amber-500/60 shadow-[0_12px_32px_rgba(0,0,0,0.95)] backdrop-blur-md clip-tactical-bracket p-2.5">
-            <div className="text-[10px] font-bold uppercase text-amber-300">Loot left in the field</div>
-            <div className="mt-1 text-[10px] font-mono text-slate-300">Storage capacity reached. {fieldLootUnits} resource units remain at scavenged sites for a later recovery run.</div>
+        <div className="hidden group-hover:block absolute top-full right-0 mt-1.5 z-50 w-64 bg-[#0B0F17]/98 border border-[#23354A] shadow-[0_12px_32px_rgba(0,0,0,0.95)] backdrop-blur-md clip-tactical-bracket p-2.5">
+          <div className="text-[10px] font-bold uppercase text-slate-300">Storage Capacity</div>
+          <div className="mt-1 text-[10px] font-mono text-slate-200">
+            {Math.floor(stockpileUnits)} / {totalStorageCapacity} units stored
           </div>
-        )}
+          <div className="mt-1 text-[10px] font-mono text-slate-400">
+            {((totalStorageCapacity > 0 ? stockpileUnits / totalStorageCapacity : 0) * 100).toFixed(0)}%
+          </div>
+          {storageFull && (
+            <div className="mt-1.5 pt-1.5 border-t border-[#23354A] text-[10px] font-mono text-red-400">
+              STORAGE FULL — loot that cannot be stored stays with the carrying squad, vehicle or crew, and is auto-deposited once space frees.
+            </div>
+          )}
+          {overflowLootUnits > 0 && (
+            <div className="mt-1.5 pt-1.5 border-t border-[#23354A] text-[10px] font-mono text-amber-300">
+              OVERFLOW +{overflowLootUnits} units — couldn't fit in storage; held by squads / vehicles / crews (deposits once space frees) or stranded by a full caravan arrival.
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Food / Grain */}
@@ -541,8 +592,15 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
 
       {/* Water & Fuel */}
       <div className="relative group">
-        <div className="flex items-center gap-1 text-slate-200 cursor-default" title={`Water & Fuel Reserves: ${Math.floor(totalLiquids)}L`}>
-          <Droplets className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-[#CBD5E1]" />
+        <div
+          className={`flex items-center gap-1 cursor-default ${isWaterShortage ? 'text-[#FF4D4D] animate-pulse' : 'text-slate-200'}`}
+          title={
+            isWaterShortage
+              ? 'Water Shortage — the colony cannot meet its water draw! Stores and cisterns are dry.'
+              : `Water & Fuel Reserves: ${Math.floor(totalLiquids)}L`
+          }
+        >
+          <Droplets className={`w-3 h-3 sm:w-3.5 sm:h-3.5 ${isWaterShortage ? 'text-[#FF4D4D]' : 'text-[#CBD5E1]'}`} />
           <span className="font-bold">{Math.floor(totalLiquids)}L</span>
         </div>
         <div className="hidden group-hover:block">
@@ -552,7 +610,7 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
 
       {/* Materials & Wood/Metal */}
       <div className="relative group">
-        <div className="flex items-center gap-1 text-slate-200 cursor-default" title={`Building Materials (Wood, Metal, Bricks): ${Math.floor(totalMaterials)}`}>
+        <div className="flex items-center gap-1 text-slate-200 cursor-default" title={`Building Materials (Wood, Metal, Bricks, Tools): ${Math.floor(totalMaterials)}`}>
           <Hammer className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-[#94A3B8]" />
           <span className="font-bold">{Math.floor(totalMaterials)}</span>
         </div>
@@ -626,14 +684,33 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
               <FlaskConical className={`relative z-10 w-3.5 h-3.5 mt-0.5 ${activeResearchNode ? 'text-[#38bdf8]' : 'text-[#CBD5E1]'}`} />
             </button>
 
-            {/* 3. Laws & Directives (Greyed out / No-op) */}
+            {/* 3. Laws & Policy (§IFZ Major Update #5) — Gathering Place forum */}
             <button
-              disabled
-              title="Colony Directives & Laws (Coming in Future Policy Update)"
-              className="w-8 sm:w-9 h-full flex flex-col items-center justify-center border-r border-[#1E293B] text-slate-600 cursor-not-allowed opacity-40 select-none"
+              disabled={!lawsUnlocked}
+              onClick={lawsUnlocked ? onOpenLawModal : undefined}
+              title={lawsUnlocked ? 'Colony Laws & Policy (Gathering Place forum)' : lawsUnlockReason || 'Colony Laws & Policy — locked'}
+              className={`w-8 sm:w-9 h-full flex flex-col items-center justify-center border-r border-[#1E293B] transition-colors select-none ${
+                lawsUnlocked
+                  ? 'text-[#FDE68A] hover:bg-[#2A2415] hover:text-[#FBBF24] cursor-pointer'
+                  : 'text-slate-600 cursor-not-allowed opacity-40'
+              }`}
             >
-              <span className="text-[8px] font-mono tracking-tighter uppercase text-slate-600 leading-none">LAW</span>
-              <Scale className="w-3.5 h-3.5 text-slate-600 mt-0.5" />
+              <span className={`text-[8px] font-mono tracking-tighter uppercase leading-none ${lawsUnlocked ? 'text-[#FDE68A]' : 'text-slate-600'}`}>LAW</span>
+              <Scale className={`w-3.5 h-3.5 mt-0.5 ${lawsUnlocked ? 'text-[#FBBF24]' : 'text-slate-600'}`} />
+            </button>
+
+            {/* 3b. Expeditions (§IFZ) — off-map scavenging revealed via the Antenna */}
+            <button
+              onClick={onOpenExpeditionModal}
+              title={antennaOperational ? 'Expeditions — off-map scavenging areas (Antenna)' : 'Expeditions — locked: build an operational Antenna (Basic Antenna research)'}
+              className={`w-8 sm:w-9 h-full flex flex-col items-center justify-center border-r border-[#1E293B] transition-colors select-none ${
+                antennaOperational
+                  ? 'text-[#DDD6FE] hover:bg-[#1E1430] hover:text-[#C4B5FD] cursor-pointer'
+                  : 'text-slate-600 cursor-not-allowed opacity-40'
+              }`}
+            >
+              <span className={`text-[8px] font-mono tracking-tighter uppercase leading-none ${antennaOperational ? 'text-[#DDD6FE]' : 'text-slate-600'}`}>EXP</span>
+              <Radio className={`w-3.5 h-3.5 mt-0.5 ${antennaOperational ? 'text-[#A78BFA]' : 'text-slate-600'}`} />
             </button>
 
             {/* 4. Weather & Temperature */}

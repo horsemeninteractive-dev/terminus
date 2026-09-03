@@ -1,36 +1,31 @@
-import { useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
+import { useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import {
   advanceGameClock,
   emitNoiseEvent,
-  generateHordeWave,
+  generateHordeWave, HORDE_DOMINANT_LABEL,
   orderSquadMove,
-  tickCombatSimulation,
 } from '../services/combatService';
-import { recordFallenHero, tickInfectionSimulation } from '../services/infectionService';
-import {
-  createRansomDemand,
-  freeCaptive,
-  tickRivalHideouts,
-  tickZombieLairs,
-} from '../services/rivalFactionService';
-import {
-  dismountSquadFromVehicle,
-  orderVehicleRoadTravel,
-  updateVehiclesTick,
-} from '../services/vehicleService';
+import { recordFallenHero } from '../services/infectionService';
+import { createRansomDemand, freeCaptive } from '../services/rivalFactionService';
 import { computeVisibleCells, computeVisionSources, createFogGrid } from '../services/fogOfWarService';
 import {
   findNearestStorageDropoff,
   formatLootLabel,
+  hasStockpileRoomForHaul,
   isSquadInsideBuilding,
   tickBuildingScavengeProgress,
-  unloadSquadAtDropoff,
-  unloadVehicleAtDropoff,
 } from '../services/scavengingService';
 import { gameSettingsService } from '../services/gameSettingsService';
 import { saveService } from '../services/saveService';
 import { soundService, ToastMessage } from '../services/soundService';
 import { findNextScavengeTarget, getHiddenGroupValues, isBuildingExhausted } from '../lib/scavengeQueueHelpers';
+import {
+  collectStrandedLoot,
+  getStrandedLootOrderId,
+  isStrandedLootOrderId,
+  STRANDED_COLLECT_RADIUS_M,
+} from '../services/strandedLootService';
+import { getPrimaryHQ, isHQBuilding } from '../services/buildingOperational';
 import type { BuildingPolygon, LocationPreset, MapData, SettlementPlacement } from '../types/map';
 import type {
   ArmorItemId,
@@ -52,6 +47,7 @@ import type { RivalHideout } from '../types/rivalFaction';
 import type { TimeOfDay, WorldScene } from '../render/WorldScene';
 import type { RoadNetworkGraph } from '../services/roadPathfinder';
 import type { PathGrid } from '../services/pathfindingService';
+import { runSimulationPipeline } from '../services/simulationPipeline';
 
 /**
  * Everything the 100ms game loop reads or writes that is owned by <App/>.
@@ -69,6 +65,7 @@ export interface SimLoopRuntime {
   droppedItems: DroppedItem[];
   noiseEvents: NoiseEvent[];
   selectedSquadId: string | null;
+  selectedSquadIds: string[];
   selectedVehicleId: string | null;
   settlement: SettlementState;
   timeOfDay: TimeOfDay;
@@ -127,6 +124,9 @@ export interface SimLoopRuntime {
  * simulation; every external dependency is passed in via {@link SimLoopRuntime}.
  */
 export function useSimulationLoop(runtime: SimLoopRuntime) {
+  // One warning per squad per storage-full hold episode (cleared when the squad
+  // starts returning to deposit again).
+  const heldHaulWarnedRef = useRef(new Set<string>());
   const {
     viewMode,
     isDescentActive,
@@ -138,6 +138,7 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
     droppedItems,
     noiseEvents,
     selectedSquadId,
+    selectedSquadIds,
     selectedVehicleId,
     settlement,
     timeOfDay,
@@ -217,8 +218,8 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
       // 2. Handle Nightfall Incursion (§5.1, §6.1, §15)
       if (nightfallTriggered) {
         soundService.playHordeWarning();
-        const hqPos = settlement.hq?.center || { x: 0, z: 0 };
-        const horde = generateHordeWave(nextClock.day, hqPos, 180, true);
+        const hqPos = getPrimaryHQ(settlement)?.center || { x: 0, z: 0 };
+        const { zombies: horde, dominant: hordeType } = generateHordeWave(nextClock.day, hqPos, 180, true);
 
         // §6.1 addition: a full moon measurably reduces the night incursion.
         const isFullMoon = settlement.weather?.moonPhase === 'full';
@@ -236,7 +237,7 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
           title: isFullMoon ? 'NIGHTFALL — FULL MOON' : 'NIGHTFALL IN EFFECT',
           desc: isFullMoon
             ? `A full moon hangs overhead — the infected are unusually subdued tonight (${calmHorde.length} of ${horde.length} emerged). Workers have returned to shelter; production, construction and research pause until dawn.`
-            : `Infected horde (Wave Day ${nextClock.day}) is mobilizing and aggressive! Workers have returned to shelter; production, construction and research pause until dawn.`,
+            : `${HORDE_DOMINANT_LABEL[hordeType].toUpperCase()} horde (Wave Day ${nextClock.day}) is mobilizing and aggressive! Workers have returned to shelter; production, construction and research pause until dawn.`,
           type: 'warn',
         });
       }
@@ -271,7 +272,8 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
                 gameClock: nextClock,
                 activePlacement: activePlacementRecord,
                 currentPreset,
-                mapData,
+                // Persist the sim-owned map so autosaves keep node depletion.
+                mapData: mapDataRef.current || mapData,
                 caravans,
                 radioState: radioDirectiveState,
                 hasCompletedFirstScavenge: true,
@@ -292,21 +294,32 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
       }
 
       // 3. Tick Real-Time Combat Simulation (Pathing, Weapons Firing, Zombie Attacks, Durability Damage, §10 Research)
-      const hqPos = settlement.hq?.center || null;
-      const combatResult = tickCombatSimulation(
+      let workingSettlement = settlementRef.current;
+      const pipelineResult = runSimulationPipeline({
+        state: workingSettlement,
+        // Feed the map from the ref so each tick continues from the previous
+        // tick's committed depletion instead of resetting to the stale prop.
+        mapData: mapDataRef.current || mapData,
+        squads: combatSquadsRef.current,
         zombies,
-        combatSquadsRef.current,
-        settlement.adaptedBuildings,
-        noiseEvents,
-        nextClock,
-        hqPos,
-        TICK_DELTA,
-        settlement,
-        droppedItems,
         hostileHumans,
-        pathGridRef.current,
-        isAlarmActive
-      );
+        noiseEvents,
+        droppedItems,
+        clock: nextClock,
+        deltaSeconds: TICK_DELTA,
+        pathGrid: pathGridRef.current,
+        roadGraph: roadGraphRef.current,
+        alarmActive: isAlarmActive,
+      });
+      workingSettlement = pipelineResult.state;
+      // The pipeline's resource-gathering stage mutates node amounts/positions;
+      // commit its mapData so the next tick and the scene stay in sync.
+      mapDataRef.current = pipelineResult.mapData;
+      sceneRef.current?.updateResourceAmounts(pipelineResult.mapData.resourceNodes);
+      const combatResult = pipelineResult.combat;
+      combatResult.updatedSquads = pipelineResult.squads;
+      for (const event of pipelineResult.events) setToastMessage(event);
+      combatResult.updatedZombies = pipelineResult.zombies;
 
       // Tick 13-Hour Emergency Alarm Countdown
       if (isAlarmActive) {
@@ -326,7 +339,7 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
       }
 
       let workingZombies = combatResult.updatedZombies;
-      let workingSettlement = settlementRef.current;
+
       setDroppedItems(combatResult.droppedItems);
       setNoiseEvents(combatResult.activeNoiseEvents);
       setHostileHumans(combatResult.updatedHostileHumans);
@@ -345,22 +358,100 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
 
       // Scavenging Over Time: progress search when squad is inside/at building footprint
       if (mapData?.buildings) {
+        // IFZ storage gate — deposit re-check: a squad that held its haul out
+        // in the field because storage was full returns the moment storage frees,
+        // without needing a manual order. Skipped for mounted squads (the vehicle
+        // drives) and squads under a fresh player order.
+        for (let i = 0; i < combatResult.updatedSquads.length; i++) {
+          const sq = combatResult.updatedSquads[i];
+          if (!sq.holdHaul || sq.currentHp <= 0 || sq.mountedVehicleId || sq.manualOrder) continue;
+          const heldInv = workingSettlement.squadInventories?.[sq.squadId];
+          if (!heldInv?.items?.length) {
+            combatResult.updatedSquads[i] = { ...sq, holdHaul: false };
+            continue;
+          }
+          if (!hasStockpileRoomForHaul(workingSettlement, heldInv.items)) continue;
+          const dropoff = findNearestStorageDropoff(workingSettlement, { x: sq.x, z: sq.z }, mapData.buildings);
+          combatResult.updatedSquads[i] = {
+            ...sq,
+            holdHaul: false,
+            state: 'returning',
+            targetPos: { x: dropoff.x, z: dropoff.z },
+            targetBuildingId: null,
+            targetBuildingName: dropoff.name,
+            searchProgress: undefined,
+            pathState: undefined,
+          };
+          heldHaulWarnedRef.current.delete(sq.squadId);
+        }
+
         for (let i = 0; i < combatResult.updatedSquads.length; i++) {
           const sq = combatResult.updatedSquads[i];
           if (sq.currentHp <= 0 || sq.state === 'downed' || sq.state === 'retreating') continue;
+          // A squad holding its haul (storage full) stays put — do not re-dispatch
+          // it into the building it just searched; the re-check above sends it
+          // home once storage frees.
+          if (sq.holdHaul) continue;
 
           // Check if squad is targeting a building or inside a building footprint
           let targetBldg = sq.targetBuildingId
             ? mapData.buildings.find((b) => String(b.id) === String(sq.targetBuildingId))
             : undefined;
 
+          // Stranded field-loot recovery: the squad was dispatched to a
+          // gatherer / demolition overflow pile. When it arrives, collect what
+          // fits into its backpack so the depot unload flow deposits it later.
+          if (isStrandedLootOrderId(sq.targetBuildingId)) {
+            const piles = workingSettlement.fieldLootPiles || [];
+            const pile = piles.find((p) => getStrandedLootOrderId(p.id) === sq.targetBuildingId);
+            if (pile && Math.hypot(sq.x - pile.position.x, sq.z - pile.position.z) <= STRANDED_COLLECT_RADIUS_M) {
+              const before = workingSettlement.fieldLootPiles?.reduce((n, p) => n + p.wood + p.metal + p.bricks, 0) || 0;
+              const res = collectStrandedLoot(workingSettlement, sq, pile);
+              const after = (res.newState.fieldLootPiles || []).reduce((n, p) => n + p.wood + p.metal + p.bricks, 0);
+              const collected = Math.max(0, before - after);
+              if (collected > 0) {
+                workingSettlement = res.newState;
+                combatResult.updatedSquads[i] = {
+                  ...sq,
+                  targetBuildingId: null,
+                  targetBuildingName: null,
+                  targetPos: null,
+                };
+                setToastMessage({
+                  title: 'FIELD LOOT RECOVERED',
+                  desc: `${sq.name} collected ${collected} units of stranded field loot. Deposit it at any Storage Depot or HQ.`,
+                  type: 'success',
+                });
+                soundService.playCombatActionSFX('assault_order');
+              } else {
+                setToastMessage({
+                  title: 'BACKPACK FULL',
+                  desc: `${sq.name} cannot carry more — free inventory slots before recovering stranded field loot.`,
+                  type: 'warn',
+                });
+                combatResult.updatedSquads[i] = {
+                  ...sq,
+                  targetBuildingId: null,
+                  targetBuildingName: null,
+                  targetPos: null,
+                };
+              }
+              continue;
+            }
+          }
+
           // If no explicit target building but squad is searching or idle inside a building footprint
           if (!targetBldg && (sq.state === 'searching' || (sq.state === 'idle' && !sq.targetPos))) {                  targetBldg = mapData.buildings.find((b) => isSquadInsideBuilding({ x: sq.x, z: sq.z }, b));
           }
 
           // Scavenging begins only after the squad reaches the precise point
-          // selected by the player inside the building.
-          if (targetBldg && isSquadInsideBuilding({ x: sq.x, z: sq.z }, targetBldg)) {
+          // selected by the player inside the building — and never on the
+          // headquarters, which is command infrastructure, not a loot target.
+          if (
+            targetBldg &&
+            !isHQBuilding(workingSettlement, targetBldg.id) &&
+            isSquadInsideBuilding({ x: sq.x, z: sq.z }, targetBldg)
+          ) {
             const bSearch = workingSettlement.buildingSearches?.get(targetBldg.id);
             if (!bSearch?.searched) {
               const scavResult = tickBuildingScavengeProgress(
@@ -438,23 +529,56 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
                 const carrying = !!finishedInventory?.items?.length;
 
                 if (carrying && finishedSquad.state !== 'returning') {
-                  // Full or partial haul: force a return to HQ/storage to deposit
-                  // BEFORE touching any queued building. The unload handler below
-                  // resumes the preserved queue once the loot is dropped off.
-                  const dropoff = findNearestStorageDropoff(workingSettlement, { x: finishedSquad.x, z: finishedSquad.z }, mapData.buildings);
-                  combatResult.updatedSquads[i] = {
-                    ...finishedSquad,
-                    state: 'returning',
-                    targetPos: { x: dropoff.x, z: dropoff.z },
-                    targetBuildingId: null,
-                    targetBuildingName: dropoff.name,
-                    searchProgress: undefined,
-                    pathState: undefined,
-                  };
+                  // IFZ storage gate: only force a return to HQ/storage when the
+                  // settlement can actually accept the haul. With storage full the
+                  // squad does NOT trek home — it holds the loot out in the field
+                  // (holdHaul) and auto-returns the moment storage frees, so a
+                  // pointless round-trip to a full depot is avoided entirely.
+                  const haulItems = finishedInventory?.items || [];
+                  if (!hasStockpileRoomForHaul(workingSettlement, haulItems)) {
+                    combatResult.updatedSquads[i] = {
+                      ...finishedSquad,
+                      state: 'idle',
+                      holdHaul: true,
+                      targetPos: null,
+                      targetBuildingId: null,
+                      targetBuildingName: null,
+                      searchProgress: undefined,
+                      pathState: undefined,
+                    };
+                    if (!heldHaulWarnedRef.current.has(sq.squadId)) {
+                      heldHaulWarnedRef.current.add(sq.squadId);
+                      const units = haulItems.reduce((sum: number, it: any) => sum + (it.quantity || 1), 0);
+                      setToastMessage({
+                        title: 'STORAGE FULL — SQUAD HOLDS HAUL',
+                        desc: `${sq.name} is holding ${units} units in the field. Build more storage and it will return to deposit automatically.`,
+                        type: 'warn',
+                      });
+                    }
+                  } else {
+                    // Full or partial haul: force a return to HQ/storage to deposit
+                    // BEFORE touching any queued building. The unload handler below
+                    // resumes the preserved queue once the loot is dropped off.
+                    const dropoff = findNearestStorageDropoff(workingSettlement, { x: finishedSquad.x, z: finishedSquad.z }, mapData.buildings);
+                    combatResult.updatedSquads[i] = {
+                      ...finishedSquad,
+                      state: 'returning',
+                      targetPos: { x: dropoff.x, z: dropoff.z },
+                      targetBuildingId: null,
+                      targetBuildingName: dropoff.name,
+                      searchProgress: undefined,
+                      pathState: undefined,
+                    };
+                  }
                 } else if (!carrying && finishedSquad.state !== 'returning') {
                   // Empty haul: continue straight to the next queued building
-                  // that still has loot, skipping any already-cleared structures.
-                  const nextBuilding = findNextScavengeTarget(remainingQueue, mapData.buildings, searches);
+                  // that still has loot, skipping any already-cleared structures
+                  // and the HQ (legacy queues may contain it pre-guard).
+                  const nextBuilding = findNextScavengeTarget(
+                    remainingQueue.filter((id) => !isHQBuilding(workingSettlement, id)),
+                    mapData.buildings,
+                    searches
+                  );
                   if (nextBuilding) {
                     combatResult.updatedSquads[i] = orderSquadMove(
                       combatResult.updatedSquads,
@@ -474,251 +598,8 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
         }
       }
 
-      // Auto-unload squad inventories (and the cargo bay of the vehicle they are
-      // mounted in) when returning inside HQ fortress OR any completed Storage Depot.
-      for (let i = 0; i < combatResult.updatedSquads.length; i++) {
-        const sq = combatResult.updatedSquads[i];
-        const inv = workingSettlement.squadInventories?.[sq.squadId];
-        const mountedVeh =
-          workingSettlement.vehicles?.find((v) => v.assignedSquadId === sq.squadId) ||
-          workingSettlement.vehicles?.find((v) => v.id === sq.depositVehicleId) ||
-          // A squad that dismounted to search/deposit keeps a link to its parked
-          // vehicle via assignedVehicleId — the cargo bay must be emptied too.
-          workingSettlement.vehicles?.find((v) => v.id === sq.assignedVehicleId);
-        const vehCargo = mountedVeh ? (mountedVeh.inventory || []).length : 0;
-        if (!inv?.items?.length && vehCargo === 0) continue;
-
-        const dropoff = findNearestStorageDropoff(workingSettlement, { x: sq.x, z: sq.z }, mapData?.buildings);
-        if (dropoff) {
-          const dropoffBldg = mapData?.buildings.find((b) => String(b.id) === String(dropoff.buildingId));
-          const isInsideDropoff = dropoffBldg
-            ? isSquadInsideBuilding({ x: sq.x, z: sq.z }, dropoffBldg)
-            : Math.hypot(sq.x - dropoff.x, sq.z - dropoff.z) <= 4.0;
-
-          if (isInsideDropoff) {
-            let depositedAny = false;
-            if (inv?.items?.length) {
-              const res = unloadSquadAtDropoff(workingSettlement, sq.squadId, { x: sq.x, z: sq.z }, dropoff, 10);
-              if (res.unloaded.length > 0 || (res.newState.fieldLootUnits || 0) > (workingSettlement.fieldLootUnits || 0)) {
-                const overflowUnits = (res.newState.fieldLootUnits || 0) - (workingSettlement.fieldLootUnits || 0);
-                workingSettlement = res.newState;
-                depositedAny = res.unloaded.length > 0;
-                const summary = res.unloaded.map((u) => `${formatLootLabel(u.label)} ×${u.quantity}`).join(', ');
-                setToastMessage({
-                  title: `SUPPLIES SECURED AT ${dropoff.name.toUpperCase()}`,
-                  desc: `${sq.name} deposited haul into stockpile: ${summary}`,
-                  type: 'success',
-                });
-                soundService.playBuildingPlaced();
-                if (overflowUnits > 0) {
-                  setToastMessage({
-                    title: 'STOCKPILE FULL — LOOT LEFT IN FIELD',
-                    desc: `${sq.name} could not unload ${overflowUnits} resource unit${overflowUnits === 1 ? '' : 's'}; recover it from the scavenged site later.`,
-                    type: 'warn',
-                  });
-                }
-              }
-            }
-
-            // A mounted squad also empties its vehicle's cargo bay at the dropoff.
-            if (mountedVeh && vehCargo > 0) {
-              const vehRes = unloadVehicleAtDropoff(workingSettlement, mountedVeh, dropoff, 10);
-              if (vehRes.unloaded.length > 0 || (vehRes.newState.fieldLootUnits || 0) > (workingSettlement.fieldLootUnits || 0)) {
-                const overflowUnits = (vehRes.newState.fieldLootUnits || 0) - (workingSettlement.fieldLootUnits || 0);
-                workingSettlement = vehRes.newState;
-                depositedAny = vehRes.unloaded.length > 0;
-                const summary = vehRes.unloaded.map((u) => `${formatLootLabel(u.label)} ×${u.quantity}`).join(', ');
-                setToastMessage({
-                  title: `VEHICLE CARGO DEPOSITED AT ${dropoff.name.toUpperCase()}`,
-                  desc: `${mountedVeh.name} unloaded ${vehRes.unloaded.length} cargo slots into stockpile: ${summary}`,
-                  type: 'success',
-                });
-                soundService.playBuildingPlaced();
-                if (overflowUnits > 0) {
-                  setToastMessage({
-                    title: 'STOCKPILE FULL — LOOT LEFT IN FIELD',
-                    desc: `${mountedVeh.name} could not unload ${overflowUnits} resource unit${overflowUnits === 1 ? '' : 's'}; recover it from the scavenged site later.`,
-                    type: 'warn',
-                  });
-                }
-              }
-            }
-
-            // Resume the preserved scavenge queue after depositing — but only for
-            // squads ON FOOT. Mounted squads are picked up by the vehicle dispatch
-            // logic below (the vehicle drives to the next queued building).
-            if (depositedAny && sq.state === 'returning' && !mountedVeh) {
-              // Skip any buildings that have since been fully cleared. If nothing
-              // remains, the squad returns to idle.
-              const searches = workingSettlement.buildingSearches || (new Map() as Map<string | number, BuildingSearchState>);
-              const nextBuilding = findNextScavengeTarget(scavengeQueue[sq.squadId] || [], mapData?.buildings || [], searches);
-              combatResult.updatedSquads[i] = nextBuilding
-                ? orderSquadMove(combatResult.updatedSquads, sq.squadId, nextBuilding.center, nextBuilding.id, nextBuilding.name || nextBuilding.type)
-                    .find((s) => s.squadId === sq.squadId) || { ...sq, state: 'idle', targetPos: null, targetBuildingName: null }
-                : { ...sq, state: 'idle', targetPos: null, targetBuildingName: null };
-            } else if (depositedAny && mountedVeh && sq.state === 'returning') {
-              // Mounted squad just deposited: settle it to idle at the vehicle so
-              // the dispatch loop below can drive to the next queued building.
-              combatResult.updatedSquads[i] = { ...sq, state: 'idle', targetPos: null, targetBuildingName: null };
-            } else if (depositedAny && sq.depositVehicleId) {
-              // This squad dismounted to deposit BOTH its inventory and its
-              // vehicle's cargo bay. After unloading, send it back to the parked
-              // vehicle to re-board and resume the scavenge queue.
-              const depotVeh = workingSettlement.vehicles?.find((v) => v.id === sq.depositVehicleId);
-              combatResult.updatedSquads[i] = depotVeh
-                ? {
-                    ...sq,
-                    depositVehicleId: null,
-                    pendingMountVehicleId: depotVeh.id,
-                    state: 'moving',
-                    manualOrder: false,
-                    targetPos: { x: depotVeh.position.x, z: depotVeh.position.z },
-                    targetBuildingId: null,
-                    targetBuildingName: `Return to ${depotVeh.name}`,
-                    pathState: undefined,
-                  }
-                : { ...sq, depositVehicleId: null, state: 'idle', targetPos: null, targetBuildingName: null };
-            }
-          }
-        }
-      }
-
-      // Mounted-squad logistics: vehicles carry the scavenge queue. Once a squad
-      // finishes a building and boards again, dispatch its vehicle to the next
-      // queued building; when the cargo bay is full (autoDepotReturn) drive the
-      // vehicle home to deposit instead.
-      if (mapData && roadGraphRef.current) {
-        const searches =
-          workingSettlement.buildingSearches || (new Map() as Map<string | number, BuildingSearchState>);
-        let vehiclesChanged = false;
-        const dispatchedVehicles = (workingSettlement.vehicles || []).map((veh) => {
-          let v = veh;
-          const mountedSquadId = v.assignedSquadId;
-          const isParked = !v.isMoving && !v.targetPos && !v.autoScavengeBuildingId;
-
-          // 1. Full cargo bay -> the squad boarded again; drive home to deposit.
-          if (v.autoDepotReturn && mountedSquadId && isParked) {
-            const dropTarget = findNearestStorageDropoff(
-              workingSettlement,
-              { x: v.position.x, z: v.position.z },
-              mapData.buildings
-            );
-            const distToDrop =
-              mapData && dropTarget.buildingId !== undefined
-                ? Math.hypot(v.position.x - dropTarget.x, v.position.z - dropTarget.z)
-                : 9999;
-            if (distToDrop > 18 && !v.reachBlocked) {
-              // Not at the depot yet (and the vehicle hasn't been stopped short
-              // of an undrivable dock point): keep the flag set and drive there.
-              v = orderVehicleRoadTravel(v, { x: dropTarget.x, z: dropTarget.z }, roadGraphRef.current);
-              v = { ...v, autoDepotReturn: true };
-              vehiclesChanged = true;
-              setToastMessage({
-                title: 'VEHICLE RETURNING TO DEPOSIT',
-                desc: `${v.name} cargo bay is full — driving back to ${dropTarget.name.toUpperCase()} to unload before continuing.`,
-                type: 'info',
-              });
-              return v;
-            }
-            // Parked (or stopped short of the building itself) with nothing to
-            // deposit: the run is already complete — don't drag the squad out.
-            const depotInv = workingSettlement.squadInventories?.[mountedSquadId];
-            const depotCargo = (depotInv?.items?.length ?? 0) > 0 || (v.inventory || []).length > 0;
-            if (!depotCargo) {
-              v = { ...v, autoDepotReturn: false };
-              vehiclesChanged = true;
-              return v;
-            }
-            // Arrived at the depot: dismount the squad and send it ON FOOT into
-            // the dropoff building so both the squad inventory AND the vehicle
-            // cargo bay actually get deposited (a mounted squad would otherwise
-            // just park and never trigger the in-building unload).
-            const depotSq = combatResult.updatedSquads.find((s) => s.squadId === mountedSquadId);
-            if (depotSq) {
-              const dis = dismountSquadFromVehicle(v, depotSq);
-              v = dis.updatedVehicle;
-              v = { ...v, autoDepotReturn: false, reachBlocked: false };
-              combatResult.updatedSquads[combatResult.updatedSquads.findIndex((s) => s.squadId === mountedSquadId)] = {
-                ...dis.updatedSquad,
-                depositVehicleId: v.id,
-                state: 'moving',
-                manualOrder: false,
-                targetPos: { x: dropTarget.x, z: dropTarget.z },
-                targetBuildingId: dropTarget.buildingId ?? null,
-                targetBuildingName: `Deposit at ${dropTarget.name}`,
-                pathState: undefined,
-              };
-              vehiclesChanged = true;
-              setToastMessage({
-                title: 'SQUAD DEPOSITING CARGO',
-                desc: `${depotSq.name} unloading ${v.name}'s cargo bay and its haul into ${dropTarget.name.toUpperCase()}.`,
-                type: 'info',
-              });
-            }
-            return v;
-          }
-
-          // 1b. A mounted squad parked at/near a storage dropoff (HQ or
-          // warehouse) with cargo on its back or in the bay — e.g. after a plain
-          // right-click move order to the HQ — gets out and deposits BOTH
-          // inventories, exactly like the auto-depot-return flow above. The squad
-          // walks into the depot, the unload handler empties squad + vehicle, and
-          // the squad then re-boards while the vehicle waits parked for it.
-          if (mountedSquadId && isParked && !v.autoDepotReturn) {
-            const nearbyDrop = findNearestStorageDropoff(
-              workingSettlement,
-              { x: v.position.x, z: v.position.z },
-              mapData.buildings
-            );
-            const distToDrop = Math.hypot(v.position.x - nearbyDrop.x, v.position.z - nearbyDrop.z);
-            const squadInv = workingSettlement.squadInventories?.[mountedSquadId];
-            const hasCargo =
-              (squadInv?.items?.length ?? 0) > 0 || (v.inventory || []).length > 0;
-            const mountedUnit = combatResult.updatedSquads.find((s) => s.squadId === mountedSquadId);
-            if ((distToDrop <= 30 || v.reachBlocked) && hasCargo && mountedUnit && !mountedUnit.depositVehicleId) {
-              const dis = dismountSquadFromVehicle(v, mountedUnit);
-              v = { ...dis.updatedVehicle, autoDepotReturn: false };
-              combatResult.updatedSquads[combatResult.updatedSquads.findIndex((s) => s.squadId === mountedSquadId)] = {
-                ...dis.updatedSquad,
-                depositVehicleId: v.id,
-                state: 'moving',
-                manualOrder: false,
-                targetPos: { x: nearbyDrop.x, z: nearbyDrop.z },
-                targetBuildingId: nearbyDrop.buildingId ?? null,
-                targetBuildingName: `Deposit at ${nearbyDrop.name}`,
-                pathState: undefined,
-              };
-              vehiclesChanged = true;
-              setToastMessage({
-                title: 'SQUAD DEPOSITING CARGO',
-                desc: `${mountedUnit.name} unloading its haul and ${v.name}'s cargo bay into ${nearbyDrop.name.toUpperCase()}.`,
-                type: 'info',
-              });
-              return v;
-            }
-          }
-
-          // 2. Mounted squad with a remaining queue -> drive to the next building.
-          if (mountedSquadId && isParked && !v.autoDepotReturn) {
-            const queue = scavengeQueueRef.current[mountedSquadId] || [];
-            const nextBuilding = findNextScavengeTarget(queue, mapData.buildings, searches);
-            if (nextBuilding) {
-              v = orderVehicleRoadTravel(v, nextBuilding.center, roadGraphRef.current);
-              v = {
-                ...v,
-                autoScavengeBuildingId: nextBuilding.id,
-                autoScavengeBuildingName: nextBuilding.name || nextBuilding.type,
-              };
-              vehiclesChanged = true;
-            }
-          }
-          return v;
-        });
-        if (vehiclesChanged) {
-          workingSettlement = { ...workingSettlement, vehicles: dispatchedVehicles };
-        }
-      }
-
+      // Depot unloading and mounted-vehicle logistics are now handled by the
+      // authoritative logistics stage inside the simulation pipeline.
       // Commit fully resolved squad updates (combat, scavenging, and depot dropoffs)
       combatSquadsRef.current = combatResult.updatedSquads;
       setCombatSquads(combatResult.updatedSquads);
@@ -805,7 +686,7 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
         }
       }
 
-      // 4. Tick Infection & Outbreak Simulation (§6.2, §6.3)
+      // 4. Apply world-stage results already produced by the authoritative pipeline.
       // PURE simulation step — the new state is computed synchronously from the
       // working settlement (post-combat, post-dispatch, post-ransom — i.e. the
       // exact state the old functional updater received as `prev`) and every
@@ -888,12 +769,7 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
         }
 
         // D. Tick biological infection progression & outbreak containment
-        const infSim = tickInfectionSimulation(
-          current,
-          TICK_DELTA,
-          nextClock.speed,
-          nextClock.day
-        );
+        const infSim = pipelineResult.infection;
 
         // Fresh zombie list per invocation — the closure `workingZombies` is
         // never mutated in here, so StrictMode double-invocation cannot
@@ -912,25 +788,10 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
         }
 
         // E. Tick Vehicle Simulation & Road Navigation (§8)
-        let updatedVehicles = infSim.newState.vehicles || [];
+        let updatedVehicles = pipelineResult.vehicles.updatedVehicles || [];
         const effectiveDelta = TICK_DELTA * (nextClock.speed === 0 ? 0 : nextClock.speed);
         if (updatedVehicles.length > 0) {
-          const vehTick = updateVehiclesTick(
-            updatedVehicles,
-            combatResult.updatedSquads,
-            tickZombies,
-            effectiveDelta,
-            Date.now(),
-            mapDataRef.current || undefined,
-            roadGraphRef.current,
-            infSim.newState.freestandingBuildings || [],
-            // Combined obstacle stamp: a fresh grid per map (gridId) and any
-            // wall/gate/tower placement or removal (revision) both change the
-            // stamp, invalidating cached vehicle road routes.
-            pathGridRef.current
-              ? pathGridRef.current.gridId * 1000 + pathGridRef.current.revision
-              : 0
-          );
+          const vehTick = pipelineResult.vehicles;
 
           if (vehTick.notifications.length > 0) {
             const ev = vehTick.notifications[0];
@@ -956,30 +817,19 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
         // F. Tick Zombie Lairs & Rival Hideouts (§5.2)
         // Post-vehicle squad list feeds both threat systems exactly as before.
         const threatSquads = fx.postVehicleSquads || combatResult.updatedSquads;
-        const lairTick = tickZombieLairs(
-          current.zombieLairs,
-          threatSquads,
-          mapData?.buildings || [],
-          Date.now(),
-          effectiveDelta
-        );
-        if (lairTick.spawnedZombies.length > 0) {
-          tickZombies = [...tickZombies, ...lairTick.spawnedZombies];
-        }
-
-        const hideoutTick = tickRivalHideouts(
-          current.rivalHideouts,
-          combatResult.updatedHostileHumans,
-          threatSquads
-        );
+        const lairTick = pipelineResult.lairs;
+        if (lairTick.spawnedZombies.length > 0) tickZombies = [...tickZombies, ...lairTick.spawnedZombies];
+        const hideoutTick = pipelineResult.hideouts;
         fx.defenders = hideoutTick.spawnedDefenders;
 
-        let nextState = {
-          ...infSim.newState,
-          vehicles: updatedVehicles,
-          zombieLairs: lairTick.updatedLairs,
-          rivalHideouts: hideoutTick.updatedHideouts,
-        };
+        // Commit the FULL working settlement, not the pipeline's pre-scavenge
+        // snapshot. `current` chains: pipeline state → scavenge mutations
+        // (buildingSearches progress, carried loot, return orders) → ransom
+        // captives → A/B/C combat mutations (bite infections, fallen heroes,
+        // building durability). Spreading `infSim.newState` here reverted all
+        // of those every tick — search progress never advanced, loot never
+        // reached the stockpile, and combat bite/death effects were lost.
+        let nextState = { ...current };
 
         // Free captives when their Hideout is cleared (§5.2 rescue path)
         for (const cleared of hideoutTick.clearedHideouts) {
@@ -1024,13 +874,14 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
           cur !== null && simFx.ransomClearIds.some((id) => cur === id) ? null : cur
         );
       }
-      if (simFx.postVehicleSquads) {
-        // Commit vehicle-tick squad changes (boarding, position sync) so the next
-        // combat tick and all UI reads see the mounted squad instead of a stale copy.
-        combatResult.updatedSquads = simFx.postVehicleSquads;
-        combatSquadsRef.current = simFx.postVehicleSquads;
-        setCombatSquads(simFx.postVehicleSquads);
-      }
+      // NOTE: the pipeline's vehicle stage already ran as part of
+      // runSimulationPipeline and its squad output (boarding, position sync,
+      // dismount) flows into `combatResult.updatedSquads` via
+      // pipelineResult.squads. Because that stage ran BEFORE this tick's
+      // scavenge block, there is deliberately NO postVehicleSquads re-commit
+      // here — re-committing it would revert searchProgress / 'returning'
+      // states the scavenge block just wrote, which is the exact regression
+      // where squads searched forever without ever depositing loot.
       if (simFx.visualFx.length > 0) combatResult.newVisualFx.push(...simFx.visualFx);
       if (simFx.noiseEvents.length > 0) setNoiseEvents((prev) => [...prev, ...simFx.noiseEvents]);
       if (simFx.defenders.length > 0) {
@@ -1107,7 +958,8 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
           combatResult.droppedItems,
           combatResult.updatedHostileHumans,
           settlement.resourceWorkOrders || [],
-          settlement.constructionOrders || []
+          settlement.constructionOrders || [],
+          selectedSquadIds
         );
 
         sceneRef.current.updateVehicles(
@@ -1122,7 +974,7 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
         const fog = settlement.fogOfWar || (mapData ? createFogGrid(mapData) : null);
         const fogEnabled = true;
         if (fog) {
-          const visionSources = settlement.hq
+          const visionSources = getPrimaryHQ(settlement)
             ? computeVisionSources(
                 settlement,
                 combatResult.updatedSquads,
@@ -1142,9 +994,11 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
             fogEnabled,
             settlement.rivalHideouts,
             settlement.zombieLairs,
+            settlement.occupiedBuildings?.buildings,
             settlement.resourceWorkOrders || [],
             settlement.constructionOrders || [],
-            settlement.buildingSearches
+            settlement.buildingSearches,
+            settlement.fieldLootPiles || []
           );
         }
       }
@@ -1168,10 +1022,11 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
     droppedItems,
     noiseEvents,
     selectedSquadId,
+    selectedSquadIds,
     selectedVehicleId,
     settlement.adaptedBuildings,
     settlement.vehicles,
-    settlement.hq,
+    getPrimaryHQ(settlement),
     settlement.fogOfWar,
     settlement.hiddenGroups,
     settlement.rivalHideouts,

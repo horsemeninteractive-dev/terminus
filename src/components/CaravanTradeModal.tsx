@@ -67,7 +67,7 @@ export const CaravanTradeModal: React.FC<CaravanTradeModalProps> = ({
  medical: { first_aid_kits: 0, sterile_bandages: 0, antibiotics: 0, painkillers: 0 },
  fuel: { gasoline: 0, diesel: 0, biofuel: 0 },
  ammo: { sharedPool: 0 },
- materials: { wood: 0, metal: 0, bricks: 0 },
+ materials: { wood: 0, metal: 0, bricks: 0, tools: 0 },
  });
 
  // Survivor transfer state

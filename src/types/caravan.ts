@@ -17,6 +17,7 @@ export interface SettlementRecord {
   fallenCountTotal?: number;
   cachedMapData?: MapData; // Cached map data for seamless world switching
   cachedZombies?: any[]; // Cached zombies
+  lastSimulatedAt?: number; // Last timestamp used for inactive-colony simulation
 }
 
 export type CaravanStatus = 'traveling' | 'ambushed' | 'arrived' | 'destroyed';

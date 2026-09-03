@@ -9,11 +9,15 @@ import {
   Wheat, Wine, Wrench, X, Zap,
 } from 'lucide-react';
 import { RESEARCH_BRANCHES, RESEARCH_TREE_NODES } from '../data/researchTreeData';
-import { FUNCTIONAL_BUILDING_DEFINITIONS } from '../data/functionalBuildings';
 import {
-  calculateResearchGenerationRate,
+  FUNCTIONAL_BUILDING_DEFINITIONS,
+  isLegacyAliasBuildingType,
+} from '../data/functionalBuildings';
+import {
   canUnlockResearchNode,
   getEstimatedResearchSeconds,
+  getResearchWorkerCount,
+  getScientificMaterials,
   pauseResearch,
   startResearchNode,
 } from '../services/researchService';
@@ -98,6 +102,7 @@ const COL_GAP = 44;
 const ROW_GAP = 26;
 
 const fmtTime = (seconds: number) => {
+  if (seconds === Infinity) return 'NO RESEARCHERS';
   if (!isFinite(seconds) || seconds <= 0) return 'Instant';
   const totalMin = Math.ceil(seconds / 60);
   if (totalMin < 60) return `${totalMin} MIN`;
@@ -128,7 +133,10 @@ export const ResearchTreeModal: React.FC<ResearchTreeModalProps> = ({ settlement
       if (!list.some((d) => d.id === def.id)) list.push(def);
       map.set(nodeId, list);
     };
+    // Skip legacy alias defs so a research node never lists a duplicate
+    // facility under an old name (each facility appears once, canonical).
     Object.values(FUNCTIONAL_BUILDING_DEFINITIONS).forEach((def) => {
+      if (isLegacyAliasBuildingType(def.id)) return;
       if (def.researchRequirement) add(def.researchRequirement, def);
     });
     Object.values(RESEARCH_TREE_NODES).forEach((node) => {
@@ -139,7 +147,7 @@ export const ResearchTreeModal: React.FC<ResearchTreeModalProps> = ({ settlement
     return map;
   }, []);
   const selected = selectedId ? RESEARCH_TREE_NODES[selectedId] : null;
-  const rate = calculateResearchGenerationRate(settlement);
+  const researcherCount = getResearchWorkerCount(settlement);
   const SceneIcon = BRANCH_SCENES[activeBranch].icon;
   const branch = RESEARCH_BRANCHES.find((item) => item.id === activeBranch)!;
   const unlockedNodes = research.unlockedNodes || [];
@@ -148,7 +156,7 @@ export const ResearchTreeModal: React.FC<ResearchTreeModalProps> = ({ settlement
 
   const maxTier = Math.max(1, ...nodes.map((node) => node.tier));
   const tiers = useMemo(
-    () => Array.from({ length: maxTier }, (_, i) => nodes.filter((node) => node.tier === i + 1).sort((a, b) => a.costRP - b.costRP)),
+    () => Array.from({ length: maxTier }, (_, i) => nodes.filter((node) => node.tier === i + 1).sort((a, b) => a.costSciMat - b.costSciMat)),
     [nodes, maxTier]
   );
   const maxRow = Math.max(1, ...tiers.map((t) => t.length));
@@ -229,18 +237,18 @@ export const ResearchTreeModal: React.FC<ResearchTreeModalProps> = ({ settlement
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2 text-[11px] text-[#AEBEC0]">
               <span className="uppercase tracking-wider">Researchers</span>
-              <strong className="text-white">{rate.researchWorkers}</strong>
+              <strong className="text-white">{researcherCount}</strong>
             </div>
-            <div className="flex items-center gap-1.5 border border-[#2F8F5B] bg-[#0E241A] px-2.5 py-1">
+            <div className="flex items-center gap-1.5 border border-[#2F8F5B] bg-[#0E241A] px-2.5 py-1" title="Scientific Materials in stockpile — produced by staffed Research Centers">
               <BookOpenCheck className="w-4 h-4 text-[#37F59A]" />
-              <strong className="text-[#37F59A] text-lg leading-none">{Math.floor(research.researchPoints || 0)}</strong>
+              <strong className="text-[#37F59A] text-lg leading-none">{Math.floor(getScientificMaterials(settlement))}</strong>
             </div>
             <div className="relative">
               <button onClick={() => setShowHelp((v) => !v)} className="p-1.5 text-[#AEBEC0] hover:text-white hover:bg-[#263033]" aria-label="Help">?</button>
               {showHelp && (
                 <div className="absolute right-0 top-full z-10 mt-1 w-72 border border-[#42545A] bg-[#151D20] p-3 text-[11px] leading-relaxed text-[#B5C2C3] shadow-xl">
                   <p className="mb-1 font-bold uppercase tracking-wider text-white">How research works</p>
-                  <p>Each category holds its own branch of technologies. Assign survivors to completed <strong className="text-[#5DF0AC]">Research Stations</strong> to generate Research Points (green book) and accelerate the active project — the more researchers, the faster it completes. Only one project can run at a time.</p>
+                  <p>Each category holds its own branch of technologies. Assign survivors to completed <strong className="text-[#5DF0AC]">Research Stations</strong> to produce <strong className="text-[#5DF0AC]">Scientific Materials</strong> (the green counter, held in the stockpile) and to advance the active project — the more researchers, the faster it completes. Starting a project banks its material cost; completing it consumes the materials. Only one project can run at a time.</p>
                 </div>
               )}
             </div>
@@ -353,7 +361,7 @@ export const ResearchTreeModal: React.FC<ResearchTreeModalProps> = ({ settlement
                 )}
 
                 <div className="mt-auto pt-4">
-                  <div className="flex items-center justify-between text-[10px] text-[#87999B]"><span className="uppercase tracking-wider">Research Cost</span><span className="text-white font-bold"><BookOpenCheck className="inline w-3.5 h-3.5 mr-1 text-[#37F59A]" />{selected.costRP}</span></div>
+                  <div className="flex items-center justify-between text-[10px] text-[#87999B]"><span className="uppercase tracking-wider">Scientific Materials Cost</span><span className="text-white font-bold"><BookOpenCheck className="inline w-3.5 h-3.5 mr-1 text-[#37F59A]" />{selected.costSciMat}</span></div>
                   {selectedActive && (
                     <>
                       <div className="mt-2 flex items-center justify-between text-[11px]"><span className="text-[#87999B]">ESTIMATED TIME</span><strong className="text-white">{fmtTime(getEstimatedResearchSeconds(settlement, selected, research.activeProgressSec))}</strong></div>

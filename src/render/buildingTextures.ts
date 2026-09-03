@@ -11,7 +11,7 @@ import { BuildingCategory } from '../types/map';
  *    tile spans 18m (six storeys) and the ground floor sits at the image
  *    bottom. A tall tile means doors/shopfronts appear only once, at street
  *    level, instead of repeating on every storey of tall buildings.
- *  - Roof caps: u/v = world X / -Z in meters; repeat = 1/8 per 8m tile.
+ *  - Roof caps: u/v = world X / -Z in meters; repeat = 1/4 per 4m tile.
  */
 
 interface FacadeStyle {
@@ -40,11 +40,12 @@ const FACADE_STYLES: Record<BuildingCategory, FacadeStyle> = {
   other: { base: '#858b91', pattern: 'panel', upperWindows: true, groundFloor: 'door', windowColor: '#2a3944', accent: '#aeb5bb', grime: 0.5 },
 };
 
-// Roofing palettes are muted and roof-like: terracotta pantiles and slate for
-// houses/schools, grey membrane / gravel / corrugated elsewhere. No brick tones
-// and no per-category colour casts — a city of roofs, not coloured blocks.
-const ROOF_STYLES: Record<BuildingCategory, { kind: 'gravel' | 'corrugated' | 'membrane' | 'tiles'; base: string; dark: string; light: string }> = {
-  residential: { kind: 'tiles', base: '#7e4638', dark: '#5f3226', light: '#9e5d4b' }, // terracotta pantiles
+// Roofing palettes are muted and roof-like: blue-grey slate and terracotta
+// pantiles for houses/schools, grey membrane / gravel / corrugated elsewhere.
+// No brick tones and no per-category colour casts — a city of roofs, not
+// coloured blocks.
+const ROOF_STYLES: Record<BuildingCategory, { kind: 'gravel' | 'corrugated' | 'membrane' | 'tiles' | 'slate'; base: string; dark: string; light: string }> = {
+  residential: { kind: 'slate', base: '#5c6773', dark: '#474f5a', light: '#6f7a87' }, // blue-grey slate
   commercial: { kind: 'membrane', base: '#8e959c', dark: '#757c83', light: '#a7aeb5' },
   supermarket: { kind: 'membrane', base: '#9aa1a8', dark: '#7f868d', light: '#b3bac1' },
   pharmacy: { kind: 'membrane', base: '#9299a0', dark: '#7a8188', light: '#aab1b8' },
@@ -54,7 +55,7 @@ const ROOF_STYLES: Record<BuildingCategory, { kind: 'gravel' | 'corrugated' | 'm
   industrial: { kind: 'corrugated', base: '#70757b', dark: '#5a5f65', light: '#868b91' },
   warehouse: { kind: 'corrugated', base: '#787d83', dark: '#60656b', light: '#90959b' },
   civic: { kind: 'gravel', base: '#8a908f', dark: '#717776', light: '#a1a7a6' },
-  school: { kind: 'tiles', base: '#5f6a78', dark: '#47515d', light: '#77828f' }, // slate
+  school: { kind: 'slate', base: '#57636e', dark: '#434b56', light: '#68737e' }, // slate
   restaurant: { kind: 'gravel', base: '#7f8589', dark: '#676d71', light: '#969ca0' },
   other: { kind: 'gravel', base: '#81878c', dark: '#697075', light: '#999fa4' },
 };
@@ -429,7 +430,7 @@ export function getBuildingTextureSet(category: BuildingCategory, variant: numbe
   }
 
   // ---------- ROOF ----------
-  const [roofCanvas, roofCtx] = makeCanvas(512, 512); // 8m × 8m tile
+  const [roofCanvas, roofCtx] = makeCanvas(512, 512); // 4m × 4m tile
   drawRoof(roofCtx, roofStyle, rng);
 
   const wrap = (t: THREE.CanvasTexture) => {
@@ -450,7 +451,7 @@ export function getBuildingTextureSet(category: BuildingCategory, variant: numbe
   glowTex.offset.set(0, 1 / 18);
 
   const roofTex = wrap(new THREE.CanvasTexture(roofCanvas));
-  roofTex.repeat.set(1 / 8, 1 / 8);
+  roofTex.repeat.set(1 / 4, 1 / 4);
 
   const set = { wall: wallTex, roof: roofTex, glow: glowTex };
   BuildingTextureCache.set(key, set);
@@ -459,7 +460,7 @@ export function getBuildingTextureSet(category: BuildingCategory, variant: numbe
 
 function drawRoof(
   ctx: CanvasRenderingContext2D,
-  style: { kind: 'gravel' | 'corrugated' | 'membrane' | 'tiles'; base: string; dark: string; light: string },
+  style: { kind: 'gravel' | 'corrugated' | 'membrane' | 'tiles' | 'slate'; base: string; dark: string; light: string },
   rng: () => number
 ) {
   const S = 512;
@@ -471,6 +472,36 @@ function drawRoof(
     for (let i = 0; i < 4200; i++) {
       ctx.fillStyle = rng() > 0.5 ? `rgba(255,255,255,${rng() * 0.09})` : `rgba(0,0,0,${rng() * 0.09})`;
       ctx.fillRect(rng() * S, rng() * S, 1.5 + rng() * 2.5, 1.5 + rng() * 2);
+    }
+  } else if (kind === 'slate') {
+    // Natural blue-grey slate: rectangular slates laid in staggered courses.
+    // Each slate reads as a thin rectangle (wider than tall) with a hard
+    // head-lap shadow where the course above overlaps it, and a bright top
+    // edge where it catches the light — NOT a brick pattern. Tile is 4m so a
+    // slate is ~0.33m × 0.2m — proper slating, not oversized slabs.
+    const rows = 20;
+    const rowH = S / rows;
+    const slateW = S / 12;
+    for (let r = 0; r < rows; r++) {
+      // half-width stagger so vertical joints never line up between courses
+      const off = (r % 2) * (slateW / 2);
+      const y = r * rowH;
+      // dark head-lap line: the course above tucks under this course
+      ctx.fillStyle = 'rgba(0,0,0,0.28)';
+      ctx.fillRect(-slateW, y, S + slateW * 2, 2.5);
+      for (let x = -slateW; x < S + slateW; x += slateW) {
+        const tx = x + off;
+        // per-slate tone variance (some lighter, some darker natural slate)
+        const tone = rng();
+        ctx.fillStyle = tone < 0.35 ? dark : tone > 0.82 ? light : base;
+        ctx.fillRect(tx + 1.5, y + 3, slateW - 3, rowH - 4);
+        // bright top edge (slate catches light)
+        ctx.fillStyle = 'rgba(255,255,255,0.16)';
+        ctx.fillRect(tx + 2, y + 3, slateW - 4, 2);
+        // soft vertical joint between neighbours
+        ctx.fillStyle = 'rgba(0,0,0,0.22)';
+        ctx.fillRect(tx + slateW - 1.5, y + 4, 1.5, rowH - 6);
+      }
     }
   } else if (kind === 'corrugated') {
     // finer ribs (~0.25m at the 8m tile scale)
@@ -525,7 +556,7 @@ function drawRoof(
   }
 
   // Soft edge vignette so tiles blend into each other instead of showing a hard
-  // 8m grid; the building's own silhouette reads the parapet via EdgesGeometry.
+  // 4m grid; the building's own silhouette reads the parapet via EdgesGeometry.
   const vig = ctx.createRadialGradient(S / 2, S / 2, S * 0.35, S / 2, S / 2, S * 0.72);
   vig.addColorStop(0, 'rgba(0,0,0,0)');
   vig.addColorStop(1, 'rgba(0,0,0,0.10)');

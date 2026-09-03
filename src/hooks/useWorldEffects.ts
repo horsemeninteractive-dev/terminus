@@ -1,14 +1,15 @@
 import React, { useEffect, useRef } from 'react';
 import { syncTacticalSquadUnits, generateAmbientMapZombies } from '../services/combatService';
-import { tickSettlementSimulation } from '../services/populationService';
-import { tickResearchSimulation } from '../services/researchService';
-import { createInitialWeatherState, tickWeatherSimulation } from '../services/weatherService';
-import { tickMoraleAndGrowthSimulation } from '../services/moraleService';
+import { getPrimaryHQ } from '../services/buildingOperational';
 import { createFogGrid, markExploredCells, discoverGroupsInVision, discoverThreatsInVision } from '../services/fogOfWarService';
 import { generateRivalHideouts, generateZombieLairs } from '../services/rivalFactionService';
 import { updateRadioDirectiveSystem } from '../services/radioDirectiveService';
-import { tickCaravansSimulation } from '../services/caravanService';
-import { tickResourceGathering } from '../services/resourceGatheringService';
+import { calculateGlobalNetworkStats, tickCaravansSimulation } from '../services/caravanService';
+import {
+  evaluateSettlementLoss,
+  markSettlementDestroyed,
+} from '../services/settlementLifecycleService';
+import { simulateSettlementOffline } from '../services/offlineSettlementService';
 import { RoadNetworkGraph } from '../services/roadPathfinder';
 import { PathGrid } from '../services/pathfindingService';
 import { soundService, ToastMessage } from '../services/soundService';
@@ -39,6 +40,7 @@ export interface WorldEffectsRuntime {
   fogVisibleCellsRef: React.MutableRefObject<Set<string>>;
   combatSquadsRef: React.MutableRefObject<TacticalSquadUnit[]>;
   radioAlertIdsRef: React.MutableRefObject<Set<string>>;
+  lairDiscoveryAlertIdsRef: React.MutableRefObject<Set<string>>;
   selectedBuilding: BuildingPolygon | null;
   selectedSquadId: string | null;
   selectedVehicleId: string | null;
@@ -78,6 +80,8 @@ export interface WorldEffectsRuntime {
   setSelectedResourceNode: React.Dispatch<React.SetStateAction<ResourceNode | null>>;
   setSettlement: React.Dispatch<React.SetStateAction<SettlementState>>;
   setSettlements: React.Dispatch<React.SetStateAction<Record<string, SettlementRecord>>>;
+  setOverrunSettlement: React.Dispatch<React.SetStateAction<SettlementRecord | null>>;
+  setIsExtinct: React.Dispatch<React.SetStateAction<boolean>>;
   setCaravans: React.Dispatch<React.SetStateAction<TradeCaravan[]>>;
   setToastMessage: (msg: ToastMessage | null) => void;
   radioDirectiveState: RadioDirectiveState;
@@ -119,6 +123,7 @@ export function useWorldEffects(runtime: WorldEffectsRuntime): WorldEffectsOutpu
     fogVisibleCellsRef,
     combatSquadsRef,
     radioAlertIdsRef,
+    lairDiscoveryAlertIdsRef,
     selectedBuilding,
     selectedSquadId,
     selectedVehicleId,
@@ -158,6 +163,8 @@ export function useWorldEffects(runtime: WorldEffectsRuntime): WorldEffectsOutpu
     setSelectedResourceNode,
     setSettlement,
     setSettlements,
+    setOverrunSettlement,
+    setIsExtinct,
     setCaravans,
     setToastMessage,
     radioDirectiveState,
@@ -169,12 +176,12 @@ export function useWorldEffects(runtime: WorldEffectsRuntime): WorldEffectsOutpu
   } = runtime;
 
   const isInitialCommsPending =
-    !settlement.hq &&
+    !getPrimaryHQ(settlement) &&
     (radioDirectiveState.activeDirectives?.length || 0) === 0 &&
     (radioDirectiveState.completedDirectiveIds?.length || 0) === 0;
 
   const isHQSelectionUnlocked =
-    Boolean(settlement.hq) ||
+    Boolean(getPrimaryHQ(settlement)) ||
     Boolean(
       radioDirectiveState.activeDirectives &&
         radioDirectiveState.activeDirectives.some((d) => d.id === 'dir_hq')
@@ -201,6 +208,21 @@ export function useWorldEffects(runtime: WorldEffectsRuntime): WorldEffectsOutpu
       sceneRef.current.setClockSpeed(gameClock.speed);
     }
   }, [gameClock.speed]);
+
+  // Reflect the settlement's simulated weather in the 3D world: rain, snow,
+  // cloud cover, lightning, moon phase and weather-tinted fog/lighting.
+  useEffect(() => {
+    if (sceneRef.current && settlement.weather) {
+      sceneRef.current.setWeather(
+        settlement.weather.currentWeather,
+        settlement.weather.moonPhase
+      );
+    }
+  }, [
+    settlement.weather?.currentWeather,
+    settlement.weather?.moonPhase,
+    settlement.weather?.currentSeason,
+  ]);
 
   // While a strategic time-out modal is open (Radio communications or the
   // Research tree) the game pauses automatically, and returns to whichever speed
@@ -322,7 +344,7 @@ export function useWorldEffects(runtime: WorldEffectsRuntime): WorldEffectsOutpu
     const synced = syncTacticalSquadUnits(settlement, combatSquadsRef.current);
     combatSquadsRef.current = synced;
     setCombatSquads(synced);
-  }, [settlement.squads, settlement.hq]);
+  }, [settlement.squads, getPrimaryHQ(settlement)]);
 
   useEffect(() => {
     if (!selectedResourceNode || !mapData) return;
@@ -330,32 +352,9 @@ export function useWorldEffects(runtime: WorldEffectsRuntime): WorldEffectsOutpu
     if (latest && latest.amount !== selectedResourceNode.amount) setSelectedResourceNode(latest);
   }, [mapData, selectedResourceNode]);
 
-  useEffect(() => {
-    if (viewMode !== 'world' || isDescentActive || !mapData) return;
-    const interval = setInterval(() => {
-      const st = settlementRef.current, md = mapDataRef.current;
-      if (!md || !st.hq || !st.resourceWorkOrders.length) return;
-      const isNight = Boolean(gameClockRef.current?.isNight);
-      // Scale worker movement by the clock speed — when paused (speed 0) their
-      // movement must freeze just like squads/vehicles/enemies.
-      const dt = 0.5 * (gameClockRef.current?.speed ?? 1);
-      if (dt <= 0) {
-        // Still update resource amounts from a no-op tick (position unchanged).
-        const idle = tickResourceGathering(st, md, 0, isNight, isAlarmActive, pathGridRef.current);
-        settlementRef.current = idle.newState;
-        mapDataRef.current = idle.mapData;
-        setSettlement(idle.newState);
-        sceneRef.current?.updateResourceAmounts(idle.mapData.resourceNodes);
-        return;
-      }
-      const result = tickResourceGathering(st, md, dt, isNight, isAlarmActive, pathGridRef.current);
-      settlementRef.current = result.newState;
-      mapDataRef.current = result.mapData;
-      setSettlement(result.newState);
-      sceneRef.current?.updateResourceAmounts(result.mapData.resourceNodes);
-    }, 500);
-    return () => clearInterval(interval);
-  }, [viewMode, isDescentActive, (mapData as any)?.id, isAlarmActive]);
+  // (Resource gathering now runs inside the authoritative 100ms simulation
+  // pipeline, so there is no dedicated gatherer interval here; the pipeline's
+  // mapData result is committed to mapDataRef and the scene by that loop.)
 
   // Synchronize road network graph and obstacle pathfinding grid whenever map geometry updates
   useEffect(() => {
@@ -376,91 +375,118 @@ export function useWorldEffects(runtime: WorldEffectsRuntime): WorldEffectsOutpu
     pathGridRef.current?.setFreestandingObstacles(settlement.freestandingBuildings);
   }, [mapData, settlement.freestandingBuildings]);
 
-  // Spawn initial ambient dormant zombies when map data or HQ is updated
+  // Spawn initial ambient dormant zombies when map data or HQ is updated.
+  // Lair-affiliated zombies (the seeded interior population and local pressure
+  // groups) survive the refresh — without that, re-entering world view would
+  // wipe a standing lair's infected and instantly "clear" it on the next tick.
   useEffect(() => {
     if (viewMode === 'world' && mapData && mapData.buildings && mapData.buildings.length > 0) {
-      const hqPos = settlement.hq?.center || null;
-      setZombies(generateAmbientMapZombies(mapData.buildings, hqPos, gameClock.day));
+      const hqPos = getPrimaryHQ(settlement)?.center || null;
+      const lairs = settlementRef.current.zombieLairs;
+      setZombies((z) => [
+        ...z.filter((zz) => zz.lairId),
+        ...generateAmbientMapZombies(mapData.buildings, hqPos, gameClock.day, lairs),
+      ]);
     }
-  }, [viewMode, (mapData as any)?.id, settlement.hq?.buildingId]);
+  }, [viewMode, (mapData as any)?.id, getPrimaryHQ(settlement)?.buildingId]);
 
   // Seed rival-faction Hideouts & zombie Lairs onto the local map (§5.2)
   useEffect(() => {
     if (viewMode !== 'world' || !mapData || mapData.buildings.length === 0) return;
-    const hqId = settlement.hq?.buildingId ?? null;
-    setSettlement((prev) => {
-      let next = prev;
-      if ((prev.rivalHideouts?.size ?? 0) === 0) {
-        next = { ...next, rivalHideouts: generateRivalHideouts(mapData.buildings, hqId) };
-      }
-      if ((prev.zombieLairs?.size ?? 0) === 0) {
-        next = { ...next, zombieLairs: generateZombieLairs(mapData.buildings, hqId) };
-      }
-      return next;
-    });
-  }, [viewMode, (mapData as any)?.id, settlement.hq?.buildingId]);
+    const hqId = getPrimaryHQ(settlement)?.buildingId ?? null;
+    // Hideouts — plain settlement-record seeding.
+    if ((settlementRef.current.rivalHideouts?.size ?? 0) === 0) {
+      setSettlement((prev) =>
+        (prev.rivalHideouts?.size ?? 0) === 0
+          ? { ...prev, rivalHideouts: generateRivalHideouts(mapData.buildings, hqId) }
+          : prev
+      );
+    }
+    // Lairs — seed the settlement record AND the lair's real infected
+    // population into the live zombie list. Generation runs OUTSIDE the
+    // updater so the seeded units are one stable set; the append is idempotent
+    // (safe under strict-mode double invocation). Nest count is data-driven:
+    // map size × scenario intensity × colony population × outbreak day (see
+    // computeLairTargetCount) — not a flat 1–2 coin flip.
+    if ((settlementRef.current.zombieLairs?.size ?? 0) === 0) {
+      const colonyPopulation =
+        (settlement.namedSurvivors?.length || 0) +
+        (typeof settlement.generalPopulation === 'number'
+          ? settlement.generalPopulation
+          : settlement.generalPopulation?.total || 0);
+      const result = generateZombieLairs(mapData.buildings, hqId, {
+        mapRadiusM: mapData.radius,
+        colonyPopulation,
+        day: gameClock.day || 1,
+        aggression: settlement.scenarioSettings?.zombieAggression,
+        hordesLevel: settlement.scenarioSettings?.hordesLevel,
+      });
+      setSettlement((prev) =>
+        (prev.zombieLairs?.size ?? 0) === 0 ? { ...prev, zombieLairs: result.lairs } : prev
+      );
+      setZombies((z) => {
+        const existing = new Set(z.map((zz) => zz.id));
+        return [...z, ...result.seededZombies.filter((zz) => !existing.has(zz.id))];
+      });
+    }
+  }, [viewMode, (mapData as any)?.id, getPrimaryHQ(settlement)?.buildingId]);
 
-  // Settlement Resource, Construction, Research, Weather, Morale & Multi-Settlement State Sync (Every 1 second) (§4.5, §9, §10, §7.5)
+  // Advance inactive colonies with the same core economy systems using a
+  // bounded lightweight offline step. Active settlement remains on the full
+  // world simulation below.
+  useEffect(() => {
+    if (viewMode !== 'world' || isDescentActive) return;
+    const interval = setInterval(() => {
+      setSettlements((registry) => {
+        const now = Date.now();
+        let changed = false;
+        const next = { ...registry };
+        for (const [id, record] of Object.entries(registry) as [string, SettlementRecord][]) {
+          if (id === activeSettlementId) continue;
+          const elapsed = Math.max(0, (now - (record as any).lastSimulatedAt) / 1000);
+          if (elapsed < 60) continue;
+          // Run catch-up against the colony's cached map so its gatherers keep
+          // depleting (and never resurrect) harvested resource nodes. The live
+          // universal clock is passed so the colony resumes at its real phase
+          // (day/night) and the catch-up rolls its clock through the elapsed
+          // span — inactive colonies genuinely experience night, not a frozen
+          // noon.
+          const sim = simulateSettlementOffline(
+            record.state,
+            elapsed,
+            gameClock.day,
+            record.cachedMapData,
+            gameClockRef.current ?? gameClock
+          );
+          next[id] = {
+            ...record,
+            state: sim.state,
+            cachedMapData: sim.mapData || record.cachedMapData,
+            lastSimulatedAt: now,
+          } as any;
+          changed = true;
+        }
+        return changed ? next : registry;
+      });
+    }, 60000);
+    return () => clearInterval(interval);
+  }, [viewMode, isDescentActive, activeSettlementId, gameClock.day]);
+
+  // Settlement Fog-of-War, Discovery & Multi-Settlement Registry Sync (Every 1 second) (§3.5, §4.4, §5.2, §7.5)
+  //
+  // NOTE: the economy (construction/research/weather/morale) is NOT recomputed
+  // here — it runs inside the authoritative 100ms pipeline in useSimulationLoop,
+  // which also emits the construction/deconstruction completion toasts via
+  // pipeline events. This interval only applies presentation-layer state that
+  // derives from the already-committed settlement (fog marking, vision-based
+  // survivor/hideout/lair discovery) and keeps the settlements registry in sync.
   useEffect(() => {
     if (viewMode !== 'world' || isDescentActive || !mapData) return;
     const interval = setInterval(() => {
       setSettlement((prev) => {
-        // Scale the sim delta by clock speed so construction workers freeze while
-        // paused (speed 0) just like squads/vehicles/gatherers — pausing means
-        // nothing moves, including site workers.
-        const simDelta = 1.0 * gameClock.speed;
-        const { newState, completedConstructions, completedDeconstructions } =
-          tickSettlementSimulation(prev, simDelta, pathGridRef.current, gameClock.isNight);
-        const withResearch = tickResearchSimulation(newState, 1.0, gameClock.speed, gameClock.isNight);
-        
-        const currentWeatherState = prev.weather || createInitialWeatherState(gameClock.day);
-        // 1 in-game hour per 25 real seconds -> a day is 10 minutes at 1x.
-        const deltaInGameHours = (1.0 * gameClock.speed) / 25;
-        const weatherResult = tickWeatherSimulation(currentWeatherState, gameClock.day, deltaInGameHours, withResearch);
-
-        const settlementWithWeather: SettlementState = {
-          ...withResearch,
-          weather: weatherResult.newState,
-        };
-
-        const growthResult = tickMoraleAndGrowthSimulation(
-          settlementWithWeather,
-          weatherResult.newState,
-          1.0,
-          gameClock.speed,
-          gameClock.day
-        );
-
-        if (completedConstructions.length > 0) {
-          setToastMessage({
-            title: 'CONSTRUCTION COMPLETED',
-            desc: `${completedConstructions.join(', ')} is now fully built and operational!`,
-            type: 'success',
-          });
-        }
-
-        if (completedDeconstructions.length > 0) {
-          setToastMessage({
-            title: 'DECONSTRUCTION COMPLETE',
-            desc: `${completedDeconstructions
-              .map((d) => `${d.name} (${d.wood}W / ${d.metal}M / ${d.bricks}B recovered)`)
-              .join(', ')}`,
-            type: 'success',
-          });
-        }
-
-
-        if (weatherResult.notification) {
-          setToastMessage(weatherResult.notification);
-        }
-
-        if (growthResult.notification) {
-          setToastMessage(growthResult.notification);
-        }
-
         // Persist fog-of-war exploration & survivor-group discovery (§3.5, §4.4).
         // The visible-cell set is refreshed by the 100ms combat tick.
-        let finalSettlementState = growthResult.newState;
+        let finalSettlementState = settlementRef.current || prev;
         if (mapData) {
           const fog = finalSettlementState.fogOfWar
             ? finalSettlementState.fogOfWar
@@ -510,6 +536,26 @@ export function useWorldEffects(runtime: WorldEffectsRuntime): WorldEffectsOutpu
               const lair = zombieLairs.get(id);
               if (lair && !lair.isDiscovered) {
                 zombieLairs.set(id, { ...lair, isDiscovered: true });
+                // The discovery moment: the moment a squad's vision first lands
+                // on an unknown nest, surface it loudly — a toast, a tactical
+                // alert, a zombie growl, and the world marker appears (the
+                // renderer only draws lairs once isDiscovered flips). Deduped
+                // so React strict mode never double-fires the feedback.
+                const lairIdStr = String(id);
+                if (!lairDiscoveryAlertIdsRef.current.has(lairIdStr)) {
+                  lairDiscoveryAlertIdsRef.current.add(lairIdStr);
+                  setToastMessage({
+                    title: 'LAIR DISCOVERED',
+                    desc: `${lair.buildingName} is an infected nest — ${lair.population}+ infected shelter inside. Assault it to clear the neighbourhood.`,
+                    type: 'danger',
+                  });
+                  addTacticalAlert(
+                    'LAIR DISCOVERED',
+                    `${lair.buildingName} is an infected nest (${lair.population}+ infected). Kill every one of them to clear it.`,
+                    'danger'
+                  );
+                  soundService.playZombieSound('brute');
+                }
               }
             }
           }
@@ -535,12 +581,45 @@ export function useWorldEffects(runtime: WorldEffectsRuntime): WorldEffectsOutpu
           };
         });
 
+        // §7.5 Settlement lifecycle: an established colony is LOST when its
+        // command center is breached (HQ durability 0) or every survivor has
+        // fallen. Loss is a campaign setback — never a game over: the other
+        // colonies, a relief caravan, or local reclamation decide the future.
+        setSettlements((currentRegistry) => {
+          const record = currentRegistry[activeSettlementId];
+          const liveState = settlementRef.current;
+          if (!record || !liveState) return currentRegistry;
+          if (record.status !== 'operational') return currentRegistry;
+          const evalResult = evaluateSettlementLoss(liveState);
+          if (!evalResult.destroyed) return currentRegistry;
+
+          const destroyedRecord = markSettlementDestroyed(
+            record,
+            gameClockRef.current?.day ?? 1,
+            evalResult.reason || 'Colony lost',
+            liveState
+          );
+          setOverrunSettlement(destroyedRecord);
+          setToastMessage({
+            title: 'SETTLEMENT LOST',
+            desc: `${record.name} has fallen — ${evalResult.reason} The campaign continues.`,
+            type: 'danger',
+          });
+          soundService.playHordeWarning();
+          const stats = calculateGlobalNetworkStats(
+            { ...currentRegistry, [activeSettlementId]: destroyedRecord },
+            caravans
+          );
+          setIsExtinct(stats.isExtinct);
+          return { ...currentRegistry, [activeSettlementId]: destroyedRecord };
+        });
+
         return finalSettlementState;
       });
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [viewMode, isDescentActive, mapData, gameClock.speed, gameClock.day, gameClock.isNight, activeSettlementId]);
+  }, [viewMode, isDescentActive, mapData, activeSettlementId, caravans]);
 
   // Safe Zones Operations Radio Directive System Evaluation Loop (§TERMINUS PROTOCOL)
   useEffect(() => {

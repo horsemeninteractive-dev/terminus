@@ -98,7 +98,7 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     freestandingCost: { wood: 150, metal: 90, bricks: 120, tools: 5 },
     durability: { adaptationBase: 800, freestandingBase: 500 },
     functions: ['Command & Administration', 'Drop-off & Resupply', 'Living Quarters', 'Squad Capacity'],
-    storageCapacity: 200,
+    storageCapacity: 850,
     housingCapacity: 16,
     squadCapacity: 2,
     baseDefense: 75,
@@ -222,7 +222,7 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     name: 'Field',
     category: 'food',
     description:
-      'Tilled outdoor soil plot producing Grain. Requires assigned field workers and basic tools. Output is boosted by fertilizer but affected by weather and winter.',
+      'Tilled outdoor soil plot producing Grain each crop cycle. Production is weather-affected and receives a fertilizer bonus; workers improve field operations but are not required for the base yield.',
     iconName: 'Sprout',
     badgeColor: '#10b981',
     // IFZ: Fields are freestanding open-ground plots (a flat rectangular plane),
@@ -238,10 +238,10 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     freestandingCost: { wood: 40, metal: 10, bricks: 10, tools: 2 },
     durability: { adaptationBase: 200, freestandingBase: 120 },
     functions: ['Grain Agriculture', 'Outdoor Crop Cultivation'],
-    outputs: [{ resource: 'grain', amountPerDay: 8 }],
+    outputs: [{ resource: 'grain', amountPerDay: 4 }],
     baseDefense: 10,
     freestandingDefense: 5,
-    capacityLabel: 'Grain Yield: 8 Grain/day (Weather-dependent)',
+    capacityLabel: 'Grain Yield: 4/cycle — 7 fertilized (Weather-dependent)',
     preferredOsmTypes: ['commercial', 'residential'],
   },
   vast_field: {
@@ -269,7 +269,7 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     outputs: [{ resource: 'grain', amountPerDay: 22 }],
     baseDefense: 10,
     freestandingDefense: 5,
-    capacityLabel: 'Grain Yield: 22 Grain/day (Weather-dependent)',
+    capacityLabel: 'Grain Yield: 22/cycle — ×1.75 fertilized (Weather-dependent)',
     preferredOsmTypes: ['commercial', 'residential'],
   },
   greenhouse: {
@@ -278,7 +278,7 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     name: 'Greenhouse',
     category: 'food',
     description:
-      'Glazed thermal envelope with passive climate control. Produces fresh food crops continuously and is completely immune to adverse weather, cold snaps, and blizzards.',
+      'Glazed thermal envelope functioning as a weather-proof Field. Produces Grain each crop cycle without outdoor weather penalties.',
     researchRequirement: 'greenhouses',
     iconName: 'Sprout',
     badgeColor: '#34d399',
@@ -293,11 +293,11 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     adaptationCost: { wood: 40, metal: 50, bricks: 20, tools: 1 },
     freestandingCost: { wood: 120, metal: 140, bricks: 50, tools: 2 },
     durability: { adaptationBase: 300, freestandingBase: 180 },
-    functions: ['All-Weather Agriculture', 'Cold Immunity', 'Continuous Harvest'],
-    outputs: [{ resource: 'fresh_harvest', amountPerDay: 10 }],
+    functions: ['Weather-Proof Grain Agriculture', 'Cold Immunity', 'Crop Cycle Production'],
+    outputs: [{ resource: 'grain', amountPerDay: 4 }],
     baseDefense: 25,
     freestandingDefense: 15,
-    capacityLabel: 'Harvest: 10 Fresh Harvest/day (All-Weather)',
+    capacityLabel: 'Grain Yield: 4/cycle — 7 fertilized (Weather-Proof)',
     preferredOsmTypes: ['commercial', 'school', 'supermarket'],
   },
   barn: {
@@ -320,11 +320,12 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     freestandingCost: { wood: 130, metal: 55, bricks: 80, tools: 2 },
     durability: { adaptationBase: 380, freestandingBase: 240 },
     functions: ['Animal Husbandry', 'Meat Production', 'Fertilizer Generation'],
-    inputs: [{ resource: 'grain', amountPerDay: 6 }],
-    outputs: [
-      { resource: 'raw_meat', amountPerDay: 4 },
-      { resource: 'fertilizer', amountPerDay: 3 },
-    ],
+    recipes: [{
+      id: 'grain_to_meat_fertilizer',
+      name: 'Grain to Meat & Fertilizer',
+      inputs: [{ resource: 'grain', amountPerDay: 2 }],
+      outputs: [{ resource: 'raw_meat', amountPerDay: 2 }, { resource: 'fertilizer', amountPerDay: 1 }],
+    }],
     baseDefense: 30,
     freestandingDefense: 15,
     capacityLabel: 'Production: Grain -> Meat & Fertilizer',
@@ -350,11 +351,10 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     freestandingCost: { wood: 110, metal: 90, bricks: 120, tools: 2 },
     durability: { adaptationBase: 420, freestandingBase: 260 },
     functions: ['Ration Cooking', 'Meal Preparation', 'Nutrition Sanitization'],
-    inputs: [
-      { resource: 'grain', amountPerDay: 4 },
-      { resource: 'wood', amountPerDay: 2 },
+    recipes: [
+      { id: 'grain_rations', name: 'Grain Rations', inputs: [{ resource: 'grain', amountPerDay: 2 }, { resource: 'wood', amountPerDay: 1 }], outputs: [{ resource: 'mre_rations', amountPerDay: 4 }] },
+      { id: 'meat_rations', name: 'Meat Rations', inputs: [{ resource: 'raw_meat', amountPerDay: 2 }, { resource: 'wood', amountPerDay: 1 }], outputs: [{ resource: 'mre_rations', amountPerDay: 5 }] },
     ],
-    outputs: [{ resource: 'mre_rations', amountPerDay: 12 }],
     baseDefense: 40,
     freestandingDefense: 20,
     capacityLabel: 'Prep Output: 12 Rations/day',
@@ -382,11 +382,7 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     freestandingCost: { wood: 120, metal: 180, bricks: 110, tools: 4 },
     durability: { adaptationBase: 480, freestandingBase: 300 },
     functions: ['Food Preservation', 'Canned Goods Crafting', 'Long-term Storage'],
-    inputs: [
-      { resource: 'fresh_harvest', amountPerDay: 6 },
-      { resource: 'metal', amountPerDay: 3 },
-    ],
-    outputs: [{ resource: 'canned_goods', amountPerDay: 10 }],
+    recipes: [{ id: 'metal_food_to_cans', name: 'Food Rations to Canned Food', inputs: [{ resource: 'metal', amountPerDay: 1 }, { resource: 'mre_rations', amountPerDay: 1 }], outputs: [{ resource: 'canned_goods', amountPerDay: 1 }] }],
     baseDefense: 45,
     freestandingDefense: 22,
     capacityLabel: 'Output: 10 Canned Goods/day',
@@ -402,7 +398,8 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     name: "Forester's Hut",
     category: 'production',
     description:
-      'Forestry and timber management post. Workers fell, replant, and harvest nearby trees to provide a steady supply of raw wood.',
+      'Forestry and timber management post. Workers fell, replant, and harvest nearby trees to provide a steady supply of raw logs.',
+    researchRequirement: 'basic_forestry',
     iconName: 'Trees',
     badgeColor: '#15803d',
     adaptationAllowed: true,
@@ -416,10 +413,10 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     freestandingCost: { wood: 75, metal: 30, bricks: 45, tools: 2 },
     durability: { adaptationBase: 320, freestandingBase: 200 },
     functions: ['Timber Harvesting', 'Forest Replenishment', 'Wood Logistics'],
-    outputs: [{ resource: 'wood', amountPerDay: 15 }],
+    outputs: [{ resource: 'logs', amountPerDay: 15 }],
     baseDefense: 30,
     freestandingDefense: 15,
-    capacityLabel: 'Output: 15 Wood/day',
+    capacityLabel: 'Output: 15 Logs/day — feed a Sawmill',
     preferredOsmTypes: ['residential', 'industrial'],
   },
   sawmill: {
@@ -443,10 +440,10 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     freestandingCost: { wood: 150, metal: 130, bricks: 80, tools: 4 },
     durability: { adaptationBase: 440, freestandingBase: 280 },
     functions: ['Lumber Milling', 'Wood Processing', 'Building Material Prep'],
-    outputs: [{ resource: 'wood', amountPerDay: 25 }],
+    recipes: [{ id: 'logs_to_lumber', name: 'Logs to Lumber', inputs: [{ resource: 'logs', amountPerDay: 10 }], outputs: [{ resource: 'wood', amountPerDay: 16 }] }],
     baseDefense: 40,
     freestandingDefense: 20,
-    capacityLabel: 'Output: 25 Milled Wood/day',
+    capacityLabel: 'Milling: 10 Logs → 16 Wood/day (+60%)',
     preferredOsmTypes: ['industrial', 'warehouse'],
   },
   tool_factory: {
@@ -501,10 +498,10 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     freestandingCost: { wood: 90, metal: 140, bricks: 70, tools: 3 },
     durability: { adaptationBase: 500, freestandingBase: 320 },
     functions: ['Metal Debris Processing', 'Scrap Recycling', 'Ingot Refinement'],
-    outputs: [{ resource: 'metal', amountPerDay: 16 }],
+    recipes: [{ id: 'scrap_to_metal', name: 'Scrap to Metal', inputs: [{ resource: 'scrap', amountPerDay: 10 }], outputs: [{ resource: 'metal', amountPerDay: 14 }] }],
     baseDefense: 40,
     freestandingDefense: 20,
-    capacityLabel: 'Output: 16 Metal/day',
+    capacityLabel: 'Recycling: 10 Scrap → 14 Metal/day',
     preferredOsmTypes: ['industrial', 'warehouse', 'commercial'],
   },
   arms_factory: {
@@ -527,9 +524,55 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     adaptationCost: { wood: 45, metal: 80, bricks: 50, tools: 3 },
     freestandingCost: { wood: 130, metal: 220, bricks: 140, tools: 5 },
     durability: { adaptationBase: 550, freestandingBase: 360 },
-    functions: ['Firearms Manufacturing', 'Ammunition Pressing', 'Weapon Upgrades'],
-    inputs: [{ resource: 'metal', amountPerDay: 6 }],
-    outputs: [{ resource: 'ammo', amountPerDay: 20 }],
+    functions: ['Ammunition Crates', 'Pistol Production', 'Assault Rifle Line', 'Shotgun Line', 'Sniper Rifle Line', 'Heavy MG Line'],
+    // §IFZ Arms Factory: each firearm is its own selectable production line,
+    // unlocked by its research node and manufactured into the colony armory
+    // with a distinct material cost. Ammunition Crates remain the stockpile
+    // line (metal → ammo). Lines with `gear` consume inputs continuously and
+    // push one real weapon into the armory per full unit of work.
+    recipes: [
+      {
+        id: 'ammo_crates',
+        name: 'Ammunition Crates',
+        inputs: [{ resource: 'metal', amountPerDay: 6 }],
+        outputs: [{ resource: 'ammo', amountPerDay: 20 }],
+      },
+      {
+        id: 'manufacture_pistol',
+        name: 'Manufacture Pistol',
+        researchRequirement: 'pistol',
+        inputs: [{ resource: 'metal', amountPerDay: 9 }, { resource: 'wood', amountPerDay: 2 }],
+        gear: { kind: 'weapon', itemId: 'pistol' },
+      },
+      {
+        id: 'manufacture_shotgun',
+        name: 'Manufacture Shotgun',
+        researchRequirement: 'shotgun',
+        inputs: [{ resource: 'metal', amountPerDay: 13 }, { resource: 'wood', amountPerDay: 3 }],
+        gear: { kind: 'weapon', itemId: 'shotgun' },
+      },
+      {
+        id: 'manufacture_assault_rifle',
+        name: 'Manufacture Assault Rifle',
+        researchRequirement: 'assault_rifle',
+        inputs: [{ resource: 'metal', amountPerDay: 16 }, { resource: 'wood', amountPerDay: 4 }],
+        gear: { kind: 'weapon', itemId: 'assault_rifle' },
+      },
+      {
+        id: 'manufacture_sniper_rifle',
+        name: 'Manufacture Sniper Rifle',
+        researchRequirement: 'sniper_rifle',
+        inputs: [{ resource: 'metal', amountPerDay: 18 }, { resource: 'wood', amountPerDay: 4 }],
+        gear: { kind: 'weapon', itemId: 'sniper_rifle' },
+      },
+      {
+        id: 'manufacture_hmg',
+        name: 'Manufacture Heavy Machine Gun',
+        researchRequirement: 'heavy_machine_gun',
+        inputs: [{ resource: 'metal', amountPerDay: 24 }, { resource: 'wood', amountPerDay: 3 }],
+        gear: { kind: 'weapon', itemId: 'heavy_machine_gun' },
+      },
+    ],
     baseDefense: 60,
     freestandingDefense: 35,
     capacityLabel: 'Arsenal: Weapons & Ammo Crafting',
@@ -541,7 +584,7 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     name: 'Chemical Plant',
     category: 'production',
     description:
-      'Distillation towers and catalytic reactors. Synthesizes Fuel and Fertilizer from wood/organic feedstocks, or converts excess fuel into agricultural enrichment.',
+      'Distillation towers and catalytic reactors. Processes wood into Fertilizer and Fuel and converts surplus stores back and forth — every recipe mirrors the IFZ Chemical Plant lines.',
     iconName: 'Zap',
     badgeColor: '#8b5cf6',
     adaptationAllowed: true,
@@ -555,14 +598,18 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     freestandingCost: { wood: 100, metal: 190, bricks: 130, tools: 4 },
     durability: { adaptationBase: 460, freestandingBase: 300 },
     functions: ['Biofuel Synthesis', 'Fertilizer Catalysis', 'Chemical Refining'],
-    inputs: [{ resource: 'wood', amountPerDay: 5 }],
-    outputs: [
-      { resource: 'fuel', amountPerDay: 6 },
-      { resource: 'fertilizer', amountPerDay: 2 },
+    // §IFZ Chemical Plant recipes (current wiki):
+    //   2 Wood → 1 Fertilizer | 1 Fuel → 3 Fertilizer
+    //   6 Wood → 1 Fuel    | 3 Fertilizer → 1 Fuel
+    recipes: [
+      { id: 'wood_to_fertilizer', name: 'Wood to Fertilizer', inputs: [{ resource: 'wood', amountPerDay: 2 }], outputs: [{ resource: 'fertilizer', amountPerDay: 1 }] },
+      { id: 'fuel_to_fertilizer', name: 'Fuel to Fertilizer', inputs: [{ resource: 'fuel', amountPerDay: 1 }], outputs: [{ resource: 'fertilizer', amountPerDay: 3 }] },
+      { id: 'wood_to_fuel', name: 'Wood to Fuel', inputs: [{ resource: 'wood', amountPerDay: 6 }], outputs: [{ resource: 'fuel', amountPerDay: 1 }] },
+      { id: 'fertilizer_to_fuel', name: 'Fertilizer to Fuel', inputs: [{ resource: 'fertilizer', amountPerDay: 3 }], outputs: [{ resource: 'fuel', amountPerDay: 1 }] },
     ],
     baseDefense: 40,
     freestandingDefense: 20,
-    capacityLabel: 'Output: 6 Fuel + 2 Fertilizer/day',
+    capacityLabel: 'IFZ Lines: 2W→1Fert · 1Fuel→3Fert · 6W→1Fuel · 3Fert→1Fuel',
     preferredOsmTypes: ['industrial', 'gas_station'],
   },
   protective_gear_factory: {
@@ -585,8 +632,31 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     adaptationCost: { wood: 35, metal: 65, bricks: 30, tools: 2 },
     freestandingCost: { wood: 100, metal: 175, bricks: 90, tools: 4 },
     durability: { adaptationBase: 440, freestandingBase: 280 },
-    functions: ['Armor Weaving', 'Plate Molding', 'Tactical Gear Crafting'],
-    inputs: [{ resource: 'metal', amountPerDay: 5 }],
+    functions: ['Protector Vest Line', 'Riot Gear Line', 'Plate Armor Line'],
+    // §IFZ Protective Gear Factory: separate armor production lines that feed
+    // the colony armory (previously the building consumed 5 Metal/day with no
+    // production at all — a silent sink). Each line consumes metal while the
+    // crew works and finishes one armor set per full unit of progress.
+    recipes: [
+      {
+        id: 'manufacture_protector',
+        name: 'Protector Vest',
+        inputs: [{ resource: 'metal', amountPerDay: 5 }],
+        gear: { kind: 'armor', itemId: 'padded_jacket' },
+      },
+      {
+        id: 'manufacture_riot_gear',
+        name: 'Riot Gear',
+        inputs: [{ resource: 'metal', amountPerDay: 8 }],
+        gear: { kind: 'armor', itemId: 'riot_vest' },
+      },
+      {
+        id: 'manufacture_plate_armor',
+        name: 'Plate Armor',
+        inputs: [{ resource: 'metal', amountPerDay: 12 }],
+        gear: { kind: 'armor', itemId: 'tactical_gear' },
+      },
+    ],
     baseDefense: 45,
     freestandingDefense: 22,
     capacityLabel: 'Output: Tactical Armor Sets',
@@ -663,9 +733,17 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     adaptationAllowed: false,
     constructionAllowed: true,
     workerCapacity: 1,
+    // §7.1 Hazard, not a barrier: wire does not block pathing — it slows
+    // infected crossing it by 60% and bleeds them for 15 HP/second.
+    blocksMovement: false,
+    slowsInfectedPct: 60,
+    damageOnContact: 15,
+    // §IFZ: wire damages/slows rather than blocks — and it is a hazard, not a
+    // firing position. Guards are never stationed on it.
+    guardable: false,
     resourceCosts: {
-      adaptation: { wood: 0, metal: 12, bricks: 0 },
-      freestanding: { wood: 0, metal: 12, bricks: 0 },
+      adaptation: { wood: 0, metal: 4, bricks: 0 },
+      freestanding: { wood: 0, metal: 4, bricks: 0 },
     },
     adaptationCost: { wood: 0, metal: 12, bricks: 0 },
     freestandingCost: { wood: 0, metal: 12, bricks: 0 },
@@ -673,8 +751,6 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     functions: ['Horde Slowing (60%)', 'Contact Bleed Damage'],
     defenceProperties: {
       baseDefense: 10,
-      slowsInfectedPct: 60,
-      damageOnContact: 15,
     },
     baseDefense: 10,
     freestandingDefense: 10,
@@ -692,9 +768,12 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     adaptationAllowed: false,
     constructionAllowed: true,
     workerCapacity: 2,
+    blocksMovement: true,
+    // §IFZ: a wall is a passive barrier — not a manned firing post.
+    guardable: false,
     resourceCosts: {
-      adaptation: { wood: 20, metal: 2, bricks: 0 },
-      freestanding: { wood: 20, metal: 2, bricks: 0 },
+      adaptation: { wood: 5, metal: 0, bricks: 0 },
+      freestanding: { wood: 5, metal: 0, bricks: 0 },
     },
     adaptationCost: { wood: 20, metal: 2, bricks: 0 },
     freestandingCost: { wood: 20, metal: 2, bricks: 0 },
@@ -717,6 +796,9 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     adaptationAllowed: false,
     constructionAllowed: true,
     workerCapacity: 2,
+    blocksMovement: true,
+    allowsFriendlyPassage: true,
+    guardable: true,
     resourceCosts: {
       adaptation: { wood: 35, metal: 10, bricks: 0 },
       freestanding: { wood: 35, metal: 10, bricks: 0 },
@@ -742,9 +824,12 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     adaptationAllowed: false,
     constructionAllowed: true,
     workerCapacity: 2,
+    blocksMovement: true,
+    // §IFZ: fences are passive barriers — never staffed firing posts.
+    guardable: false,
     resourceCosts: {
-      adaptation: { wood: 5, metal: 30, bricks: 5 },
-      freestanding: { wood: 5, metal: 30, bricks: 5 },
+      adaptation: { wood: 0, metal: 5, bricks: 0 },
+      freestanding: { wood: 0, metal: 5, bricks: 0 },
     },
     adaptationCost: { wood: 5, metal: 30, bricks: 5 },
     freestandingCost: { wood: 5, metal: 30, bricks: 5 },
@@ -767,6 +852,9 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     adaptationAllowed: false,
     constructionAllowed: true,
     workerCapacity: 2,
+    blocksMovement: true,
+    allowsFriendlyPassage: true,
+    guardable: true,
     resourceCosts: {
       adaptation: { wood: 5, metal: 45, bricks: 10 },
       freestanding: { wood: 5, metal: 45, bricks: 10 },
@@ -792,6 +880,9 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     adaptationAllowed: false,
     constructionAllowed: true,
     workerCapacity: 2,
+    blocksMovement: true,
+    // §IFZ: solid walls are passive barriers — not a manned firing post.
+    guardable: false,
     resourceCosts: {
       adaptation: { wood: 5, metal: 5, bricks: 35 },
       freestanding: { wood: 5, metal: 5, bricks: 35 },
@@ -818,6 +909,10 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     adaptationAllowed: false,
     constructionAllowed: true,
     workerCapacity: 3,
+    blocksMovement: true,
+    // §IFZ: bastion walls are passive barriers — garrison fire comes from
+    // towers and gatehouses, never from the wall run itself.
+    guardable: false,
     resourceCosts: {
       adaptation: { wood: 10, metal: 30, bricks: 50, tools: 1 },
       freestanding: { wood: 10, metal: 30, bricks: 50, tools: 1 },
@@ -844,6 +939,9 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     adaptationAllowed: false,
     constructionAllowed: true,
     workerCapacity: 3,
+    blocksMovement: true,
+    allowsFriendlyPassage: true,
+    guardable: true,
     resourceCosts: {
       adaptation: { wood: 15, metal: 55, bricks: 60, tools: 2 },
       freestanding: { wood: 15, metal: 55, bricks: 60, tools: 2 },
@@ -852,7 +950,8 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     freestandingCost: { wood: 15, metal: 55, bricks: 60, tools: 2 },
     durability: { adaptationBase: 800, freestandingBase: 800 },
     functions: ['Bastion Gatehouse', 'Automated Portcullis', 'Overhead Firing Sentry Platform'],
-    defenceProperties: { baseDefense: 85, sentryCapacity: 4, allowsFriendlyPassage: true },
+    // §IFZ: the fortified gatehouse garrison is six armed workers.
+    defenceProperties: { baseDefense: 85, sentryCapacity: 6, allowsFriendlyPassage: true },
     baseDefense: 85,
     freestandingDefense: 85,
     capacityLabel: 'Bastion: Hydraulic Reinforced Gate',
@@ -882,6 +981,10 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     durability: { adaptationBase: 280, freestandingBase: 280 },
     functions: ['Elevated Perimeter Vision', '2 Guard Sentry Posts', 'Height Range Bonus'],
     defenceProperties: { baseDefense: 35, sentryCapacity: 2, attackRangeM: 120 },
+    blocksMovement: true,
+    guardable: true,
+    weaponMountable: true,
+    weaponSlots: 2,
     baseDefense: 35,
     freestandingDefense: 35,
     capacityLabel: 'Sentry: 2 Guards (120m Range)',
@@ -907,6 +1010,10 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     durability: { adaptationBase: 480, freestandingBase: 480 },
     functions: ['Steel Armored Sentry Post', '3 Guard Capacity', '160m Engagement Range'],
     defenceProperties: { baseDefense: 55, sentryCapacity: 3, attackRangeM: 160 },
+    blocksMovement: true,
+    guardable: true,
+    weaponMountable: true,
+    weaponSlots: 3,
     baseDefense: 55,
     freestandingDefense: 55,
     capacityLabel: 'Sentry: 3 Guards (160m Range)',
@@ -933,6 +1040,10 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     durability: { adaptationBase: 700, freestandingBase: 700 },
     functions: ['Heavy Redoubt Platform', '4 Guard Capacity', '200m Sniper Reach'],
     defenceProperties: { baseDefense: 80, sentryCapacity: 4, attackRangeM: 200 },
+    blocksMovement: true,
+    guardable: true,
+    weaponMountable: true,
+    weaponSlots: 4,
     baseDefense: 80,
     freestandingDefense: 80,
     capacityLabel: 'Redoubt: 4 Guards (200m Range)',
@@ -946,9 +1057,12 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
       'High-intensity halogen searchlight mast. Pierces darkness and suppresses nighttime infected aggression in a wide illuminated cone.',
     iconName: 'Sun',
     badgeColor: '#facc15',
-    adaptationAllowed: true,
+    adaptationAllowed: false, // §Terminus infra: purpose-built and freestanding only (like Cistern/Generator)
     constructionAllowed: true,
     workerCapacity: 1,
+    blocksMovement: true,
+    // A floodlight is powered illumination, not a garrison — no guard post.
+    guardable: false,
     resourceCosts: {
       adaptation: { wood: 15, metal: 45, bricks: 10 },
       freestanding: { wood: 30, metal: 80, bricks: 25 },
@@ -999,12 +1113,13 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     name: 'Research Center',
     category: 'utility',
     description:
-      'Scientific laboratories, drafting tables, and reference archives. All settlement research nodes are unlocked through staffed research centers producing Research Points (RP).',
+      'Scientific laboratories, drafting tables, and reference archives. Staffed research centers produce Scientific Materials, which fund every settlement research project.',
     iconName: 'FlaskConical',
     badgeColor: '#6366f1',
     adaptationAllowed: true,
     constructionAllowed: true,
     workerCapacity: 6,
+    outputs: [{ resource: 'scientific_materials', amountPerDay: 8 }],
     resourceCosts: {
       adaptation: { wood: 40, metal: 45, bricks: 35, tools: 2 },
       freestanding: { wood: 120, metal: 130, bricks: 100, tools: 4 },
@@ -1012,10 +1127,10 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     adaptationCost: { wood: 40, metal: 45, bricks: 35, tools: 2 },
     freestandingCost: { wood: 120, metal: 130, bricks: 100, tools: 4 },
     durability: { adaptationBase: 480, freestandingBase: 300 },
-    functions: ['Technology Research', 'Research Point Generation', 'Scientific Analysis'],
+    functions: ['Technology Research', 'Scientific Material Production', 'Scientific Analysis'],
     baseDefense: 40,
     freestandingDefense: 20,
-    capacityLabel: 'Research: +8 RP / Day per Staff Member',
+    capacityLabel: 'Sci Materials: 8 / Day at Full Staff',
     preferredOsmTypes: ['school', 'civic', 'hospital', 'commercial'],
   },
   weather_center: {
@@ -1041,7 +1156,7 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     functions: ['Multi-Day Weather Forecast', 'Blizzard Warning', 'Storm Radar'],
     baseDefense: 35,
     freestandingDefense: 18,
-    capacityLabel: 'Radar: 5-Day Weather Forecast',
+    capacityLabel: 'Radar: 9-Day Weather Forecast',
     preferredOsmTypes: ['civic', 'school', 'commercial'],
   },
   medbay: {
@@ -1225,8 +1340,7 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     name: 'Bar / Tavern',
     category: 'civilian',
     description:
-      'Community watering hole and microbrewery. Converts harvested Grain into Beer and alcoholic drinks, fulfilling recreation needs and boosting colony morale.',
-    researchRequirement: 'fermentation',
+      'Community watering hole and microbrewery. Converts harvested Grain into Beer at an efficient ratio (1 Grain → 8 Beer) with NO research required, fulfilling recreation needs and boosting colony morale.',
     iconName: 'UtensilsCrossed',
     badgeColor: '#d97706',
     adaptationAllowed: true,
@@ -1240,12 +1354,14 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     freestandingCost: { wood: 110, metal: 55, bricks: 80 },
     durability: { adaptationBase: 380, freestandingBase: 240 },
     functions: ['Grain Fermentation', 'Beer Brewing', 'Recreation & Morale (+25)'],
-    inputs: [{ resource: 'grain', amountPerDay: 4 }],
-    outputs: [{ resource: 'beer', amountPerDay: 4 }],
-    civilianProperties: { entertainmentMoraleBonus: 25, beerOutputPerCycle: 4 },
+    // §IFZ: the Bar has no research requirement and brews 1 Grain → 8 Beer
+    // (Terminus keeps its own citizen-beer demand/morale model on top).
+    inputs: [{ resource: 'grain', amountPerDay: 1 }],
+    outputs: [{ resource: 'beer', amountPerDay: 8 }],
+    civilianProperties: { entertainmentMoraleBonus: 25, beerOutputPerCycle: 8 },
     baseDefense: 35,
     freestandingDefense: 18,
-    capacityLabel: 'Tavern: Grain -> Beer & Morale',
+    capacityLabel: 'Tavern: 1 Grain -> 8 Beer & Morale',
     preferredOsmTypes: ['restaurant', 'commercial'],
   },
   gathering_place: {
@@ -1364,7 +1480,7 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     description: 'Guttering networks and filtered holding tanks for potable water.',
     iconName: 'Droplets',
     badgeColor: '#0ea5e9',
-    adaptationAllowed: true,
+    adaptationAllowed: false,
     constructionAllowed: true,
     workerCapacity: 2,
     resourceCosts: {
@@ -1373,6 +1489,7 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     },
     adaptationCost: { wood: 25, metal: 35, bricks: 25 },
     freestandingCost: { wood: 70, metal: 90, bricks: 60 },
+    researchRequirement: 'basic_sanitation',
     durability: { adaptationBase: 350, freestandingBase: 200 },
     functions: ['Water Storage', 'Rain Catchment'],
     baseDefense: 35,
@@ -1625,24 +1742,64 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     type: 'generator_station',
     name: 'Generator Station',
     category: 'utility',
-    description: 'Diesel turbine power generators and wiring conduits.',
+    description:
+      'Fuel-burning microgenerator that distributes electricity within a local radius. Powers hospitals, research, workshops, and floodlights — and burns gasoline, diesel, or biofuel to do it. When demand exceeds supply, the lowest-priority facilities shut down first.',
+    researchRequirement: 'electrical_engineering',
     iconName: 'Zap',
-    badgeColor: '#eab308',
-    adaptationAllowed: true,
+    badgeColor: '#facc15',
+    adaptationAllowed: false,
     constructionAllowed: true,
     workerCapacity: 3,
     resourceCosts: {
-      adaptation: { wood: 20, metal: 60, bricks: 30 },
-      freestanding: { wood: 60, metal: 170, bricks: 90 },
+      adaptation: { wood: 20, metal: 60, bricks: 30, tools: 3 },
+      freestanding: { wood: 60, metal: 170, bricks: 90, tools: 6 },
     },
-    adaptationCost: { wood: 20, metal: 60, bricks: 30 },
-    freestandingCost: { wood: 60, metal: 170, bricks: 90 },
+    adaptationCost: { wood: 20, metal: 60, bricks: 30, tools: 3 },
+    freestandingCost: { wood: 60, metal: 170, bricks: 90, tools: 6 },
     durability: { adaptationBase: 450, freestandingBase: 300 },
-    functions: ['Power Generation', 'Grid Distribution'],
+    functions: ['Electricity Generation (50 kW)', '60m Local Microgrid', 'Fuel Combustion'],
+    powerProperties: {
+      powerOutputKw: 50,
+      powerRadiusM: 60,
+      fuelPerHour: 5,
+      fuelCapacity: 100,
+    },
     baseDefense: 45,
     freestandingDefense: 20,
-    capacityLabel: 'Power Output: 50kW + 15kW per level',
+    capacityLabel: 'Grid: 50 kW over 60m — 5 Fuel/hour',
     preferredOsmTypes: ['industrial', 'gas_station'],
+  },
+  battery_bank: {
+    id: 'battery_bank',
+    type: 'battery_bank',
+    name: 'Battery Bank',
+    category: 'utility',
+    description:
+      'High-capacity storage cells — the emergency reserve. While a generator produces a surplus the banks charge; a charged bank acts as a local GRID EXTENSION from its own position, carrying critical facilities through a fuel gap until the generator is back.',
+    researchRequirement: 'battery_storage',
+    iconName: 'BatteryCharging',
+    badgeColor: '#22d3ee',
+    adaptationAllowed: true,
+    constructionAllowed: true,
+    workerCapacity: 1,
+    resourceCosts: {
+      adaptation: { wood: 15, metal: 80, bricks: 25, tools: 2 },
+      freestanding: { wood: 45, metal: 220, bricks: 70, tools: 4 },
+    },
+    adaptationCost: { wood: 15, metal: 80, bricks: 25, tools: 2 },
+    freestandingCost: { wood: 45, metal: 220, bricks: 70, tools: 4 },
+    durability: { adaptationBase: 320, freestandingBase: 200 },
+    functions: ['200 kWh Storage', '30 kW Charge Rate', '40 kW Discharge', 'GRID EXTENSION: 60m Reserve Reach'],
+    batteryProperties: {
+      capacityKwh: 200,
+      chargeKw: 30,
+      dischargeKw: 40,
+      powerRadiusM: 60,
+    },
+    baseDefense: 30,
+    freestandingDefense: 15,
+    capacityLabel: 'Storage: 200 kWh — emergency reserve: charges from surplus, extends the grid during fuel gaps',
+    preferredOsmTypes: ['industrial', 'warehouse'],
   },
   comms_relay: {
     id: 'comms_relay',
@@ -1673,7 +1830,8 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     type: 'research_center',
     name: 'Research Lab',
     category: 'utility',
-    description: 'Microscopes, chemical benches, and technical drafting stations.',
+    description:
+      'Microscopes, chemical benches, and technical drafting stations that produce Scientific Materials for the colony research program.',
     iconName: 'FlaskConical',
     badgeColor: '#06b6d4',
     adaptationAllowed: true,
@@ -1686,13 +1844,63 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     adaptationCost: { wood: 35, metal: 45, bricks: 30 },
     freestandingCost: { wood: 100, metal: 130, bricks: 90 },
     durability: { adaptationBase: 450, freestandingBase: 280 },
-    functions: ['Technology Research', 'Infection Analysis'],
+    outputs: [{ resource: 'scientific_materials', amountPerDay: 5 }],
+    functions: ['Technology Research', 'Scientific Material Production', 'Infection Analysis'],
     baseDefense: 40,
     freestandingDefense: 20,
-    capacityLabel: 'Research Speed: 1 station per 18 m²',
+    capacityLabel: 'Sci Materials: 5 / Day at Full Staff',
     preferredOsmTypes: ['school', 'civic', 'hospital', 'commercial'],
   },
 };
+
+/**
+ * Canonical definition for a functional building type id. Some defs are
+ * aliases that reuse another type's body via the `type` field (e.g.
+ * `guard_watchtower` renders/behaves as `wooden_tower`, `barricade_gatehouse`
+ * as `wooden_gate`); this resolves the alias so every subsystem reads the same
+ * explicit §7.1 flags instead of string-inferring behaviour from the id.
+ */
+export function getCanonicalDefenseDef(
+  typeId: string
+): FunctionalBuildingDefinition | undefined {
+  const def = FUNCTIONAL_BUILDING_DEFINITIONS[typeId as FunctionalBuildingTypeId];
+  if (!def) return undefined;
+  if (def.type && def.type !== typeId) {
+    return FUNCTIONAL_BUILDING_DEFINITIONS[def.type];
+  }
+  return def;
+}
+
+/**
+ * Legacy alias building ids that duplicate a canonical IFZ building under an
+ * old name (e.g. 'Infirmary Clinic' is just Medbay, 'Guard Watchtower' is just
+ * Wooden Tower — each def carries `type: <canonical id>` and reuses that body).
+ * They stay fully functional for save compatibility but are hidden from every
+ * canonical picker so the roster reads cleanly against the IFZ reference: each
+ * facility appears once under its real name.
+ */
+export const LEGACY_ALIAS_BUILDING_TYPE_IDS: ReadonlySet<FunctionalBuildingTypeId> =
+  new Set<FunctionalBuildingTypeId>([
+    'shelter_bunkhouse',
+    'storage_depot',
+    'greenhouse_hydro',
+    'food_pantry',
+    'workshop_forge',
+    'timber_mill',
+    'scrap_smelter',
+    'guard_watchtower',
+    'barricade_gatehouse',
+    'armory_cache',
+    'infirmary_clinic',
+    'community_hall',
+    'comms_relay',
+    'research_lab',
+  ]);
+
+/** True when a type id is a legacy save-compat alias of a canonical building. */
+export function isLegacyAliasBuildingType(typeId: string): boolean {
+  return LEGACY_ALIAS_BUILDING_TYPE_IDS.has(typeId as FunctionalBuildingTypeId);
+}
 
 /**
  * Calculates polygon area in square meters using Shoelace formula
@@ -1717,12 +1925,19 @@ export function calculatePolygonArea(polygon: Point2D[]): number {
 export function getBuildingWorkerSlots(b: {
   typeId: FunctionalBuildingTypeId;
   footprintAreaM2?: number;
+  /** 0..100 — partial adaptations staff only their converted share. */
+  adaptationPercentage?: number;
 }): number {
   const def = FUNCTIONAL_BUILDING_DEFINITIONS[b.typeId];
   const area = b.footprintAreaM2 || 50;
   const nominal = def?.workerCapacity || 2;
   const sizeSlots = Math.max(1, Math.round(area / 45));
-  return Math.max(nominal, Math.min(sizeSlots, nominal * 4));
+  const base = Math.max(nominal, Math.min(sizeSlots, nominal * 4));
+  const pct = Math.min(100, Math.max(0, b.adaptationPercentage ?? 100)) / 100;
+  // A partially converted building staffs only the area it actually uses; any
+  // converted share keeps at least one work station.
+  const scaled = Math.max(0, Math.round(base * pct));
+  return pct > 0 ? Math.max(1, scaled) : 0;
 }
 
 /**
@@ -1969,29 +2184,46 @@ export function calculateBuildingStats(
 }
 
 /**
- * Calculates adaptive cost discount if building matches preferred OSM type
+ * §Terminus adaptation economics: the per-type `adaptationCost` figures on the
+ * definitions are REFERENCE prices for a ~800 m³ shell (e.g. a 100 m²
+ * one-to-two storey building). Real conversions are charged by the actual
+ * physical volume being converted: full cost = reference cost ×
+ * (footprintAreaM² × heightM ÷ 800), before the incremental share of a partial
+ * conversion is taken — so a tiny house is genuinely cheap and a five-storey
+ * warehouse costs proportionally much more, matching the IFZ size-based model.
+ * A purpose-fit OSM building still gets its 25% material discount, but the
+ * discount is applied to the size-derived price, never to a flat one.
+ */
+export const ADAPT_REFERENCE_VOLUME_M3 = 800;
+
+/**
+ * Full (100%) adaptation material cost for a structure of the given physical
+ * size. Omitting the physical metrics falls back to the reference shell
+ * (~800 m³), i.e. the raw `adaptationCost` of the definition.
  */
 export function getAdaptedCost(
   typeId: FunctionalBuildingTypeId,
-  bldgType?: string
+  bldgType?: string,
+  footprintAreaM2 = 100,
+  heightM = 8
 ): ResourceCost {
   const def =
     FUNCTIONAL_BUILDING_DEFINITIONS[typeId] ||
     FUNCTIONAL_BUILDING_DEFINITIONS.headquarters;
-  if (!bldgType || !def.preferredOsmTypes) {
-    return { ...def.adaptationCost };
-  }
+  const volume = Math.max(1, footprintAreaM2) * Math.max(1, heightM);
+  const scale = volume / ADAPT_REFERENCE_VOLUME_M3;
+  const isPreferred =
+    !!bldgType && !!def.preferredOsmTypes && def.preferredOsmTypes.includes(bldgType.toLowerCase());
+  const fit = isPreferred ? 0.75 : 1;
+  // Zero-cost materials stay zero (e.g. brick-free conversions); everything
+  // else keeps a 1-unit floor so no size-scaled conversion is ever "free".
+  const scaled = (v: number) =>
+    v > 0 ? Math.max(1, Math.round(v * scale * fit)) : 0;
 
-  const isPreferred = def.preferredOsmTypes.includes(bldgType.toLowerCase());
-  if (isPreferred) {
-    // 25% discount on construction materials when adapting a purpose-fit real building!
-    return {
-      wood: Math.round(def.adaptationCost.wood * 0.75),
-      metal: Math.round(def.adaptationCost.metal * 0.75),
-      bricks: Math.round(def.adaptationCost.bricks * 0.75),
-      tools: def.adaptationCost.tools ? Math.max(1, Math.round(def.adaptationCost.tools * 0.75)) : 0,
-    };
-  }
-
-  return { ...def.adaptationCost };
+  return {
+    wood: scaled(def.adaptationCost.wood),
+    metal: scaled(def.adaptationCost.metal),
+    bricks: scaled(def.adaptationCost.bricks),
+    tools: def.adaptationCost.tools ? scaled(def.adaptationCost.tools) : 0,
+  };
 }

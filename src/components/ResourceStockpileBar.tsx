@@ -102,26 +102,27 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  const activeOutbreaksCount = outbreaksList.filter((o) => o.isOutbreakActive).length;
 
  const generalTotal = typeof generalPopulation === 'number' ? generalPopulation : (generalPopulation?.total || 0);
- const totalPop = (namedSurvivors?.length || 0) + generalTotal;
- const totalFood =
- stockpile.food.canned_goods +
- stockpile.food.mre_rations +
- stockpile.food.dried_rations +
- stockpile.food.fresh_harvest;
+ const totalPop = (namedSurvivors?.length || 0) + generalTotal;  // Stockpile amounts accumulate continuously (production × dt); every meter
+  // floors to whole units for display.
+  const totalFood =
+ Math.floor(stockpile.food.canned_goods) +
+ Math.floor(stockpile.food.mre_rations) +
+ Math.floor(stockpile.food.dried_rations) +
+ Math.floor(stockpile.food.fresh_harvest);
 
  const totalWater =
- stockpile.water.bottled_water +
- stockpile.water.purified_water +
- stockpile.water.rainwater;
+ Math.floor(stockpile.water.bottled_water) +
+ Math.floor(stockpile.water.purified_water) +
+ Math.floor(stockpile.water.rainwater);
 
  const totalMeds =
- stockpile.medical.first_aid_kits +
- stockpile.medical.sterile_bandages +
- stockpile.medical.antibiotics +
- stockpile.medical.painkillers;
+ Math.floor(stockpile.medical.first_aid_kits) +
+ Math.floor(stockpile.medical.sterile_bandages) +
+ Math.floor(stockpile.medical.antibiotics) +
+ Math.floor(stockpile.medical.painkillers);
 
  const totalFuel =
- stockpile.fuel.gasoline + stockpile.fuel.diesel + stockpile.fuel.biofuel;
+ Math.floor(stockpile.fuel.gasoline) + Math.floor(stockpile.fuel.diesel) + Math.floor(stockpile.fuel.biofuel);
 
  return (
  <div className="absolute top-16 left-3 right-3 sm:left-4 sm:right-auto z-30 pointer-events-auto font-mono">
@@ -215,14 +216,14 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  )}
  </div>
 
- {/* 2. Construction Materials (§7.2 Wood / Metal / Bricks) */}
+ {/* 2. Construction Materials (§7.2 Wood / Metal / Bricks / Tools) */}
  <div className="flex items-center gap-3 pr-3 border-r border-[#262a30]">
  {/* Wood */}
  <div className="flex items-center gap-1.5" title="Construction Timber / Wood">
  <Trees className="w-3.5 h-3.5 text-[#4ade80]" />
  <div>
  <div className="text-[9px] text-[#6b7280] uppercase">Wood</div>
- <div className="text-[12px] font-black text-white">{stockpile.materials.wood}</div>
+ <div className="text-[12px] font-black text-white">{Math.floor(stockpile.materials.wood)}</div>
  </div>
  </div>
 
@@ -231,7 +232,7 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  <Truck className="w-3.5 h-3.5 text-[#38bdf8]" />
  <div>
  <div className="text-[9px] text-[#6b7280] uppercase">Metal</div>
- <div className="text-[12px] font-black text-white">{stockpile.materials.metal}</div>
+ <div className="text-[12px] font-black text-white">{Math.floor(stockpile.materials.metal)}</div>
  </div>
  </div>
 
@@ -240,7 +241,16 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  <Box className="w-3.5 h-3.5 text-[#f97316]" />
  <div>
  <div className="text-[9px] text-[#6b7280] uppercase">Bricks</div>
- <div className="text-[12px] font-black text-white">{stockpile.materials.bricks}</div>
+ <div className="text-[12px] font-black text-white">{Math.floor(stockpile.materials.bricks)}</div>
+ </div>
+ </div>
+
+ {/* Tools */}
+ <div className="flex items-center gap-1.5" title="Construction Tools (hand tools, toolkits)">
+ <Wrench className="w-3.5 h-3.5 text-[#c084fc]" />
+ <div>
+ <div className="text-[9px] text-[#6b7280] uppercase">Tools</div>
+ <div className="text-[12px] font-black text-white">{Math.floor(stockpile.materials.tools || 0)}</div>
  </div>
  </div>
  </div>
@@ -288,7 +298,7 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  <Crosshair className="w-3.5 h-3.5 text-[#ef4444]" />
  <div>
  <div className="text-[9px] text-[#6b7280] uppercase">Ammo</div>
- <div className="text-[12px] font-black text-[#ef4444]">{stockpile.ammo.sharedPool}</div>
+ <div className="text-[12px] font-black text-[#ef4444]">{Math.floor(stockpile.ammo.sharedPool)}</div>
  </div>
  </div>
  </div>
@@ -428,14 +438,13 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  <button
  id="open-research-btn"
  onClick={onOpenResearch}
- className="px-2.5 py-1 bg-[#161c28] hover:bg-[#202a3d] border border-[#2b4168] hover:border-[#38bdf8] text-[#7dd3fc] hover:text-white text-[10px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
- title="Open Colony Technology & Research Tree (§10)"
+ className="px-2.5 py-1 bg-[#161c28] hover:bg-[#202a3d] border border-[#2b4168] hover:border-[#38bdf8] text-[#7dd3fc] hover:text-white text-[10px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"   title="Open Colony Technology & Research Tree (§10) — Scientific Materials fund research"
  >
  <BookOpen className="w-3.5 h-3.5 text-cyan-400" />
  <span>
  TECH:{' '}
  <strong className="text-cyan-300 font-mono">
- {Math.floor(settlement.research?.researchPoints || 0)} RP
+ {Math.floor(settlement.stockpile.materials.scientific_materials || 0)} SM
  </strong>{' '}
  <span className="text-[9px] text-slate-400">
  ({settlement.research?.unlockedNodes?.length || 0}/24)
@@ -530,19 +539,19 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  </div>
  <div className="flex justify-between">
  <span className="text-[#6b7280]">Canned Goods:</span>
- <span className="text-white font-bold">{stockpile.food.canned_goods}</span>
+ <span className="text-white font-bold">{Math.floor(stockpile.food.canned_goods)}</span>
  </div>
  <div className="flex justify-between">
  <span className="text-[#6b7280]">MRE Rations:</span>
- <span className="text-white font-bold">{stockpile.food.mre_rations}</span>
+ <span className="text-white font-bold">{Math.floor(stockpile.food.mre_rations)}</span>
  </div>
  <div className="flex justify-between">
  <span className="text-[#6b7280]">Dried Rations:</span>
- <span className="text-white font-bold">{stockpile.food.dried_rations}</span>
+ <span className="text-white font-bold">{Math.floor(stockpile.food.dried_rations)}</span>
  </div>
  <div className="flex justify-between">
  <span className="text-[#6b7280]">Fresh Harvest:</span>
- <span className="text-[#4ade80] font-bold">{stockpile.food.fresh_harvest}</span>
+ <span className="text-[#4ade80] font-bold">{Math.floor(stockpile.food.fresh_harvest)}</span>
  </div>
  </div>
 
@@ -554,15 +563,15 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  </div>
  <div className="flex justify-between">
  <span className="text-[#6b7280]">Bottled Water:</span>
- <span className="text-white font-bold">{stockpile.water.bottled_water}L</span>
+ <span className="text-white font-bold">{Math.floor(stockpile.water.bottled_water)}L</span>
  </div>
  <div className="flex justify-between">
  <span className="text-[#6b7280]">Purified Water:</span>
- <span className="text-white font-bold">{stockpile.water.purified_water}L</span>
+ <span className="text-white font-bold">{Math.floor(stockpile.water.purified_water)}L</span>
  </div>
  <div className="flex justify-between">
  <span className="text-[#6b7280]">Rain/Raw Water:</span>
- <span className="text-[#9ca3af] font-bold">{stockpile.water.rainwater}L</span>
+ <span className="text-[#9ca3af] font-bold">{Math.floor(stockpile.water.rainwater)}L</span>
  </div>
  </div>
 
@@ -574,19 +583,19 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  </div>
  <div className="flex justify-between">
  <span className="text-[#6b7280]">First Aid Kits:</span>
- <span className="text-white font-bold">{stockpile.medical.first_aid_kits}</span>
+ <span className="text-white font-bold">{Math.floor(stockpile.medical.first_aid_kits)}</span>
  </div>
  <div className="flex justify-between">
  <span className="text-[#6b7280]">Sterile Bandages:</span>
- <span className="text-white font-bold">{stockpile.medical.sterile_bandages}</span>
+ <span className="text-white font-bold">{Math.floor(stockpile.medical.sterile_bandages)}</span>
  </div>
  <div className="flex justify-between">
  <span className="text-[#6b7280]">Antibiotics:</span>
- <span className="text-white font-bold">{stockpile.medical.antibiotics}</span>
+ <span className="text-white font-bold">{Math.floor(stockpile.medical.antibiotics)}</span>
  </div>
  <div className="flex justify-between">
  <span className="text-[#6b7280]">Painkillers:</span>
- <span className="text-white font-bold">{stockpile.medical.painkillers}</span>
+ <span className="text-white font-bold">{Math.floor(stockpile.medical.painkillers)}</span>
  </div>
  </div>
 
@@ -598,15 +607,15 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  </div>
  <div className="flex justify-between">
  <span className="text-[#6b7280]">Gasoline:</span>
- <span className="text-white font-bold">{stockpile.fuel.gasoline}L</span>
+ <span className="text-white font-bold">{Math.floor(stockpile.fuel.gasoline)}L</span>
  </div>
  <div className="flex justify-between">
  <span className="text-[#6b7280]">Diesel:</span>
- <span className="text-white font-bold">{stockpile.fuel.diesel}L</span>
+ <span className="text-white font-bold">{Math.floor(stockpile.fuel.diesel)}L</span>
  </div>
  <div className="flex justify-between">
  <span className="text-[#6b7280]">Biofuel:</span>
- <span className="text-[#4ade80] font-bold">{stockpile.fuel.biofuel}L</span>
+ <span className="text-[#4ade80] font-bold">{Math.floor(stockpile.fuel.biofuel)}L</span>
  </div>
  </div>
 

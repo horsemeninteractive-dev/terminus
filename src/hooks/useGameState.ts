@@ -13,10 +13,14 @@ import { TimeOfDay, WorldScene } from '../render/WorldScene';
 import { createInitialGameClock } from '../services/combatService';
 import type { DroppedItem, GameClockState, HostileHumanUnit, NoiseEvent, TacticalSquadUnit, ZombieUnit } from '../types/combat';
 import { createInitialSettlementState } from '../services/settlementService';
+import { enactLaw, getLawDefinition } from '../services/lawService';
+import { dispatchSquadOnExpedition, recallSquadFromExpedition } from '../services/expeditionService';
+import type { LawId } from '../types/laws';
 import { BuildingPolygon, LocationPreset, MapData, Point2D, ResourceNode, SettlementPlacement } from '../types/map';
 import type { SettlementRecord, TradeCaravan } from '../types/caravan';
 import { HiddenSurvivorGroup } from '../types/population';
 import { FunctionalBuildingTypeId, SettlementState } from '../types/settlement';
+import { getCanonicalDefenseDef } from '../data/functionalBuildings';
 import { RoadNetworkGraph } from '../services/roadPathfinder';
 import { PathGrid } from '../services/pathfindingService';
 
@@ -156,6 +160,8 @@ export function useGameState() {
   const [isResearchModalOpen, setIsResearchModalOpen] = useState(false);
   const [isMoraleModalOpen, setIsMoraleModalOpen] = useState(false);
   const [isWeatherModalOpen, setIsWeatherModalOpen] = useState(false);
+  const [isLawModalOpen, setIsLawModalOpen] = useState(false);
+  const [isExpeditionModalOpen, setIsExpeditionModalOpen] = useState(false);
   const [isAudioModalOpen, setIsAudioModalOpen] = useState(false);
   const [dangerLevel, setDangerLevel] = useState<number>(0);
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
@@ -186,6 +192,10 @@ export function useGameState() {
     soundService.notify(msg);
   }, []);
   const radioAlertIdsRef = useRef<Set<string>>(new Set());
+  // Dedup for the lair-discovery "moment" (toast + tactical alert + SFX): a
+  // lair only flips to discovered once, but React strict mode double-invokes
+  // the discovery updater, so the ref keeps the feedback single-fire.
+  const lairDiscoveryAlertIdsRef = useRef<Set<string>>(new Set());
 
   // Safe Zones Operations Radio Directive System State (§TERMINUS PROTOCOL)
   const [radioDirectiveState, setRadioDirectiveState] = useState<RadioDirectiveState>(() =>
@@ -196,6 +206,27 @@ export function useGameState() {
     () => getInitialRadioDirectiveState().currentIncomingTransmission
   );
   const [isCelebrationModalOpen, setIsCelebrationModalOpen] = useState<boolean>(false);
+
+  const handleEnactLaw = useCallback((lawId: LawId) => {
+    const current = settlementRef.current;
+    if (!current) return;
+    const day = gameClockRef.current?.day ?? 1;
+    const res = enactLaw(current, lawId, day);
+    if (!res.success) {
+      setToastMessage({
+        title: 'LAW NOT ENACTED',
+        desc: res.error || 'The law could not be enacted.',
+        type: 'warn',
+      });
+      return;
+    }
+    setSettlement(res.newState);
+    setToastMessage({
+      title: 'LAW ENACTED',
+      desc: `${getLawDefinition(lawId).name} is now the colony law.`, // 
+      type: 'success',
+    });
+  }, [setSettlement, setToastMessage]);
 
   const handleClaimDawnReward = useCallback(() => {
     setIsCelebrationModalOpen(false);
@@ -281,9 +312,49 @@ export function useGameState() {
   // synced roster (avoids the stale-closure race where an old tick overwrites
   // freshly synced squads back to []).
   const combatSquadsRef = useRef<TacticalSquadUnit[]>([]);
+
+  const handleDispatchExpedition = useCallback((siteId: string, squadId: string) => {
+    const current = settlementRef.current;
+    if (!current) return;
+    const res = dispatchSquadOnExpedition(current, combatSquadsRef.current, squadId, siteId, Date.now());
+    if (!res.success) {
+      setToastMessage({ title: 'EXPEDITION NOT DISPATCHED', desc: res.error || 'Dispatch refused.', type: 'warn' });
+      return;
+    }
+    setSettlement(res.newState);
+    setCombatSquads(res.squads);
+    const site = res.newState.expeditions?.sites.find((s) => s.id === siteId);
+    setToastMessage({
+      title: 'EXPEDITION DISPATCHED',
+      desc: `${site ? site.name : 'The squad'} is ${site ? site.distanceKm : ''} km out — travel, battle, and scavenge are underway. Recall manually to bring them home.`,
+      type: 'info',
+    });
+  }, [setSettlement, setCombatSquads, setToastMessage]);
+
+  const handleRecallExpedition = useCallback((squadId: string) => {
+    const current = settlementRef.current;
+    if (!current) return;
+    const res = recallSquadFromExpedition(current, combatSquadsRef.current, squadId);
+    if (!res.success) {
+      setToastMessage({ title: 'RECALL REFUSED', desc: res.error || 'Recall failed.', type: 'warn' });
+      return;
+    }
+    setSettlement(res.newState);
+    setCombatSquads(res.squads);
+    const sq = res.squads.find((s) => s.squadId === squadId);
+    setToastMessage({
+      title: 'RECALL ORDERED',
+      desc: `${sq?.name || 'The squad'} is heading back to the HQ with its haul.`,
+      type: 'info',
+    });
+  }, [setSettlement, setCombatSquads, setToastMessage]);
+
   const [droppedItems, setDroppedItems] = useState<DroppedItem[]>([]);
   const [noiseEvents, setNoiseEvents] = useState<NoiseEvent[]>([]);
   const [selectedSquadId, setSelectedSquadId] = useState<string | null>(null);
+  // §IFZ CTRL+drag box selection: the full set of selected squads. The primary
+  // (first) id stays in sync with selectedSquadId for the single-squad UI.
+  const [selectedSquadIds, setSelectedSquadIds] = useState<string[]>([]);
   const roadGraphRef = useRef<RoadNetworkGraph | null>(null);
   const pathGridRef = useRef<PathGrid | null>(null);
   // Latest fog-of-war visible cells, written by the 100ms combat tick and consumed
@@ -323,6 +394,8 @@ export function useGameState() {
   const [scavengeFilterType, setScavengeFilterType] = useState<import('../components/TacticalMinimapWidget').ScavengeLootFilter>('all');
   const [showStreetLabels, setShowStreetLabels] = useState<boolean>(false);
   const [showSatelliteOverlay, setShowSatelliteOverlay] = useState<boolean>(false);
+  // Power-grid overlay (generator radius discs + powered/shed consumer markers)
+  const [showPowerGrid, setShowPowerGrid] = useState<boolean>(false);
   // Default tier is auto-detected from GPU/memory/CPU on first launch; the
   // save/load path overrides it with any player-chosen preference.
   const [satelliteQuality, setSatelliteQuality] = useState<import('../types/saveGame').SatelliteQuality>(detectSatelliteQuality);
@@ -339,14 +412,14 @@ export function useGameState() {
     let count = 0;
     if (settlement.adaptedBuildings) {
       for (const [_, bldg] of settlement.adaptedBuildings) {
-        const type = (bldg.typeId || '').toLowerCase();
-        if (type.includes('tower') || type.includes('watchtower') || type.includes('spotlight')) count++;
+        const def = getCanonicalDefenseDef(bldg.typeId);
+        if (def?.weaponMountable) count++;
       }
     }
     if (settlement.freestandingBuildings) {
       for (const fs of settlement.freestandingBuildings) {
-        const type = (fs.typeId || '').toLowerCase();
-        if (type.includes('tower') || type.includes('watchtower') || type.includes('spotlight')) count++;
+        const def = getCanonicalDefenseDef(fs.typeId);
+        if (def?.weaponMountable) count++;
       }
     }
     return count;
@@ -356,14 +429,14 @@ export function useGameState() {
     let count = 0;
     if (settlement.adaptedBuildings) {
       for (const [_, bldg] of settlement.adaptedBuildings) {
-        const type = (bldg.typeId || '').toLowerCase();
-        if (type.includes('gate') || type.includes('palisade') || type.includes('bastion')) count++;
+        const def = getCanonicalDefenseDef(bldg.typeId);
+        if (def?.allowsFriendlyPassage) count++;
       }
     }
     if (settlement.freestandingBuildings) {
       for (const fs of settlement.freestandingBuildings) {
-        const type = (fs.typeId || '').toLowerCase();
-        if (type.includes('gate') || type.includes('palisade') || type.includes('bastion')) count++;
+        const def = getCanonicalDefenseDef(fs.typeId);
+        if (def?.allowsFriendlyPassage) count++;
       }
     }
     return count;
@@ -395,7 +468,17 @@ export function useGameState() {
   const sceneRef = useRef<WorldScene | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const settlementRef = useRef(settlement);
+  // mapDataRef doubles as the simulation's durable resource-depletion store: the
+  // sim loop commits freshly-cloned, depleted map objects into it every tick.
+  // Only refresh it when the React-state map identity actually changes (a real
+  // map or save load); an unconditional per-render assignment would clobber the
+  // sim's accumulating node amounts and reset gathering depletion every frame.
   const mapDataRef = useRef<MapData | null>(mapData);
+  const lastMapDataPropRef = useRef<MapData | null>(mapData);
+  if (lastMapDataPropRef.current !== mapData) {
+    lastMapDataPropRef.current = mapData;
+    mapDataRef.current = mapData;
+  }
   const gameClockRef = useRef(gameClock);
   const zombiesRef = useRef(zombies);
 
@@ -424,11 +507,13 @@ export function useGameState() {
     isSquadModalOpen, setIsSquadModalOpen, isMedbayModalOpen, setIsMedbayModalOpen,
     isVehicleModalOpen, setIsVehicleModalOpen, isResearchModalOpen, setIsResearchModalOpen,
     isMoraleModalOpen, setIsMoraleModalOpen, isWeatherModalOpen, setIsWeatherModalOpen,
+    isLawModalOpen, setIsLawModalOpen, handleEnactLaw,
+    isExpeditionModalOpen, setIsExpeditionModalOpen, handleDispatchExpedition, handleRecallExpedition,
     isAudioModalOpen, setIsAudioModalOpen,
     dangerLevel, setDangerLevel, selectedVehicleId, setSelectedVehicleId,
     activeRecruitmentGroup, setActiveRecruitmentGroup, contactedSurvivorGroupIdsRef,
     // Toasts
-    toasts, setToasts, toastIdRef, handleToastNotify, setToastMessage, radioAlertIdsRef,
+    toasts, setToasts, toastIdRef, handleToastNotify, setToastMessage, radioAlertIdsRef, lairDiscoveryAlertIdsRef,
     // Radio directives
     radioDirectiveState, setRadioDirectiveState, isRadioModalOpen, setIsRadioModalOpen,
     activeRadioTransmission, setActiveRadioTransmission,
@@ -440,7 +525,8 @@ export function useGameState() {
     gameClock, setGameClock, zombies, setZombies, combatSquads, setCombatSquads,
     hostileHumans, setHostileHumans, activeRansomHideoutId, setActiveRansomHideoutId,
     combatSquadsRef, droppedItems, setDroppedItems, noiseEvents, setNoiseEvents,
-    selectedSquadId, setSelectedSquadId, roadGraphRef, pathGridRef, fogVisibleCellsRef,
+    selectedSquadId, setSelectedSquadId, selectedSquadIds, setSelectedSquadIds,
+    roadGraphRef, pathGridRef, fogVisibleCellsRef,
     // Selection & interaction
     selectedBuilding, setSelectedBuilding, selectedResourceNode, setSelectedResourceNode,
     hoveredBuilding, setHoveredBuilding, clickedPosition, setClickedPosition,
@@ -454,6 +540,7 @@ export function useGameState() {
     // Scavenge view & minimap layers
     isScavengeViewActive, setIsScavengeViewActive, scavengeFilterType, setScavengeFilterType,
     showStreetLabels, setShowStreetLabels, showSatelliteOverlay, setShowSatelliteOverlay,
+    showPowerGrid, setShowPowerGrid,
     satelliteQuality, setSatelliteQuality,
     labelDetailMode, setLabelDetailMode, isHideUi, setIsHideUi,
     isExpeditionViewActive, setIsExpeditionViewActive,

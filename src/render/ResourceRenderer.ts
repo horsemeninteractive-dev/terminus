@@ -10,12 +10,43 @@ export interface HoveredResourceInfo {
   description: string;
 }
 
+interface DepletionAnimation {
+  mesh: THREE.InstancedMesh;
+  instanceIdx: number;
+  node: ResourceNode;
+  basePos: THREE.Vector3;
+  startTime: number;
+  duration: number;
+  axis: THREE.Vector3; // world-space fall axis (trees) / unused for other types
+  isTree: boolean;
+  phase: 'falling' | 'settling' | 'done';
+  phaseStart: number;
+}
+
 export class ResourceRenderer {
   public group = new THREE.Group();
 
   private nodes: ResourceNode[] = [];
   private instancedMeshes: THREE.InstancedMesh[] = [];
   private nodeLookup: Map<number, ResourceNode> = new Map(); // instanceId -> node
+
+  // Depletion animations: when a node hits 0 the tree falls over (rotating
+  // around its base) and then shrinks away, leaving a stump behind. Non-tree
+  // nodes (cars/lampposts/rubble) just dissolve via scale-down.
+  private depletionAnimations: DepletionAnimation[] = [];
+  private queuedDepletions = new Set<string>();
+  private lastFrameNow = 0;
+  private depletionDummy = new THREE.Object3D();
+  // Remembers the elevation grid used at rebuild so animated/stump placements
+  // land on the correct terrain height.
+  private elevation: ElevationGrid | null = null;
+  private exaggeration = 1.0;
+
+  // Depleted-tree markers: stubby gray stumps persist where a felled tree was.
+  private stumpMaterial = new THREE.MeshLambertMaterial({ color: 0x5a4633 });
+  private stumpMesh: THREE.InstancedMesh | null = null;
+  private stumpCount = 0;
+  private maxTreeCount = 0;
 
   // Materials
   private woodTrunkMaterial = new THREE.MeshLambertMaterial({ color: 0x3d2817 });
@@ -65,6 +96,13 @@ export class ResourceRenderer {
     exaggeration = 1.0
   ) {
     this.clear();
+    this.elevation = elevation ?? null;
+    this.exaggeration = exaggeration;
+    // Every tree (active or already depleted) can eventually leave a stump, so
+    // size the stump pool to the full tree count on the map.
+    this.maxTreeCount = nodes.filter(
+      (n) => n.subType === 'tree' || n.subType === 'tree_large'
+    ).length;
     const activeNodes = nodes.filter(n => n.amount > 0);
     this.nodes = activeNodes;
 
@@ -122,6 +160,16 @@ export class ResourceRenderer {
     // 4. Build Rubble Instanced Meshes
     this.createRubbleInstances(rubbleBrick, true, elevation, exaggeration);
     this.createRubbleInstances(rubbleConcrete, false, elevation, exaggeration);
+
+    // Seed stumps for trees that were already depleted on this map (e.g. a
+    // reloaded save whose resource depletion was persisted), so the world stays
+    // consistent between gaming sessions.
+    for (const n of nodes) {
+      if ((n.subType === 'tree' || n.subType === 'tree_large') && n.amount <= 0) {
+        const y = sampleElevation(this.elevation, n.position.x, n.position.z, this.exaggeration);
+        this.addStump(n, y);
+      }
+    }
   }
 
   private createTreeInstances(
@@ -428,25 +476,128 @@ export class ResourceRenderer {
 
   public updateNodeAmounts(nodes: ResourceNode[]) {
     const amounts = new Map(nodes.map(n => [n.id, n.amount]));
+    const tmpMatrix = new THREE.Matrix4();
+    const tmpPos = new THREE.Vector3();
+    const tmpQuat = new THREE.Quaternion();
+    const tmpScale = new THREE.Vector3();
     for (const mesh of this.instancedMeshes) {
       const resourceNodes = mesh.userData?.resourceNodes as ResourceNode[] | undefined;
       if (!resourceNodes) continue;
-      const dummy = new THREE.Object3D();
-      let changed = false;
       resourceNodes.forEach((node, idx) => {
-        if ((amounts.get(node.id) ?? node.amount) <= 0) {
-          mesh.getMatrixAt(idx, dummy.matrix);
-          dummy.matrix.decompose(dummy.position, dummy.quaternion, dummy.scale);
-          if (dummy.scale.x !== 0 || dummy.scale.y !== 0 || dummy.scale.z !== 0) {
-            dummy.scale.setScalar(0);
-            dummy.updateMatrix();
-            mesh.setMatrixAt(idx, dummy.matrix);
-            changed = true;
-          }
-        }
+        if (this.queuedDepletions.has(node.id)) return;
+        if ((amounts.get(node.id) ?? node.amount) > 0) return;
+        // Node just hit zero — queue its falling/dissolve animation instead of
+        // popping it out of existence instantly.
+        mesh.getMatrixAt(idx, tmpMatrix);
+        tmpMatrix.decompose(tmpPos, tmpQuat, tmpScale);
+        this.queueDepletion(mesh, idx, node, tmpPos.clone());
       });
-      if (changed) mesh.instanceMatrix.needsUpdate = true;
     }
+  }
+
+  /** Advance all in-flight depletion animations; call once per render frame. */
+  public update(deltaSec: number, nowSec: number) {
+    this.lastFrameNow = nowSec;
+    if (this.depletionAnimations.length === 0) return;
+    const MAX_FALL_ANGLE = Math.PI * 0.5 - 0.05; // ~87°, just short of flat
+    for (const anim of this.depletionAnimations) {
+      if (anim.phase === 'falling') {
+        const t = Math.min(1, (nowSec - anim.phaseStart) / anim.duration);
+        const angle = anim.isTree ? (1 - Math.pow(1 - t, 3)) * MAX_FALL_ANGLE : 0;
+        const scaleMul = anim.isTree ? 1 : Math.max(0, 1 - t * t);
+        this.applyDepletionMatrix(anim, angle, scaleMul);
+        if (t >= 1) {
+          anim.phase = 'settling';
+          anim.phaseStart = nowSec;
+        }
+      } else if (anim.phase === 'settling') {
+        const t2 = Math.min(1, (nowSec - anim.phaseStart) / 0.4);
+        this.applyDepletionMatrix(anim, MAX_FALL_ANGLE, Math.max(0, 1 - t2 * t2));
+        if (t2 >= 1) {
+          anim.phase = 'done';
+          // Tree is felled — hide it permanently and leave a stump marker.
+          this.depletionDummy.position.copy(anim.basePos);
+          this.depletionDummy.quaternion.identity();
+          this.depletionDummy.scale.set(0, 0, 0);
+          this.depletionDummy.updateMatrix();
+          anim.mesh.setMatrixAt(anim.instanceIdx, this.depletionDummy.matrix);
+          anim.mesh.instanceMatrix.needsUpdate = true;
+          if (anim.isTree) this.addStump(anim.node, anim.basePos.y);
+        }
+      }
+    }
+    this.depletionAnimations = this.depletionAnimations.filter(a => a.phase !== 'done');
+  }
+
+  private queueDepletion(
+    mesh: THREE.InstancedMesh,
+    instanceIdx: number,
+    node: ResourceNode,
+    basePos: THREE.Vector3
+  ) {
+    this.queuedDepletions.add(node.id);
+    const isTree = node.subType === 'tree' || node.subType === 'tree_large';
+    const now = this.lastFrameNow >= 1 ? this.lastFrameNow : this.timeNow();
+    this.depletionAnimations.push({
+      mesh,
+      instanceIdx,
+      node,
+      basePos,
+      startTime: now,
+      duration: isTree ? 1.4 : 0.8,
+      axis: Math.random() < 0.5 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 0, 1),
+      isTree,
+      phase: 'falling',
+      phaseStart: now,
+    });
+  }
+
+  private applyDepletionMatrix(anim: DepletionAnimation, angle: number, scaleMul: number) {
+    const m = new THREE.Matrix4();
+    const rot = new THREE.Matrix4().makeRotationAxis(anim.axis, angle);
+    const rotY = new THREE.Matrix4().makeRotationY(anim.node.rotation || 0);
+    const s = (anim.node.scale || 1) * scaleMul;
+    const sc = new THREE.Matrix4().makeScale(s, s, s);
+    m.makeTranslation(anim.basePos.x, anim.basePos.y, anim.basePos.z);
+    // World-space fall around the trunk base, then the node's own yaw + scale.
+    m.multiply(rot).multiply(rotY).multiply(sc);
+    anim.mesh.setMatrixAt(anim.instanceIdx, m);
+    anim.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  private ensureStumpMesh() {
+    if (this.stumpMesh) return;
+    const geom = new THREE.CylinderGeometry(0.28, 0.38, 0.5, 7);
+    geom.translate(0, 0.25, 0);
+    const mesh = new THREE.InstancedMesh(geom, this.stumpMaterial, Math.max(this.maxTreeCount, 1));
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.userData = { type: 'resource_stump' };
+    this.group.add(mesh);
+    this.stumpMesh = mesh;
+  }
+
+  private addStump(node: ResourceNode, groundY: number) {
+    if (this.stumpCount >= this.maxTreeCount) return;
+    this.ensureStumpMesh();
+    this.depletionDummy.position.set(node.position.x, groundY, node.position.z);
+    this.depletionDummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
+    const s = (node.scale || 1) * 0.85;
+    this.depletionDummy.scale.set(s, s, s);
+    this.depletionDummy.updateMatrix();
+    this.stumpMesh!.setMatrixAt(this.stumpCount, this.depletionDummy.matrix);
+    this.stumpCount++;
+    this.stumpMesh!.count = this.stumpCount;
+    this.stumpMesh!.instanceMatrix.needsUpdate = true;
+  }
+
+  /** Number of felled-tree stumps currently rendered (used by tests/debug). */
+  public getStumpCount(): number {
+    return this.stumpCount;
+  }
+
+  private timeNow(): number {
+    return (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
   }
 
   public setHighlightedNodes(
@@ -539,6 +690,15 @@ export class ResourceRenderer {
     this.instancedMeshes = [];
     this.nodes = [];
     this.nodeLookup.clear();
+    // Reset depletion/animation state so a new map starts clean.
+    this.depletionAnimations = [];
+    this.queuedDepletions.clear();
+    this.stumpCount = 0;
+    this.maxTreeCount = 0;
+    if (this.stumpMesh) {
+      this.stumpMesh.geometry.dispose();
+      this.stumpMesh = null;
+    }
   }
 
   public dispose() {
@@ -561,5 +721,6 @@ export class ResourceRenderer {
     this.metalLampMaterial.dispose();
     this.brickRubbleMaterial.dispose();
     this.concreteRubbleMaterial.dispose();
+    this.stumpMaterial.dispose();
   }
 }

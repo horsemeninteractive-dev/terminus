@@ -38,11 +38,14 @@ export default function App() {
     isSquadModalOpen, setIsSquadModalOpen, isMedbayModalOpen, setIsMedbayModalOpen,
     isVehicleModalOpen, setIsVehicleModalOpen, isResearchModalOpen, setIsResearchModalOpen,
     isMoraleModalOpen, setIsMoraleModalOpen, isWeatherModalOpen, setIsWeatherModalOpen,
+    isLawModalOpen, setIsLawModalOpen, handleEnactLaw,
+    isExpeditionModalOpen, setIsExpeditionModalOpen, handleDispatchExpedition, handleRecallExpedition,
     isAudioModalOpen, setIsAudioModalOpen,
     dangerLevel, setDangerLevel, selectedVehicleId, setSelectedVehicleId,
     activeRecruitmentGroup, setActiveRecruitmentGroup, contactedSurvivorGroupIdsRef,
     // Toasts
     toasts, setToasts, toastIdRef, handleToastNotify, setToastMessage, radioAlertIdsRef,
+    lairDiscoveryAlertIdsRef,
     // Radio directives
     radioDirectiveState, setRadioDirectiveState, isRadioModalOpen, setIsRadioModalOpen,
     activeRadioTransmission, setActiveRadioTransmission,
@@ -54,7 +57,8 @@ export default function App() {
     gameClock, setGameClock, zombies, setZombies, combatSquads, setCombatSquads,
     hostileHumans, setHostileHumans, activeRansomHideoutId, setActiveRansomHideoutId,
     combatSquadsRef, droppedItems, setDroppedItems, noiseEvents, setNoiseEvents,
-    selectedSquadId, setSelectedSquadId, roadGraphRef, pathGridRef, fogVisibleCellsRef,
+    selectedSquadId, setSelectedSquadId, selectedSquadIds, setSelectedSquadIds,
+    roadGraphRef, pathGridRef, fogVisibleCellsRef,
     // Selection & interaction
     selectedBuilding, setSelectedBuilding, selectedResourceNode, setSelectedResourceNode,
     hoveredBuilding, setHoveredBuilding, clickedPosition, setClickedPosition,
@@ -68,6 +72,7 @@ export default function App() {
     // Scavenge view & minimap layers
     isScavengeViewActive, setIsScavengeViewActive, scavengeFilterType, setScavengeFilterType,
     showStreetLabels, setShowStreetLabels, showSatelliteOverlay, setShowSatelliteOverlay,
+    showPowerGrid, setShowPowerGrid,
     satelliteQuality, setSatelliteQuality,
     labelDetailMode, setLabelDetailMode, isHideUi, setIsHideUi,
     isExpeditionViewActive, setIsExpeditionViewActive,
@@ -79,7 +84,9 @@ export default function App() {
   } = useGameState();
 
   settlementRef.current = settlement;
-  mapDataRef.current = mapData;
+  // mapDataRef is synced inside useGameState only when the map state identity
+  // changes; do NOT re-assign it here every render or the simulation loop's
+  // per-tick resource-depletion commits would be clobbered.
   gameClockRef.current = gameClock;
   zombiesRef.current = zombies;
 
@@ -104,6 +111,7 @@ export default function App() {
     fogVisibleCellsRef,
     combatSquadsRef,
     radioAlertIdsRef,
+    lairDiscoveryAlertIdsRef,
     selectedBuilding,
     selectedSquadId,
     selectedVehicleId,
@@ -143,6 +151,8 @@ export default function App() {
     setSelectedResourceNode,
     setSettlement,
     setSettlements,
+    setOverrunSettlement,
+    setIsExtinct,
     setCaravans,
     setToastMessage,
     radioDirectiveState,
@@ -166,6 +176,7 @@ export default function App() {
     droppedItems,
     noiseEvents,
     selectedSquadId,
+    selectedSquadIds,
     selectedVehicleId,
     settlement,
     timeOfDay,
@@ -230,6 +241,7 @@ export default function App() {
     roadGraphRef,
     pathGridRef,
     settlementRef,
+    mapDataRef,
     sceneRef,
     descentTimerRef,
     stopDescentTimer,
@@ -285,6 +297,7 @@ export default function App() {
     activePlacement,
     currentPreset,
     mapData,
+    mapDataRef,
     caravans,
     radioDirectiveState,
     combatSquads,
@@ -349,11 +362,16 @@ export default function App() {
   const {
     handleConfirmHQ,
     handleAdaptBuilding,
+    handleAdaptBuildingSection,
+    handleSplitBuilding,
+    handleDeadaptBuilding,
     handleBuildFreestanding,
     handleBuildFreestandingRun,
     handleOrderDeconstruction,
     handleCancelDeconstruction,
     handleDesignateGatherArea,
+    handleStartTraining,
+    handleStopTraining,
   } = useSettlementActions({
     settlement,
     mapData,
@@ -364,7 +382,12 @@ export default function App() {
     zombiesRef,
     settlementRef,
     radioAlertIdsRef,
+    settlements,
+    activeSettlementId,
     setSettlement,
+    setSettlements,
+    setOverrunSettlement,
+    setIsExtinct,
     setSelectedBuilding,
     setGameClock,
     setRadioDirectiveState,
@@ -387,6 +410,7 @@ export default function App() {
     handleDisbandSquad,
     handleRecruitGroup,
     handleSelectSquad,
+    handleSelectSquads,
     handleSelectVehicle,
     handleOrderSquadMove,
   } = useSquadActions({
@@ -404,6 +428,7 @@ export default function App() {
     setSettlement,
     setCombatSquads,
     setSelectedSquadId,
+    setSelectedSquadIds,
     setSelectedVehicleId,
     setNoiseEvents,
     setToastMessage,
@@ -430,6 +455,7 @@ export default function App() {
     handleStartSquadScavengeArea,
     handleDesignateSquadScavenge,
     handleOrderSquadRecall,
+    handleOrderAllSquadsRecall,
     handleSetClockSpeed,
     handleGrantFreshFood,
     handleDrainFoodStockpile,
@@ -441,6 +467,7 @@ export default function App() {
     handleSearchBuilding,
     autoEquipScavengedGear,
     handleAssignWeapon,
+    handleAssignTowerWeapon,
     handleAssignArmor,
     handleChangeSquadStance,
     handleStartResearchNode,
@@ -503,22 +530,29 @@ export default function App() {
       {viewMode === 'world' && (
         <TacticalWorldScene
       activeGatherType={activeGatherType} activeRansomHideoutId={activeRansomHideoutId} activeRecruitmentGroup={activeRecruitmentGroup}
-      activeSidebarTab={activeSidebarTab} alerts={alerts} caravans={caravans}
+      activeSidebarTab={activeSidebarTab} activeSettlementId={activeSettlementId} alerts={alerts} caravans={caravans}
       combatSquads={combatSquads} combatSquadsRef={combatSquadsRef} contactedSurvivorGroupIdsRef={contactedSurvivorGroupIdsRef}
       dangerLevel={dangerLevel} disableElevation={disableElevation} elevationExaggeration={elevationExaggeration}
-      gameClock={gameClock} handleAdaptBuilding={handleAdaptBuilding} handleAppointHead={handleAppointHead}
-      handleAssignArmor={handleAssignArmor} handleAssignWeapon={handleAssignWeapon} handleBuildFreestanding={handleBuildFreestanding}
+      gameClock={gameClock} handleAdaptBuilding={handleAdaptBuilding} handleAdaptBuildingSection={handleAdaptBuildingSection}
+      handleSplitBuilding={handleSplitBuilding} handleDeadaptBuilding={handleDeadaptBuilding}
+      handleAppointHead={handleAppointHead}
+      handleAssignArmor={handleAssignArmor} handleAssignWeapon={handleAssignWeapon} handleAssignTowerWeapon={handleAssignTowerWeapon}
+      handleBuildFreestanding={handleBuildFreestanding}
       handleBuildFreestandingRun={handleBuildFreestandingRun} handleChangeSquadStance={handleChangeSquadStance} handleConfirmHQ={handleConfirmHQ}
       handleCreateSquad={handleCreateSquad} handleDesignateGatherArea={handleDesignateGatherArea} handleDesignateSquadScavenge={handleDesignateSquadScavenge}
+      handleStartTraining={handleStartTraining} handleStopTraining={handleStopTraining}
       handleDisbandSquad={handleDisbandSquad} handleDismissAlert={handleDismissAlert} handleDismountVehicle={handleDismountVehicle}
       handleFocusBuilding={handleFocusBuilding} handleLoadProgress={handleLoadProgress} handleMinimapPanTo={handleMinimapPanTo}
       handleModifySquadGeneralMembers={handleModifySquadGeneralMembers} handleMountVehicle={handleMountVehicle} handleOrderDeconstruction={handleOrderDeconstruction}
-      handleOrderSquadAttack={handleOrderSquadAttack} handleOrderSquadMove={handleOrderSquadMove} handleOrderSquadRecall={handleOrderSquadRecall}
+      handleOrderSquadAttack={handleOrderSquadAttack} handleOrderSquadMove={handleOrderSquadMove} handleOrderSquadRecall={handleOrderSquadRecall} handleOrderAllSquadsRecall={handleOrderAllSquadsRecall}
       handleOrderVehicleExtraction={handleOrderVehicleExtraction} handlePayRansom={handlePayRansom} handleRecruitGroup={handleRecruitGroup}
       handleRefuseRescue={handleRefuseRescue} handleRepairBuilding={handleRepairBuilding} handleRestartGame={handleRestartGame}
-      handleSearchBuilding={handleSearchBuilding} handleSelectExistingSettlement={handleSelectExistingSettlement} handleSelectSquad={handleSelectSquad}
+      handleSearchBuilding={handleSearchBuilding} handleSelectExistingSettlement={handleSelectExistingSettlement} handleSelectSquad={handleSelectSquad} handleSelectSquads={handleSelectSquads} selectedSquadIds={selectedSquadIds}
       handleSelectVehicle={handleSelectVehicle} handleSetClockSpeed={handleSetClockSpeed} handleStartSquadScavengeArea={handleStartSquadScavengeArea}
       handleUpdateCombatSquads={handleUpdateCombatSquads} handleVacateSurvivorRole={handleVacateSurvivorRole} isAudioModalOpen={isAudioModalOpen}
+      handleEnactLaw={handleEnactLaw} isLawModalOpen={isLawModalOpen} setIsLawModalOpen={setIsLawModalOpen}
+      handleDispatchExpedition={handleDispatchExpedition} handleRecallExpedition={handleRecallExpedition}
+      isExpeditionModalOpen={isExpeditionModalOpen} setIsExpeditionModalOpen={setIsExpeditionModalOpen}
       isExpeditionViewActive={isExpeditionViewActive} isExtinct={isExtinct} isHQSelectionUnlocked={isHQSelectionUnlocked}
       isHideUi={isHideUi} isInitialCommsPending={isInitialCommsPending} isQuestListOpen={isQuestListOpen}
       isScavengeViewActive={isScavengeViewActive} isSquadModalOpen={isSquadModalOpen} labelDetailMode={labelDetailMode}
@@ -528,6 +562,7 @@ export default function App() {
       selectedSquadId={selectedSquadId} selectedVehicleId={selectedVehicleId} setActiveGatherType={setActiveGatherType}
       setActiveRadioTransmission={setActiveRadioTransmission} setActiveRansomHideoutId={setActiveRansomHideoutId} setActiveRecruitmentGroup={setActiveRecruitmentGroup}
       setActiveSidebarTab={setActiveSidebarTab} setClickedPosition={setClickedPosition} setHoveredBuilding={setHoveredBuilding}
+      setSettlements={setSettlements}
       setIsAudioModalOpen={setIsAudioModalOpen} setIsExpeditionViewActive={setIsExpeditionViewActive} setIsFreestandingModalOpen={setIsFreestandingModalOpen}
       setIsHideUi={setIsHideUi} setIsMoraleModalOpen={setIsMoraleModalOpen} setIsPauseMenuOpen={setIsPauseMenuOpen}
       setIsPopulationModalOpen={setIsPopulationModalOpen} setIsQuestListOpen={setIsQuestListOpen} setIsRadioModalOpen={setIsRadioModalOpen}
@@ -537,12 +572,13 @@ export default function App() {
       setPendingFreestandingType={setPendingFreestandingType} setScavengeFilterType={setScavengeFilterType} setSelectedBuilding={setSelectedBuilding}
       setSelectedResourceNode={setSelectedResourceNode} setSelectedSquadId={setSelectedSquadId} setSelectedVehicleId={setSelectedVehicleId}
       setSettlement={setSettlement} setShowBuildingEdges={setShowBuildingEdges} setShowLanduse={setShowLanduse}
+      setShowPowerGrid={setShowPowerGrid}
       setShowSatelliteOverlay={setShowSatelliteOverlay} setSatelliteQuality={setSatelliteQuality}
       setShowStreetLabels={setShowStreetLabels} setToastMessage={setToastMessage}
       setToasts={setToasts} setViewMode={setViewMode} settlement={settlement}
       settlementRef={settlementRef} settlements={settlements} showBricks={showBricks}
       showBuildingEdges={showBuildingEdges} showBuildings={showBuildings} showLanduse={showLanduse}
-      showMetal={showMetal} showRoads={showRoads} showSatelliteOverlay={showSatelliteOverlay}
+      showMetal={showMetal} showPowerGrid={showPowerGrid} showRoads={showRoads} showSatelliteOverlay={showSatelliteOverlay}
       satelliteQuality={satelliteQuality}
       showStreetLabels={showStreetLabels} showTerrainWireframe={showTerrainWireframe} showWood={showWood}
       toasts={toasts} viewMode={viewMode} zombies={zombies}

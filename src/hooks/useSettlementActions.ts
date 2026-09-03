@@ -1,16 +1,28 @@
 import { type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
+import { calculateGlobalNetworkStats } from '../services/caravanService';
+import {
+  countSettlementSurvivors,
+  markSettlementReclaimed,
+} from '../services/settlementLifecycleService';
+import type { SettlementRecord } from '../types/caravan';
 import {
   adaptBuilding,
+  AdaptBuildingOptions,
+  adaptBuildingSection,
   buildFreestanding,
+  deadaptBuilding,
   cancelDeconstruction,
   establishSettlementHQ,
   orderDeconstruction,
+  splitBuilding,
 } from '../services/settlementService';
 import { getFreestandingCollisionPolygon, getFreestandingDimensions } from '../services/freestandingFootprint';
 import { isPointInsidePolygon } from '../services/scavengingService';
 import { assignResourceGatherers } from '../services/resourceGatheringService';
+import { startSquadTraining, stopSquadTraining } from '../services/trainingService';
 import { updateRadioDirectiveSystem } from '../services/radioDirectiveService';
 import { FUNCTIONAL_BUILDING_DEFINITIONS } from '../data/functionalBuildings';
+import { getPrimaryHQ } from '../services/buildingOperational';
 import { soundService, ToastMessage } from '../services/soundService';
 import type { BuildingPolygon, MapData, Point2D } from '../types/map';
 import type { FunctionalBuildingTypeId, SettlementState } from '../types/settlement';
@@ -29,7 +41,12 @@ export interface SettlementActionsRuntime {
   zombiesRef: MutableRefObject<ZombieUnit[]>;
   settlementRef: MutableRefObject<SettlementState>;
   radioAlertIdsRef: MutableRefObject<Set<string>>;
+  settlements: Record<string, SettlementRecord>;
+  activeSettlementId: string;
   setSettlement: Dispatch<SetStateAction<SettlementState>>;
+  setSettlements: Dispatch<SetStateAction<Record<string, SettlementRecord>>>;
+  setOverrunSettlement: Dispatch<SetStateAction<SettlementRecord | null>>;
+  setIsExtinct: Dispatch<SetStateAction<boolean>>;
   setSelectedBuilding: Dispatch<SetStateAction<BuildingPolygon | null>>;
   setGameClock: Dispatch<SetStateAction<GameClockState>>;
   setRadioDirectiveState: Dispatch<SetStateAction<RadioDirectiveState>>;
@@ -51,6 +68,11 @@ export interface SettlementActionsRuntime {
  * building freestanding structures (incl. multi-segment runs), ordering/cancelling
  * deconstruction, and designating resource-gathering areas.
  */
+function utilsIsReclaiming(record: SettlementRecord | undefined): boolean {
+  if (!record) return false;
+  return record.status === 'reclaiming' || record.status === 'destroyed';
+}
+
 export function useSettlementActions(runtime: SettlementActionsRuntime) {
   const {
     settlement,
@@ -62,7 +84,12 @@ export function useSettlementActions(runtime: SettlementActionsRuntime) {
     zombiesRef,
     settlementRef,
     radioAlertIdsRef,
+    settlements,
+    activeSettlementId,
     setSettlement,
+    setSettlements,
+    setOverrunSettlement,
+    setIsExtinct,
     setSelectedBuilding,
     setGameClock,
     setRadioDirectiveState,
@@ -83,11 +110,36 @@ export function useSettlementActions(runtime: SettlementActionsRuntime) {
       // Establishing the HQ is the explicit transition from setup to live play.
       setGameClock((prev) => ({ ...prev, speed: 1 }));
       soundService.playBuildingPlaced();
-      setToastMessage({
-        title: 'HEADQUARTERS ESTABLISHED',
-        desc: `Secured command center at ${bldg.name || 'OSM Structure'}. Base inventory initialized.`,
-        type: 'success',
-      });
+
+      // §7.5 Reclamation: confirming a new HQ inside a fallen colony restores
+      // it to operational status — local recovery without needing a caravan.
+      const activeRecord = settlements[activeSettlementId];
+      const isReclaiming = activeRecord && utilsIsReclaiming(activeRecord);
+      if (isReclaiming) {
+        setSettlements((registry) => {
+          const record = registry[activeSettlementId];
+          if (!record) return registry;
+          const reclaimed = markSettlementReclaimed(record, gameClock.day, updated);
+          setOverrunSettlement(null);
+          const stats = calculateGlobalNetworkStats(
+            { ...registry, [activeSettlementId]: reclaimed },
+            []
+          );
+          setIsExtinct(stats.isExtinct);
+          return { ...registry, [activeSettlementId]: reclaimed };
+        });
+        setToastMessage({
+          title: 'COLONY RECLAIMED',
+          desc: `A new command post has been secured at ${bldg.name || 'OSM Structure'} — ${activeRecord.name} is operational again! ${countSettlementSurvivors(updated)} survivors continue the fight.`,
+          type: 'success',
+        });
+      } else {
+        setToastMessage({
+          title: 'HEADQUARTERS ESTABLISHED',
+          desc: `Secured command center at ${bldg.name || 'OSM Structure'}. Base inventory initialized.`,
+          type: 'success',
+        });
+      }
 
       // Instantly evaluate Radio Directive System on HQ confirmation for immediate feedback
       setRadioDirectiveState((prevRadio) => {
@@ -131,12 +183,17 @@ export function useSettlementActions(runtime: SettlementActionsRuntime) {
     }
   };
 
-  const handleAdaptBuilding = (bldg: BuildingPolygon, typeId: FunctionalBuildingTypeId) => {
+  const handleAdaptBuilding = (
+    bldg: BuildingPolygon,
+    typeId: FunctionalBuildingTypeId,
+    adaptation: number | Point2D[] = 100,
+    options: AdaptBuildingOptions = {}
+  ) => {
     try {
       let success = false;
       let errorMsg = '';
       setSettlement((prev) => {
-        const res = adaptBuilding(prev, bldg, typeId);
+        const res = adaptBuilding(prev, bldg, typeId, adaptation, options);
         if (!res.success) {
           errorMsg = res.error || 'Failed adapting building.';
           return prev;
@@ -164,6 +221,61 @@ export function useSettlementActions(runtime: SettlementActionsRuntime) {
         type: 'warn',
       });
     }
+  };
+
+  /** IFZ §7.1 split: divide a large real building into independently adaptable
+   *  sections (brick cost for the partition walls). */
+  const handleSplitBuilding = (bldg: BuildingPolygon, parts: 2 | 3 | 4 = 2) => {
+    const res = splitBuilding(settlement, bldg, parts);
+    if (!res.success) {
+      setToastMessage({ title: 'SPLIT BLOCKED', desc: res.error || 'Could not split building.', type: 'warn' });
+      return;
+    }
+    setSettlement(res.newState);
+    settlementRef.current = res.newState;
+    soundService.playBuildingPlaced();
+    setToastMessage({
+      title: 'BUILDING SPLIT',
+      desc: `Divided ${bldg.name || 'structure'} into ${res.sections?.length || parts} independent sections — each can now be adapted into its own facility.`,
+      type: 'success',
+    });
+  };
+
+  /** Adapt one split section into a facility (independently of the others). */
+  const handleAdaptBuildingSection = (
+    bldg: BuildingPolygon,
+    sectionId: string,
+    typeId: FunctionalBuildingTypeId
+  ) => {
+    const section = (settlement.buildingSections?.get(bldg.id) || []).find((s) => s.id === sectionId);
+    if (!section) {
+      setToastMessage({ title: 'ADAPTATION BLOCKED', desc: 'Section not found.', type: 'warn' });
+      return;
+    }
+    const res = adaptBuildingSection(settlement, bldg, section, typeId);
+    if (!res.success) {
+      setToastMessage({ title: 'ADAPTATION BLOCKED', desc: res.error || 'Could not adapt section.', type: 'warn' });
+      return;
+    }
+    setSettlement(res.newState);
+    settlementRef.current = res.newState;
+    soundService.playBuildingPlaced();
+    setToastMessage({
+      title: 'SECTION ADAPTED',
+      desc: `Section ${section.index + 1} of ${bldg.name || 'structure'} will become a ${FUNCTIONAL_BUILDING_DEFINITIONS[typeId]?.name || typeId}.`,
+      type: 'info',
+    });
+  };
+
+  const handleDeadaptBuilding = (buildingId: string | number) => {
+    const result = deadaptBuilding(settlement, buildingId);
+    if (!result.success) {
+      setToastMessage({ title: 'DEADAPTATION BLOCKED', desc: result.error || 'Unable to remove adaptation.', type: 'warn' });
+      return;
+    }
+    setSettlement(result.newState);
+    settlementRef.current = result.newState;
+    setToastMessage({ title: 'ADAPTATION REMOVED', desc: 'The source structure is adaptable again.', type: 'info' });
   };
 
   const handleBuildFreestanding = (typeId: FunctionalBuildingTypeId, pos: Point2D, rotationDeg = 0) => {
@@ -315,7 +427,7 @@ export function useSettlementActions(runtime: SettlementActionsRuntime) {
       const bldg = mapData.buildings.find(b =>
         b.center.x >= bounds.minX && b.center.x <= bounds.maxX &&
         b.center.z >= bounds.minZ && b.center.z <= bounds.maxZ &&
-        String(b.id) !== String(settlement.hq?.buildingId)
+        String(b.id) !== String(getPrimaryHQ(settlement)?.buildingId)
       );
       if (bldg) handleOrderDeconstruction(bldg.id);
       else setToastMessage({ title: 'NO STRUCTURE SELECTED', desc: 'No dismantlable structure was found in the designated area.', type: 'info' });
@@ -333,6 +445,7 @@ export function useSettlementActions(runtime: SettlementActionsRuntime) {
     }
 
     let remaining = Math.max(0, settlement.generalPopulation.total - settlement.squads.reduce((n, sq) => n + sq.generalCount, 0) - settlement.resourceWorkOrders.reduce((n, w) => n + w.workerCount, 0));
+
     let updated = settlement;
     let assigned = 0;
     for (const node of nodes) {
@@ -345,13 +458,52 @@ export function useSettlementActions(runtime: SettlementActionsRuntime) {
     setToastMessage({ title: 'GATHERING AREA DESIGNATED', desc: `${assigned} general workers assigned to physical ${type} nodes.`, type: 'success' });
   };
 
+  /** Shooting Range: start a squad's next training course (ammo drawn over time). */
+  const handleStartTraining = (squadId: string) => {
+    const res = startSquadTraining(settlement, squadId, Date.now());
+    if (!res.ok || !res.session) {
+      setToastMessage({ title: 'TRAINING BLOCKED', desc: res.error || 'Could not start training.', type: 'warn' });
+      return;
+    }
+    const sessions = new Map(settlement.trainingState?.sessions || []);
+    sessions.set(squadId, res.session);
+    const updated: SettlementState = {
+      ...settlement,
+      trainingState: {
+        sessions,
+        totalAmmoSpent: settlement.trainingState?.totalAmmoSpent ?? 0,
+      },
+    };
+    setSettlement(updated);
+    settlementRef.current = updated;
+    soundService.playBuildingPlaced();
+    setToastMessage({
+      title: 'TRAINING BEGUN',
+      desc: `Squad ordered to the Shooting Range. Ammunition is drawn as they drill.`,
+      type: 'success',
+    });
+  };
+
+  /** Shooting Range: cancel a squad's training session (tier progress kept). */
+  const handleStopTraining = (squadId: string) => {
+    const updated = stopSquadTraining(settlement, squadId);
+    setSettlement(updated);
+    settlementRef.current = updated;
+    setToastMessage({ title: 'TRAINING STOPPED', desc: 'The squad left the range. Completed tiers are permanent.', type: 'info' });
+  };
+
   return {
     handleConfirmHQ,
     handleAdaptBuilding,
+    handleAdaptBuildingSection,
+    handleSplitBuilding,
+    handleDeadaptBuilding,
     handleBuildFreestanding,
     handleBuildFreestandingRun,
     handleOrderDeconstruction,
     handleCancelDeconstruction,
     handleDesignateGatherArea,
+    handleStartTraining,
+    handleStopTraining,
   };
 }

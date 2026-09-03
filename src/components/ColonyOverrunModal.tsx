@@ -23,6 +23,10 @@ interface ColonyOverrunModalProps {
  onOpenGlobe: () => void;
  onOpenCaravans?: () => void;
  onDispatchRelief?: (originId: string) => void;
+ /** Begin local reclamation: survivors re-secure the sector and pick a new HQ. */
+ onStartReclaim?: () => void;
+ /** Survivors still holding the ruins — 0 means only caravan relief can rebuild. */
+ survivorsRemaining?: number;
  onClose?: () => void;
 }
 
@@ -37,6 +41,8 @@ export const ColonyOverrunModal: React.FC<ColonyOverrunModalProps> = ({
  onOpenGlobe,
  onOpenCaravans,
  onDispatchRelief,
+ onStartReclaim,
+ survivorsRemaining = 0,
  onClose,
 }) => {
  const colony = destroyedSettlement || overrunSettlement;
@@ -74,7 +80,9 @@ export const ColonyOverrunModal: React.FC<ColonyOverrunModalProps> = ({
  <div className="space-y-3 text-xs leading-relaxed text-[#d1d5db]">
  <p>
  The perimeter has been breached and the colony defenses overrun by the infected horde.
- All defenders and civilian workers at this sector have fallen.
+ {survivorsRemaining > 0
+ ? `${survivorsRemaining} hardened survivors are still holding the ruins, sheltering in the wreckage.`
+ : 'All defenders and civilian workers at this sector have fallen.'}
  </p>
 
  <div className="bg-[#191315] border border-[#4a1c22] p-3 space-y-1.5 text-[11px] clip-card-chip">
@@ -85,6 +93,12 @@ export const ColonyOverrunModal: React.FC<ColonyOverrunModalProps> = ({
  <div className="flex justify-between text-[#9ca3af]">
  <span>Status:</span>
  <span className="text-[#ef4444] font-bold uppercase">DESTROYED / DERELICT</span>
+ </div>
+ <div className="flex justify-between text-[#9ca3af]">
+ <span>Survivors Remaining in Sector:</span>
+ <span className={survivorsRemaining > 0 ? 'text-[#fbbf24] font-bold' : 'text-[#ef4444] font-bold'}>
+ {survivorsRemaining > 0 ? survivorsRemaining : 'NONE'}
+ </span>
  </div>
  <div className="flex justify-between text-[#9ca3af]">
  <span>Surviving Colonies on Earth:</span>
@@ -98,13 +112,27 @@ export const ColonyOverrunModal: React.FC<ColonyOverrunModalProps> = ({
  <span>COLONY RECOVERY PROTOCOL (§7.5):</span>
  </div>
  <p>
- Settlement loss is a serious setback, but <strong>NOT</strong> a game over. You can repopulate and rebuild this destroyed colony by dispatching a relief trade caravan with survivors, materials, and food from one of your operational colonies!
+ Settlement loss is a serious setback, but <strong>NOT</strong> a game over.{
+ survivorsRemaining > 0
+ ? ' The survivors can reclaim the sector locally: secure the ruins and establish a new command post — or reinforce them with a relief trade caravan from an operational colony.'
+ : ' Repopulate and rebuild this destroyed colony by dispatching a relief trade caravan with survivors, materials, and food from one of your operational colonies.'
+ }
  </p>
  </div>
  </div>
 
  {/* Action Buttons */}
  <div className="space-y-2 pt-2 border-t border-[#292e38]">
+ {survivorsRemaining > 0 && onStartReclaim && (
+ <button
+ onClick={onStartReclaim}
+ className="w-full py-2.5 px-4 bg-[#b45309] hover:bg-[#92600a] border border-[#fbbf24] text-white font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-colors cursor-pointer"
+ >
+ <RefreshCw className="w-4 h-4 text-[#fbbf24]" />
+ <span>RECLAIM: SECURE SECTOR & RE-ESTABLISH HQ</span>
+ </button>
+ )}
+
  {firstSurvivorColony && (
  <button
  onClick={() => handleSwitch(firstSurvivorColony.id)}

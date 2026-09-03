@@ -10,6 +10,15 @@ import { WeatherState } from '../types/weather';
 import { isResearchUnlocked } from './researchService';
 import { calculateCropYieldFactors } from './weatherService';
 import { recalculateLaborDistribution } from './populationService';
+import { getPrimaryHQ, isBuildingOperational, isHQOperational } from './buildingOperational';
+import { FUNCTIONAL_BUILDING_DEFINITIONS } from '../data/functionalBuildings';
+import { getActiveLaw } from './lawService';
+import {
+  addWaterToStockpile,
+  calculateWaterDemand,
+  consumeSettlementWater,
+  getTotalPotableWater,
+} from './waterService';
 
 // ==========================================
 // 1. Initial State Helpers
@@ -60,9 +69,12 @@ export function calculateSettlementMorale(
   const totalPop = Math.max(1, (settlement.namedSurvivors?.length || 0) + (typeof settlement.generalPopulation === 'number' ? settlement.generalPopulation : (settlement.generalPopulation?.total || 0)));
   const stockpile = settlement.stockpile;
 
-  // Daily consumption: each citizen consumes 0.5 food per in-game day.
-  const dailyFoodConsumption = Math.round(totalPop * 0.5 * 10) / 10;
-  const dailyWaterConsumption = Math.round(totalPop * 1.5 * 10) / 10;
+  // Daily consumption: each citizen consumes 0.5 food per in-game day, scaled
+  // by the active rationing law (Extended ×0.7, Generous ×1.3).
+  const dailyFoodConsumption = Math.round(totalPop * 0.5 * getActiveLaw(settlement).foodConsumptionMult * 10) / 10;
+  // Water demand is settlement-wide (population drinking + medical + industrial
+  // draw) — computed by waterService, the single water-economy authority.
+  const dailyWaterConsumption = Math.round(calculateWaterDemand(settlement) * 10) / 10;
 
   const totalFood =
     stockpile.food.canned_goods +
@@ -70,15 +82,20 @@ export function calculateSettlementMorale(
     stockpile.food.dried_rations +
     stockpile.food.fresh_harvest;
 
-  const totalWater =
-    stockpile.water.bottled_water +
-    stockpile.water.purified_water +
-    stockpile.water.rainwater;
+  // Potable reserve: the disposable store plus the cistern buffers — waterService
+  // owns the reserve accounting ("store empty, cisterns full" stays drinkable).
+  const totalWater = getTotalPotableWater(settlement);
 
   const daysOfFoodRemaining =
     dailyFoodConsumption > 0 ? Math.round((totalFood / dailyFoodConsumption) * 10) / 10 : 99;
   const daysOfWaterRemaining =
     dailyWaterConsumption > 0 ? Math.round((totalWater / dailyWaterConsumption) * 10) / 10 : 99;
+  // AUTHORITATIVE water-shortage signal: waterService.consumeSettlementWater
+  // increments waterState.shortageDays whenever the colony CANNOT meet its
+  // actual daily draw (store and cistern buffers both exhausted). A real unmet
+  // draw degrades the colony immediately — days-remaining below is only a
+  // forecast that colours the warning ahead of the crisis.
+  const inWaterShortage = (settlement.waterState?.shortageDays ?? 0) > 0;
 
   const factors: MoraleFactorBreakdown[] = [];
   let baseScore = 65; // Baseline neutral score
@@ -142,7 +159,7 @@ export function calculateSettlementMorale(
   const freshRatio = totalFood > 0 ? stockpile.food.fresh_harvest / totalFood : 0;
   const hasCookhouse = Array.from(settlement.adaptedBuildings.values())
     .concat(settlement.freestandingBuildings)
-    .some((b) => b.typeId === 'cookhouse' && b.constructionStatus === 'completed');
+    .some((b) => b.typeId === 'cookhouse' && isBuildingOperational(b));
 
   if (stockpile.food.fresh_harvest >= 15 || (hasCookhouse && stockpile.food.fresh_harvest > 0)) {
     baseScore += 12;
@@ -172,7 +189,9 @@ export function calculateSettlementMorale(
   // Capacity is authoritative, but older saves may have a stale aggregate.
   // Recompute the HQ contribution from its functional capacity so a valid HQ
   // cannot simultaneously shelter the population and trigger homelessness.
-  const hqCapacity = settlement.hq?.maxCapacity || 0;
+  // §7.5 A destroyed HQ shelters nobody — its beds count only while standing.
+  const primaryHQ = getPrimaryHQ(settlement);
+  const hqCapacity = isHQOperational(primaryHQ) ? primaryHQ?.maxCapacity || 0 : 0;
   const livingCap = Math.max(settlement.totalLivingCapacity || 0, hqCapacity);
   const housingDeficit = Math.max(0, totalPop - livingCap);
 
@@ -217,6 +236,30 @@ export function calculateSettlementMorale(
       category: 'housing',
       scoreDelta: +6,
       description: 'Thermal wall insulation and quiet private partitions enhance rest comfort.',
+      statusType: 'positive',
+    });
+  }
+
+  // §IFZ House: the def advertises a Mood Boost (+15%) — make it real, not
+  // just copy. A House is an upgraded residence, so the colony only enjoys the
+  // bonus to the degree its population can actually sleep in one (a single
+  // 2-bed House for a colony of 200 is not a housing renaissance). The bonus
+  // scales linearly from +3 up to the full +15 when everyone is housed in
+  // Houses rather than basic shelter bunks.
+  const houseBedCapacity = Array.from(settlement.adaptedBuildings.values())
+    .concat(settlement.freestandingBuildings)
+    .filter((b) => b.typeId === 'house' && isBuildingOperational(b))
+    .reduce((sum, b) => sum + (b.maxCapacity || 0), 0);
+  const housedInHouses = totalPop > 0 ? Math.min(totalPop, houseBedCapacity) : 0;
+  if (housedInHouses > 0) {
+    const qualityBoost = Math.max(3, Math.round((15 * housedInHouses) / totalPop));
+    baseScore += qualityBoost;
+    factors.push({
+      id: 'housing_quality_homes',
+      name: 'Quality Family Housing',
+      category: 'housing',
+      scoreDelta: qualityBoost,
+      description: `${Math.round((100 * housedInHouses) / totalPop)}% of colonists sleep in an upgraded House with private rooms and solid heating (+${qualityBoost} morale).`,
       statusType: 'positive',
     });
   }
@@ -292,17 +335,19 @@ export function calculateSettlementMorale(
   // -------------------------------------------------------------
   // D. WATER & SANITATION (§4.5)
   // -------------------------------------------------------------
-  if (totalWater === 0) {
+  if (inWaterShortage) {
     baseScore -= 35;
     factors.push({
       id: 'water_depleted',
       name: 'Dehydration Crisis',
       category: 'health',
       scoreDelta: -35,
-      description: 'Stockpile has run dry of potable water! Survivors cannot sustain work.',
+      description:
+        'The colony cannot meet its water draw — the store and cistern reserves ran dry. Survivors are going without water until collection or supply resumes.',
       statusType: 'critical',
     });
   } else if (daysOfWaterRemaining < 1.0) {
+    // No unmet draw yet — this is the rationing FORECAST before the crisis.
     baseScore -= 18;
     factors.push({
       id: 'water_low',
@@ -334,12 +379,12 @@ export function calculateSettlementMorale(
   const hasClinic = allBuildings.some(
     (b) =>
       (b.typeId === 'infirmary_clinic' || b.typeId === 'medbay') &&
-      b.constructionStatus === 'completed'
+      isBuildingOperational(b)
   );
   const hasCommunityHall = allBuildings.some(
     (b) =>
       (b.typeId === 'community_hall' || b.typeId === 'gathering_place') &&
-      b.constructionStatus === 'completed'
+      isBuildingOperational(b)
   );
 
   if (hasClinic) {
@@ -353,6 +398,59 @@ export function calculateSettlementMorale(
       statusType: 'positive',
     });
   }
+  const beerDemandPerDay = totalPop * 0.25;
+  const beerAvailable = stockpile.materials.beer || 0;
+  const beerDays = beerDemandPerDay > 0 ? beerAvailable / beerDemandPerDay : 99;
+  const hasBar = allBuildings.some((b) => b.typeId === 'bar' && isBuildingOperational(b));
+  if (hasBar && beerAvailable >= beerDemandPerDay) {
+    baseScore += 10;
+    factors.push({
+      id: 'amenity_beer',
+      name: 'Beer Rations Available',
+      category: 'events',
+      scoreDelta: 10,
+      description: `The bar is meeting daily recreation demand (${beerDays.toFixed(1)} days stocked).`,
+      statusType: 'positive',
+    });
+  } else if (hasBar || beerAvailable > 0) {
+    baseScore -= 6;
+    factors.push({
+      id: 'amenity_beer_shortage',
+      name: 'Beer Shortage',
+      category: 'events',
+      scoreDelta: -6,
+      description: `Recreation demand is unmet (${beerAvailable.toFixed(1)} beer for ${beerDemandPerDay.toFixed(1)} required daily).`,
+      statusType: 'negative',
+    });
+  }
+
+  const childCount = (settlement.generalPopulation?.children || []).length;
+  const childcareCapacity = allBuildings
+    .filter((b) => b.typeId === 'kindergarten' && isBuildingOperational(b))
+    .reduce((sum, b) => sum + (FUNCTIONAL_BUILDING_DEFINITIONS[b.typeId]?.civilianProperties?.childcareCapacity || 0), 0);
+  if (childCount > 0 && childcareCapacity >= childCount) {
+    baseScore += 10;
+    factors.push({
+      id: 'amenity_childcare',
+      name: 'Childcare Demand Met',
+      category: 'events',
+      scoreDelta: 10,
+      description: `${childCount} children are covered by operational kindergarten capacity.`,
+      statusType: 'positive',
+    });
+  } else if (childCount > 0) {
+    const penalty = Math.min(15, Math.ceil((childCount - childcareCapacity) * 2));
+    baseScore -= penalty;
+    factors.push({
+      id: 'amenity_childcare_shortage',
+      name: 'Childcare Shortage',
+      category: 'events',
+      scoreDelta: -penalty,
+      description: `${childCount - childcareCapacity} children lack childcare coverage.`,
+      statusType: 'negative',
+    });
+  }
+
   if (hasCommunityHall) {
     baseScore += 8;
     factors.push({
@@ -362,6 +460,23 @@ export function calculateSettlementMorale(
       scoreDelta: +8,
       description: 'Civic gatherings and shared meals strengthen communal resilience.',
       statusType: 'positive',
+    });
+  }
+
+  // -------------------------------------------------------------
+  // E2. LAWS & POLICY (§IFZ Major Update #5) — enacted through the
+  //     Gathering Place. The active law carries a standing satisfaction effect.
+  // -------------------------------------------------------------
+  const activeLaw = getActiveLaw(settlement);
+  if (activeLaw.moraleDelta !== 0) {
+    baseScore += activeLaw.moraleDelta;
+    factors.push({
+      id: `law_${activeLaw.id}`,
+      name: `Law: ${activeLaw.name}`,
+      category: 'events',
+      scoreDelta: activeLaw.moraleDelta,
+      description: activeLaw.moraleDescription,
+      statusType: activeLaw.moraleDelta > 0 ? 'positive' : 'negative',
     });
   }
 
@@ -437,6 +552,7 @@ export function calculateSettlementMorale(
   const growthEval = evaluatePassiveGrowthStatus(
     overallScore,
     daysOfFoodRemaining,
+    inWaterShortage,
     daysOfWaterRemaining,
     housingDeficit,
     activeOutbreaks,
@@ -505,6 +621,7 @@ export function calculateMoraleModifiers(overallScore: number): MoraleModifiers 
 function evaluatePassiveGrowthStatus(
   overallScore: number,
   daysOfFood: number,
+  inWaterShortage: boolean,
   daysOfWater: number,
   housingDeficit: number,
   activeOutbreaks: number,
@@ -522,7 +639,13 @@ function evaluatePassiveGrowthStatus(
     isGrowing = false;
     blockReason = 'Halted: Food reserves critically low';
     ratePercentPerDay = 0;
+  } else if (inWaterShortage) {
+    // REAL unmet draw — the colony is going without water right now.
+    isGrowing = false;
+    blockReason = 'Halted: Water shortage — the store and cistern reserves are dry';
+    ratePercentPerDay = 0;
   } else if (daysOfWater < 1.5) {
+    // Not short yet, but the forecast says rationing is days away.
     isGrowing = false;
     blockReason = 'Halted: Water reserves depleted';
     ratePercentPerDay = 0;
@@ -610,7 +733,6 @@ export function tickMoraleAndGrowthSimulation(
   let currentStock = { ...settlement.stockpile };
   const totalPop = Math.max(1, (settlement.namedSurvivors?.length || 0) + (typeof settlement.generalPopulation === 'number' ? settlement.generalPopulation : (settlement.generalPopulation?.total || 0)));
   const foodToConsume = totalPop * 0.5 * fractionOfDay;
-  const waterToConsume = totalPop * 1.5 * fractionOfDay;
 
   // Deduct food: consume fresh harvest first, then dried, then canned, then MREs
   let remainingFoodCost = foodToConsume;
@@ -637,71 +759,31 @@ export function tickMoraleAndGrowthSimulation(
     remainingFoodCost -= take;
   }
 
-  // Deduct water: consume rainwater first, then purified, then bottled
-  let remainingWaterCost = waterToConsume;
-  const newWater = { ...currentStock.water };
+  // 2. Water economy — SINGLE AUTHORITY in waterService. Morale keeps no private
+  // water ledger: settlement-wide demand (population drinking + medical +
+  // industrial draw) is calculated there and consumed from the disposable store
+  // (rainwater → purified → bottled) then the cistern buffer reserve in one
+  // pass. Unmet demand lands in waterState.shortageDays by that same pass.
+  // Rain collection (cistern roof catchment) already ran in tickWaterEconomy
+  // earlier in the pipeline, so nothing is produced here either.
+  let state = settlement;
+  state = consumeSettlementWater(state, calculateWaterDemand(state) * fractionOfDay).newState;
 
-  if (newWater.rainwater > 0) {
-    const take = Math.min(newWater.rainwater, remainingWaterCost);
-    newWater.rainwater -= take;
-    remainingWaterCost -= take;
-  }
-  if (remainingWaterCost > 0 && newWater.purified_water > 0) {
-    const take = Math.min(newWater.purified_water, remainingWaterCost);
-    newWater.purified_water -= take;
-    remainingWaterCost -= take;
-  }
-  if (remainingWaterCost > 0 && newWater.bottled_water > 0) {
-    const take = Math.min(newWater.bottled_water, remainingWaterCost);
-    newWater.bottled_water -= take;
-    remainingWaterCost -= take;
-  }
+  // 3. Agricultural production is handled exclusively by operational Field and
+  // Greenhouse buildings in tickSettlementSimulation(). This prevents a second
+  // global food-worker harvest stream from double-counting crop output.
 
-  // 2. Agricultural Crop Harvesting & Food Sector Output (§9, §10)
-  // Food Sector assigned workers generate fresh harvest daily
-  const foodWorkers = settlement.generalPopulation.assignedJobs.food || 0;
-  const cropStats = calculateCropYieldFactors(
-    weatherState.currentSeason,
-    weatherState.currentWeather,
-    settlement
-  );
-
-  // Morale productivity effect on farming
-  const moraleProductivity = settlement.morale?.modifiers.productivityMultiplier || 1.0;
-
-  // Base production per food worker = 2.0 units per in-game day * effective crop multiplier * morale
-  const harvestProduced = foodWorkers * 2.0 * cropStats.effectiveMultiplier * moraleProductivity * fractionOfDay;
-
-  // Rainwater harvesting from cisterns if raining
-  if (weatherState.rainwaterCollectionActive) {
-    const allBuildings = [
-      ...Array.from(settlement.adaptedBuildings.values()),
-      ...settlement.freestandingBuildings,
-    ];
-    const cisterns = allBuildings.filter(
-      (b) => b.typeId === 'water_cistern' && b.constructionStatus === 'completed'
-    ).length;
-    const rainBonusPerDay = cisterns > 0 ? cisterns * 20 : 6;
-    newWater.rainwater += rainBonusPerDay * fractionOfDay;
-  }
-
-  // Permaculture Tech passive generation (+12 food/day, +20 water/day)
-  if (isResearchUnlocked(settlement, 'survival_permaculture')) {
+  // 4. Permaculture Tech passive generation (+12 food/day, +20 L water/day).
+  // Food lands in the same stockpile copy as the deduction above; the water
+  // side writes through waterService so every water mutation stays there.
+  if (isResearchUnlocked(state, 'survival_permaculture')) {
     newFood.fresh_harvest += 12 * fractionOfDay;
-    newWater.purified_water += 20 * fractionOfDay;
+    state = addWaterToStockpile(state, { purified_water: 20 }, fractionOfDay);
   }
-
-  newFood.fresh_harvest += harvestProduced;
-
-  currentStock = {
-    ...currentStock,
-    food: newFood,
-    water: newWater,
-  };
 
   const intermediateSettlement: SettlementState = {
-    ...settlement,
-    stockpile: currentStock,
+    ...state,
+    stockpile: { ...state.stockpile, food: newFood },
   };
 
   // 3. Re-calculate Morale State

@@ -29,6 +29,7 @@ import {
  getZombieActivityModifiers,
 } from '../services/weatherService';
 import { isResearchUnlocked } from '../services/researchService';
+import { isBuildingOperational } from '../services/buildingOperational';
 
 interface SeasonWeatherModalProps {
  isOpen: boolean;
@@ -59,8 +60,15 @@ export const SeasonWeatherModal: React.FC<SeasonWeatherModalProps> = ({
  // gated behind the Early Warning communications tech (§10).
  const activityMods = getZombieActivityModifiers(weather.currentWeather, weather.moonPhase);
  const hasForecastTech = isResearchUnlocked(settlement, 'weather_forecast');
- const forecast = hasForecastTech
- ? forecastUpcomingWeather(weather.currentSeason, weather.currentWeather, 4)
+ const hasOperationalWeatherCenter = [
+   ...Array.from(settlement.adaptedBuildings.values()),
+   ...(settlement.freestandingBuildings || []),
+ ].some((building) =>
+   building.typeId === 'weather_center' && isBuildingOperational(building)
+ );
+ const forecastAvailable = hasForecastTech && hasOperationalWeatherCenter;
+ const forecast = forecastAvailable
+ ? forecastUpcomingWeather(weather.currentSeason, weather.currentWeather, 9)
  : [];
 
  const isWinter = weather.currentSeason === 'winter';
@@ -409,7 +417,7 @@ export const SeasonWeatherModal: React.FC<SeasonWeatherModalProps> = ({
  LUNAR CYCLE & WEATHER FORECAST
  </h3>
  <span className="ml-auto text-[11px] font-mono text-indigo-300">
- {hasForecastTech ? 'EARLY WARNING ARRAY ACTIVE' : 'WEATHER STATION OFFLINE'}
+ {forecastAvailable ? 'EARLY WARNING ARRAY ACTIVE' : 'WEATHER STATION OFFLINE'}
  </span>
  </div>
 
@@ -440,7 +448,7 @@ export const SeasonWeatherModal: React.FC<SeasonWeatherModalProps> = ({
  </div>
  </div>
 
- {hasForecastTech && forecast.length > 0 && (
+ {forecastAvailable && forecast.length > 0 && (
  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
  {forecast.map((entry) => (
  <div
@@ -458,10 +466,11 @@ export const SeasonWeatherModal: React.FC<SeasonWeatherModalProps> = ({
  </div>
  )}
 
- {!hasForecastTech && (
+ {!forecastAvailable && (
  <p className="text-[11px] text-neutral-500 font-mono">
- Research the Early Warning Array (Communications tech, §10) to forecast upcoming weather and plan around
- dangerous overcast/storm windows.
+ {!hasForecastTech
+   ? 'Research Weather Forecast, then construct an operational Weather Center to unlock the 9-day forecast.'
+   : 'Construct an operational Weather Center to unlock the 9-day forecast and plan around dangerous overcast/storm windows.'}
  </p>
  )}
  </div>

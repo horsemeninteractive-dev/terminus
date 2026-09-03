@@ -12,6 +12,7 @@ import { NamedSurvivor, StatTier, SurvivorStats } from '../types/population';
 import { AdaptedBuilding, SettlementState } from '../types/settlement';
 import { ZombieUnit, ZombieVariant } from '../types/combat';
 import { createZombieUnit } from './combatService';
+import { getPrimaryHQ } from './buildingOperational';
 import { vacateSurvivorRole } from './populationService';
 import { isResearchUnlocked } from './researchService';
 
@@ -531,7 +532,7 @@ export function tickInfectionSimulation(
       const deathCause: DeathCause = isQuarantined ? 'euthanized_quarantine' : 'infection_turned';
 
       // Find location
-      const hq = currentState.hq;
+      const hq = getPrimaryHQ(currentState);
       let locationName = hq ? hq.buildingName : 'Settlement Grounds';
       let spawnPos: Point2D = hq ? hq.center : { x: 0, z: 0 };
       let spawnBuildingId: string | number = hq ? hq.buildingId : 'hq';

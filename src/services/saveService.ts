@@ -1,6 +1,13 @@
 import { CURRENT_SAVE_VERSION, SaveGameData, SaveGameMeta } from '../types/saveGame';
 import { SettlementState } from '../types/settlement';
 import { SettlementRecord } from '../types/caravan';
+import { getPrimaryHQ } from './buildingOperational';
+import { getDefaultLawsState } from './lawService';
+import { createEmptyExpeditionState } from '../types/expedition';
+import { createEmptyOccupationState } from '../types/occupation';
+import { createEmptyWaterState } from '../types/water';
+import { createEmptyPowerState } from '../types/power';
+import { createEmptyTrainingState } from '../types/training';
 
 const SAVE_STORAGE_KEY_PREFIX = 'terminus_ifz_save_';
 const SAVE_INDEX_KEY = 'terminus_ifz_save_index';
@@ -27,10 +34,27 @@ export function serializeSettlementState(state: SettlementState): any {
   return {
     ...state,
     adaptedBuildings: mapToEntries(state.adaptedBuildings),
+    buildingSections: mapToEntries(state.buildingSections),
     infections: mapToEntries(state.infections),
     outbreaks: mapToEntries(state.outbreaks),
     zombieLairs: mapToEntries(state.zombieLairs),
     rivalHideouts: mapToEntries(state.rivalHideouts),
+    occupiedBuildings: state.occupiedBuildings
+      ? { ...state.occupiedBuildings, buildings: mapToEntries(state.occupiedBuildings.buildings) }
+      : undefined,
+    waterState: state.waterState
+      ? { ...state.waterState, cisterns: mapToEntries(state.waterState.cisterns) }
+      : undefined,
+    powerState: state.powerState
+      ? {
+          ...state.powerState,
+          generators: mapToEntries(state.powerState.generators),
+          batteries: mapToEntries(state.powerState.batteries),
+        }
+      : undefined,
+    trainingState: state.trainingState
+      ? { ...state.trainingState, sessions: mapToEntries(state.trainingState.sessions) }
+      : undefined,
     buildingSearches: mapToEntries(state.buildingSearches),
     hiddenGroups: mapToEntries(state.hiddenGroups),
     deconstructionJobs: mapToEntries(state.deconstructionJobs),
@@ -51,14 +75,130 @@ export function deserializeSettlementState(data: any): SettlementState {
     ? generalPopulation.children
     : [];
 
+  const stockpile = data.stockpile ? { ...data.stockpile } : undefined;
+  if (stockpile?.materials) {
+    // Older saves seeded materials without a tools key. Normalize so the
+    // required tools field is always present, and `canAffordCost` / production
+    // never see `undefined >= 0` or drop the field on the next write.
+    stockpile.materials = {
+      tools: 20,
+      ...stockpile.materials,
+    };
+  }
+
+  // ------------- HQ migration (§7.5) -------------
+  // The old model kept a single authoritative `hq` record while extra HQs
+  // lived in `headquarters[]`. The authoritative collection is now
+  // `headquarters[]` + `primaryHQId`. Migrate single-HQ saves forward, and
+  // backfill structural integrity for saves predating HQ durability. The
+  // legacy `hq` key is stripped so the two representations never coexist.
+  const legacyHq: any = data.hq;
+  // `fieldLootUnits` was renamed to `overflowLootUnits` (the goods are held by
+  // carriers, not lying at scavenge sites). Alias old saves and strip the key.
+  const { hq: _legacyHqKey, fieldLootUnits: _legacyOverflow, ...dataWithoutLegacy } = data;
+  const rawHeadquarters: any[] = Array.isArray(data.headquarters) ? data.headquarters : [];
+  const backfillDurability = (hq: any) => {
+    if (!hq || typeof hq.currentDurability === 'number') return hq;
+    const backfill = Math.max(650, Math.round(600 + (hq.footprintAreaM2 || 120) * 0.5 + (hq.levels || 1) * 120));
+    return { ...hq, maxDurability: backfill, currentDurability: backfill };
+  };
+  const headquarters = rawHeadquarters.map(backfillDurability);
+  let primaryHQId: string | number | null = data.primaryHQId ?? null;
+  if (legacyHq) {
+    const migrated = backfillDurability(legacyHq);
+    if (!headquarters.some((h) => h && String(h.buildingId) === String(migrated.buildingId))) {
+      headquarters.unshift(migrated);
+    }
+    if (primaryHQId == null) primaryHQId = migrated.buildingId;
+  }
+
+  // ------------- Research → Scientific Materials migration (§10) -------------
+  // Research was formerly a separate green-book currency (`researchPoints`)
+  // accrued by a passive trickle (`passiveRatePerSec`). The authoritative model
+  // has staffed Research Centers produce Scientific Materials into the stockpile
+  // and research projects consume them. Fold any unspent legacy points into the
+  // stockpile bucket and drop the old currency keys so they never re-serialize.
+  let research = dataWithoutLegacy.research;
+  if (
+    research &&
+    (typeof research.researchPoints === 'number' || typeof research.passiveRatePerSec === 'number')
+  ) {
+    const leftover = Math.max(0, Math.floor(research.researchPoints || 0));
+    const { researchPoints: _legacyRP, passiveRatePerSec: _legacyPR, ...cleanResearch } = research;
+    research = cleanResearch;
+    if (leftover > 0 && stockpile?.materials) {
+      stockpile.materials = {
+        ...stockpile.materials,
+        scientific_materials: (stockpile.materials.scientific_materials || 0) + leftover,
+      };
+    }
+  }
+
+  // ------------- Zombie Lair rebuild migration (§5.2) -------------
+  // Lairs were formerly abstract head-counters (occupantCount /
+  // spawnIntervalSec / lastSpawnAt) with no link to actual ZombieUnits. The
+  // rebuilt model syncs `population` from real affiliated infected. Convert
+  // legacy records to the new lifecycle fields so old saves keep standing
+  // lairs (no NaN intervals, no immortal inert records); the population
+  // re-syncs to whatever affiliated units exist on the next tick.
+  const zombieLairs = toMap<string | number, any>(data.zombieLairs);
+  for (const lair of zombieLairs.values()) {
+    const legacy = lair as any;
+    // `maxPopulation` (the short-lived regrowth-cap era) and the original
+    // abstract `initialOccupantCount`/`occupantCount` all become the soft
+    // founding baseline: baselinePopulation. Only the founding strength is a
+    // meaningful number — a neglected nest may now swell beyond it.
+    if (typeof lair.baselinePopulation !== 'number') {
+      lair.baselinePopulation =
+        typeof legacy.maxPopulation === 'number'
+          ? legacy.maxPopulation
+          : legacy.initialOccupantCount ?? legacy.occupantCount ?? 0;
+    }
+    delete lair.maxPopulation;
+    if (typeof lair.population !== 'number') {
+      lair.population = legacy.occupantCount ?? 0;
+      lair.homeRadius = typeof legacy.homeRadius === 'number' ? legacy.homeRadius : 40;
+      lair.threatTier = lair.threatTier ?? 'medium';
+      lair.escalationAccumSec = typeof lair.escalationAccumSec === 'number' ? lair.escalationAccumSec : 0;
+      lair.replenishAccumSec = typeof lair.replenishAccumSec === 'number' ? lair.replenishAccumSec : 0;
+      lair.hordeAccumSec = typeof lair.hordeAccumSec === 'number' ? lair.hordeAccumSec : 0;
+      lair.lastActivity = typeof lair.lastActivity === 'number' ? lair.lastActivity : Date.now();
+    }
+  }
+
   return {
-    ...data,
+    ...dataWithoutLegacy,
+    research,
+    headquarters,
+    primaryHQId,
+    overflowLootUnits: data.overflowLootUnits ?? _legacyOverflow ?? 0,
+    fieldLootPiles: data.fieldLootPiles || [],
+    stockpile,
     generalPopulation: { ...generalPopulation, children },
+    laws: data.laws || getDefaultLawsState(),
+    expeditions: data.expeditions || createEmptyExpeditionState(),
+    occupiedBuildings: data.occupiedBuildings
+      ? { ...data.occupiedBuildings, buildings: toMap(data.occupiedBuildings.buildings) }
+      : createEmptyOccupationState(),
+    waterState: data.waterState
+      ? { ...data.waterState, cisterns: toMap(data.waterState.cisterns) }
+      : createEmptyWaterState(),
+    powerState: data.powerState
+      ? {
+          ...data.powerState,
+          generators: toMap(data.powerState.generators),
+          batteries: toMap(data.powerState.batteries || []),
+        }
+      : createEmptyPowerState(),
+    trainingState: data.trainingState
+      ? { ...data.trainingState, sessions: toMap(data.trainingState.sessions) }
+      : createEmptyTrainingState(),
     squads,
     adaptedBuildings: toMap(data.adaptedBuildings),
+    buildingSections: toMap(data.buildingSections),
     infections: toMap(data.infections),
     outbreaks: toMap(data.outbreaks),
-    zombieLairs: toMap(data.zombieLairs),
+    zombieLairs,
     rivalHideouts: toMap(data.rivalHideouts),
     buildingSearches: toMap(data.buildingSearches),
     hiddenGroups: toMap(data.hiddenGroups),
@@ -225,7 +365,7 @@ export class SaveGameService {
       season: currentSettlement.weather?.currentSeason || 'spring',
       weather: currentSettlement.weather?.currentWeather || 'clear',
       difficulty: payload.scenarioSettings?.difficulty || 'normal',
-      hasHQ: !!currentSettlement.hq,
+      hasHQ: Boolean(getPrimaryHQ(currentSettlement)),
     };
 
     const fullSaveData: SaveGameData = {

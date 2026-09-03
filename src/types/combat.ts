@@ -58,6 +58,23 @@ export interface ZombieUnit {
   isDormant: boolean;
   alertLevel: number; // 0 = calm, 1 = alerted by sound, 2 = active pursuit
   pathState?: any; // A* PathState cache
+  /** Owning ZombieLair, when this infected belongs to a nest (§5.2). Killing a
+   *  lair-affiliated infected reduces the lair's population; clearing a lair
+   *  requires eliminating every one of these. */
+  lairId?: string | null;
+  /** Owning BuildingOccupation (§IFZ): infected that took over an UNADAPTED
+   *  structure. Killing every one clears the occupation. */
+  occupationId?: string | null;
+  /** The lair building's anchor point — affiliated infected call this home. */
+  homeX?: number;
+  homeZ?: number;
+  /** Max distance (m) an affiliated infected roams before returning home. */
+  homeRadius?: number;
+  /** Locality model (§5.2, IFZ post-Lair behaviour): MOST lair infected stay
+   *  near the nest, but a minority become roamers that wander freely, and
+   *  unaffiliated infected (hordes, swarms, ambient) are always independent. */
+  isRoamer?: boolean;
+  queuedOrders?: Array<{ pos: { x: number; z: number }; targetBuildingId?: string | number; targetBuildingName?: string }>;
 }
 
 // ==========================================
@@ -74,6 +91,14 @@ export type SquadUnitCombatState =
   | 'retreating'
   | 'gathering'
   | 'downed';
+
+/** Off-map expedition lifecycle (§IFZ) — a squad away from the tactical map. */
+export type ExpeditionPhase =
+  | 'travel_out'
+  | 'combat'
+  | 'scavenging'
+  | 'travel_back'
+  | 'idle';
 
 export interface TacticalSquadUnit {
   id?: string;
@@ -95,8 +120,13 @@ export interface TacticalSquadUnit {
   lastFireTime: number;
   damagePerVolley: number;
   critChance: number;
+  /** Permanent Shooting Range proficiency (0-4) — stat bonuses applied on top. */
+  trainingTier?: number;
   moveSpeed: number;
   state: SquadUnitCombatState;
+  /** Set while the squad is OFF-MAP on an expedition — the combat tick skips it. */
+  onExpedition?: string | null;
+  expeditionPhase?: ExpeditionPhase | null;
   manualOrder: boolean;
   targetPos: { x: number; z: number } | null;
   targetBuildingId?: string | number | null;
@@ -105,13 +135,31 @@ export interface TacticalSquadUnit {
   targetZombieId: string | null;
   isDeployed: boolean;
   killCount: number;
-  isInSafeZone: boolean; // near HQ or Infirmary for heal regeneration
+  isInSafeZone: boolean; // true while actually under medical treatment (§5.3)
+  /** Storage was full when this squad finished a haul, so it deliberately did
+   *  NOT return home (IFZ: check storage before returning). It holds its loot
+   *  out in the field until storage frees, then auto-returns to deposit.
+   *  Cleared by any fresh player order. */
+  holdHaul?: boolean;
   mountedVehicleId?: string | null; // which vehicle unit they are currently inside
   assignedVehicleId?: string | null; // linked expedition vehicle for auto-scavenge returns
   vehicleId?: string | null;
   pendingMountVehicleId?: string | null; // vehicle unit they are moving to board
+  /** Fuel item delivery (§8): the squad's backpack holds a fuel item it must
+   *  carry to this vehicle; when the squad arrives the fuel is poured into the
+   *  tank (see deliverCarriedFuel). Cleared on arrival or by a fresh player
+   *  order that supersedes the delivery. */
+  pendingFuelDeliveryVehicleId?: string | null;
+  /**
+   * Set while this squad's current order target is unreachable — the pathfinder
+   * proved no route exists (dead one-point path) instead of silently standing
+   * still. Drives the world-space "no path" indicator over the target building;
+   * cleared when a route exists again or the squad receives a fresh order.
+   */
+  noPath?: { buildingId?: string | number; x: number; z: number; since: number };
   depositVehicleId?: string | null; // dismounted to deposit BOTH squad + this vehicle's cargo bay
   pathState?: any; // A* PathState cache
+  queuedOrders?: Array<{ pos: { x: number; z: number }; targetBuildingId?: string | number; targetBuildingName?: string }>;
   members: SquadMemberUnit[]; // per-unit roster: leader first, then general recruits
   inventory: LootItem[];
   currentWeightKg: number;
@@ -195,10 +243,13 @@ export type WeaponItemId =
   | 'knife'
   | 'bat'
   | 'axe'
+  | 'bow'
   | 'pistol'
   | 'shotgun'
   | 'hunting_rifle'
-  | 'assault_rifle';
+  | 'assault_rifle'
+  | 'sniper_rifle'
+  | 'heavy_machine_gun';
 
 export interface WeaponItemDef {
   id: WeaponItemId;
@@ -214,10 +265,17 @@ export const WEAPON_CATALOG: Record<WeaponItemId, WeaponItemDef> = {
   knife: { id: 'knife', name: 'Combat Knife', damage: 10, range: 8, fireRate: 1.8, ammoPerVolley: 0, tier: 0 },
   bat: { id: 'bat', name: 'Baseball Bat', damage: 12, range: 9, fireRate: 1.7, ammoPerVolley: 0, tier: 1 },
   axe: { id: 'axe', name: 'Fire Axe', damage: 14, range: 9, fireRate: 1.9, ammoPerVolley: 0, tier: 2 },
+  // §IFZ: bows are the ammo-free fallback — towers with no mounted firearm
+  // fire one automatically, with INFINITE ammunition (ammoPerVolley 0).
+  bow: { id: 'bow', name: 'Bow', damage: 15, range: 40, fireRate: 2.5, ammoPerVolley: 0, tier: 2 },
   pistol: { id: 'pistol', name: 'Pistol', damage: 16, range: 28, fireRate: 1.3, ammoPerVolley: 1, tier: 3 },
   shotgun: { id: 'shotgun', name: 'Pump Shotgun', damage: 22, range: 22, fireRate: 1.6, ammoPerVolley: 2, tier: 4 },
   hunting_rifle: { id: 'hunting_rifle', name: 'Hunting Rifle', damage: 26, range: 42, fireRate: 1.9, ammoPerVolley: 2, tier: 5 },
   assault_rifle: { id: 'assault_rifle', name: 'Assault Rifle', damage: 28, range: 36, fireRate: 1.1, ammoPerVolley: 3, tier: 6 },
+  // Research-tree endgame firearms, manufactured by the Arms Factory as
+  // separate production lines (unlocked by their own research nodes).
+  sniper_rifle: { id: 'sniper_rifle', name: 'Sniper Rifle', damage: 32, range: 52, fireRate: 2.2, ammoPerVolley: 1, tier: 7 },
+  heavy_machine_gun: { id: 'heavy_machine_gun', name: 'Heavy Machine Gun', damage: 34, range: 42, fireRate: 1.0, ammoPerVolley: 3, tier: 8 },
 };
 
 export const WEAPON_IDS: WeaponItemId[] = Object.keys(WEAPON_CATALOG) as WeaponItemId[];
@@ -361,6 +419,7 @@ export interface HostileHumanUnit {
   weaponId: WeaponItemId;
   homeX: number; // guard anchor (their hideout)
   homeZ: number;
+  targetBuildingId?: string | number | null;
   // Cached A* route (see PathState in pathfindingService) so defenders route
   // around player-built walls/fences and buildings instead of walking through
   // them in a straight line.
@@ -379,12 +438,44 @@ export interface ZombieLair {
   buildingName: string;
   isDiscovered: boolean;
   isCleared: boolean;
-  occupantCount: number; // garrison inside; deplete to clear
-  initialOccupantCount: number;
-  spawnIntervalSec: number; // shrinks as escalation grows
-  lastSpawnAt: number;
-  escalation: number; // 0..N, grows over time while uncleared
+  /**
+   * Living infected affiliated with this lair (inside the building or emerged
+   * into its home radius). Synced every tick from actual ZombieUnits carrying
+   * lairId — there is no separate abstract counter. Clearing requires killing
+   * every one of them in real combat; a partially cleared lair regrows.
+   */
+  population: number;
+  /**
+   * Founding garrison at generation — the nest's SOFT baseline, NOT a ceiling.
+   * A partially cleared lair regrows toward this figure, and a neglected lair
+   * deliberately SWELLS well beyond it as its escalation climbs (see
+   * LAIR_GARRISON_CEILING in rivalFactionService) — an old, unmolested nest
+   * becomes a genuine hive of 100+ infected.
+   */
+  baselinePopulation: number;
+  /** Radius (m) around the building the lair's infected call home. Also the
+   *  pressure radius: while the lair stands, infected cluster and emerge here. */
+  homeRadius: number;
+  /** Game-time accumulator (real seconds × speed) driving emergence —
+   *  pause-aware and independently jittered per lair so lairs never stir
+   *  in lockstep. */
+  spawnAccumSec: number;
+  /** Wall-clock time of the last emergence (info). */
+  lastActivity: number;
+  /** 0..N while uncleared — grows over time, quickens nighttime emergence. */
+  escalation: number;
   escalationAccumSec: number;
   threatTier: LairThreatTier;
+  /** Accumulator for population regrowth after a partial clear. */
+  replenishAccumSec: number;
+  /**
+   * Game-time accumulator for NIGHT MOBILIZATION: while the lair stands, at
+   * night it periodically commits a strike group of its OWN resident infected
+   * toward the settlement — a lair-fed horde. Mobilization RETARGETS existing
+   * lair-affiliated zombies (lairId), never creates them, so killing mobilized
+   * infected en route or at the perimeter thins the nest's real population.
+   * Cleared lairs never mobilize and the regional pressure collapses.
+   */
+  hordeAccumSec?: number;
 }
 

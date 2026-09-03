@@ -1,12 +1,17 @@
 import React, { useEffect, useRef } from 'react';
 import { BuildingPolygon, MapData, Point2D } from '../types/map';
 import { AdaptedBuilding, SettlementState } from '../types/settlement';
+import { getPrimaryHQ } from '../services/buildingOperational';
 import { WorldScene } from '../render/WorldScene';
 
 interface GameCanvasProps {
   mapData: MapData | null;
   settlement?: SettlementState | null;
   pendingFreestandingType?: import('../types/settlement').FunctionalBuildingTypeId | null;
+  /** §7.1 armed IFZ-style conversion: press on a building and drag across its
+   *  own footprint to paint the physical portion to adapt; a click converts the
+   *  whole structure (see `onAdaptArea`). */
+  pendingAdaptType?: import('../types/settlement').FunctionalBuildingTypeId | null;
   clockHour?: number;
   elevationExaggeration: number;
   disableElevation?: boolean;
@@ -20,12 +25,15 @@ interface GameCanvasProps {
   showLanduse: boolean;
   showSatelliteOverlay?: boolean;
   satelliteQuality?: import('../types/saveGame').SatelliteQuality;
+  /** Power-grid overlay on the tactical map (generator radius + consumer status). */
+  showPowerGrid?: boolean;
   selectedSquadId?: string | null;
   selectedVehicleId?: string | null;
   onSelectBuilding: (building: BuildingPolygon | null) => void;
   onHoverBuilding: (building: BuildingPolygon | null) => void;
   onSelectPosition: (pos: Point2D, rotationDeg?: number) => void;
   onSelectSquad?: (squadId: string | null) => void;
+  onSelectSquads?: (squadIds: string[]) => void;
   onOrderSquadMove?: (squadId: string, pos: Point2D, targetBuildingId?: string | number, targetBuildingName?: string) => void;
   onOrderSquadAttack?: (squadId: string, zombieId: string) => void;
   onSelectVehicle?: (vehicleId: string | null) => void;
@@ -35,12 +43,18 @@ interface GameCanvasProps {
   onLoadProgress?: (progress: number, label?: string) => void;
   onSelectResourceNode?: (node: any) => void;
   onPlaceFreestandingRun?: (typeId: import('../types/settlement').FunctionalBuildingTypeId, placements: import('../render/WorldScene').FreestandingPlacementPoint[]) => void;
+  onAdaptArea?: (
+    typeId: import('../types/settlement').FunctionalBuildingTypeId,
+    bldg: BuildingPolygon,
+    polygon: Point2D[]
+  ) => void;
 }
 
 export const GameCanvas: React.FC<GameCanvasProps> = ({
   mapData,
   settlement,
   pendingFreestandingType,
+  pendingAdaptType,
   clockHour = 8,
   elevationExaggeration,
   disableElevation = false,
@@ -54,21 +68,23 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   showLanduse,
   showSatelliteOverlay = false,
   satelliteQuality = 'balanced',
+  showPowerGrid = false,
   selectedSquadId,
   selectedVehicleId,
   onSelectBuilding,
   onHoverBuilding,
   onSelectPosition,
   onSelectSquad,
+  onSelectSquads,
   onOrderSquadMove,
   onOrderSquadAttack,
   onSelectVehicle,
   onMountVehicle,
   onSceneReady,
   onMapRendered,
-  onLoadProgress,
-  onSelectResourceNode,
+  onLoadProgress,    onSelectResourceNode,
   onPlaceFreestandingRun,
+  onAdaptArea,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<WorldScene | null>(null);
@@ -83,6 +99,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     onHoverBuilding,
     onSelectPosition,
     onSelectSquad,
+    onSelectSquads,
     onOrderSquadMove,
     onOrderSquadAttack,
     onSelectVehicle,
@@ -93,11 +110,13 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     onHoverBuilding,
     onSelectPosition,
     onSelectSquad,
+    onSelectSquads,
     onOrderSquadMove,
     onOrderSquadAttack,
     onSelectVehicle,
     onMountVehicle,
     onPlaceFreestandingRun,
+    onAdaptArea,
   };
 
   useEffect(() => {
@@ -109,6 +128,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       onHoverBuilding: (value) => handlersRef.current.onHoverBuilding?.(value),
       onSelectPosition: ((value: Point2D, rotationDeg?: number) => handlersRef.current.onSelectPosition?.(value, rotationDeg)) as any,
       onSelectSquad: (value) => handlersRef.current.onSelectSquad?.(value),
+      onSelectSquads: (ids) => handlersRef.current.onSelectSquads?.(ids),
       onOrderSquadMove: (id, pos, bldgId, bldgName) =>
         handlersRef.current.onOrderSquadMove?.(id, pos, bldgId, bldgName),
       onOrderSquadAttack: (id, value) => handlersRef.current.onOrderSquadAttack?.(id, value),
@@ -116,6 +136,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       onMountVehicle: (id, value) => handlersRef.current.onMountVehicle?.(id, value),
       onPlaceFreestandingRun: (typeId, placements) =>
         handlersRef.current.onPlaceFreestandingRun?.(typeId, placements),
+      onAdaptArea: (typeId, bldg, polygon) =>
+        handlersRef.current.onAdaptArea?.(typeId, bldg, polygon),
     });
 
     sceneRef.current = scene;
@@ -139,7 +161,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           mapData,
           showBuildingEdges,
           elevationExaggeration,
-          settlement?.hq?.buildingId || null,
+          getPrimaryHQ(settlement)?.buildingId || null,
           settlement?.adaptedBuildings || new Map(),
           settlement?.freestandingBuildings || [],
           settlement?.demolishedBuildings || new Map(),
@@ -174,22 +196,32 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   useEffect(() => {
     if (sceneRef.current && settlement) {
       sceneRef.current.updateSettlementBuildings(
-        settlement.hq?.buildingId || null,
+        getPrimaryHQ(settlement)?.buildingId || null,
         settlement.adaptedBuildings,
         settlement.freestandingBuildings,
         settlement.hiddenGroups,
         settlement.deconstructionJobs,
         settlement.demolishedBuildings
       );
+      // Power grid statuses change every tick (fuel burn → shed bands), so
+      // keep the overlay current while it is visible.
+      sceneRef.current.updatePowerOverlay(settlement);
     }
   }, [
-    settlement?.hq?.buildingId,
+    getPrimaryHQ(settlement)?.buildingId,
     settlement?.adaptedBuildings,
     settlement?.freestandingBuildings,
     settlement?.hiddenGroups,
     settlement?.deconstructionJobs,
     settlement?.demolishedBuildings,
   ]);
+
+  // Power-grid overlay toggle
+  useEffect(() => {
+    if (sceneRef.current) {
+      sceneRef.current.setPowerGridOverlay(showPowerGrid, settlement || null);
+    }
+  }, [showPowerGrid]);
 
   // Wireframe toggle
   useEffect(() => {
@@ -204,6 +236,13 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       sceneRef.current.setPendingFreestandingType(pendingFreestandingType || null);
     }
   }, [pendingFreestandingType]);
+
+  // §7.1 Synchronize armed IFZ-style drag adaptation mode to the 3D world scene
+  useEffect(() => {
+    if (sceneRef.current) {
+      sceneRef.current.setPendingAdaptType(pendingAdaptType || null);
+    }
+  }, [pendingAdaptType]);
 
   // Synchronize currently selected squad to 3D world scene
   useEffect(() => {

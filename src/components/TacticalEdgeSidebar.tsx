@@ -63,6 +63,7 @@ import {
 import { NamedSurvivor, HiddenSurvivorGroup, StatTier } from '../types/population';
 import { CombatStance, TacticalSquadUnit, WeaponLoadoutId, ZombieLair } from '../types/combat';
 import { RivalHideout } from '../types/rivalFaction';
+import { BuildingOccupation } from '../types/occupation';
 import { WorldVehicle } from '../types/vehicle';
 import { CaravanDispatchConfig, SettlementRecord, TradeCaravan } from '../types/caravan';
 import { SeasonType, WeatherType } from '../types/weather';
@@ -72,9 +73,16 @@ import {
  calculatePolygonArea,
  FUNCTIONAL_BUILDING_DEFINITIONS,
  FUNCTIONAL_CATEGORIES,
+ getAdaptedCost,
+ isLegacyAliasBuildingType,
 } from '../data/functionalBuildings';
 import { RESEARCH_TREE_NODES, RESEARCH_BRANCHES } from '../data/researchTreeData';
-import { calculateResearchGenerationRate } from '../services/researchService';
+import {
+  getBuildingLockStatus,
+  getResearchWorkerCount,
+  getScientificMaterials,
+} from '../services/researchService';
+import { getPrimaryAdaptedEntry, getPrimaryHQ } from '../services/buildingOperational';
 import { soundService } from '../services/soundService';
 
 function isPointInsideBuilding(squad: TacticalSquadUnit, building: BuildingPolygon): boolean {
@@ -112,7 +120,7 @@ interface TacticalEdgeSidebarProps {
  onAssaultThreat?: (buildingId: string | number) => void;
  onBuildFreestanding?: (typeId: FunctionalBuildingTypeId, pos: Point2D) => void;
  onUpdateLabor?: (allocation: LaborAllocation) => void;
- onCreateSquad?: (name: string, leaderId: string, generalCount: number) => void;
+ onCreateSquad?: (name: string, leaderId: string, generalCount: number, weaponLoadout?: import('../types/population').SquadWeaponLoadout) => void;
  onDisbandSquad?: (squadId: string) => void;
  onChangeSquadStance?: (squadId: string, stance: CombatStance) => void;
  onSelectSquad?: (squadId: string | null) => void;
@@ -173,6 +181,7 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  const [newSquadLeaderId, setNewSquadLeaderId] = useState('');
  const [newSquadGeneralCount, setNewSquadGeneralCount] = useState(1);
  const [squadFormError, setSquadFormError] = useState<string | null>(null);
+ const [newSquadWeaponLoadout, setNewSquadWeaponLoadout] = useState<'knife' | 'pistol' | 'shotgun' | 'assault_rifle'>('knife');
 
  if (!activeTab) return null;
 
@@ -220,26 +229,46 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  // Inspector helpers: whether the selected building is adapted/freestanding,
  // currently being deconstructed, or is the HQ.
  const selectedAdaptedInfo = selectedBuilding
- ? settlement.adaptedBuildings?.get(selectedBuilding.id) ||
- settlement.freestandingBuildings?.find(
+  ? settlement.freestandingBuildings?.find(
  (f) => String(f.buildingId) === String(selectedBuilding.id)
- )
+ ) ||
+ getPrimaryAdaptedEntry(settlement.adaptedBuildings, selectedBuilding.id)
  : undefined;
  const selectedDeconJob = selectedBuilding
  ? settlement.deconstructionJobs?.get(selectedBuilding.id)
  : undefined;
- const isSelectedHQ = selectedBuilding && settlement.hq
- ? String(settlement.hq.buildingId) === String(selectedBuilding.id)
+ const primaryHQ = getPrimaryHQ(settlement);
+ const isSelectedHQ = selectedBuilding && primaryHQ
+ ? String(primaryHQ.buildingId) === String(selectedBuilding.id)
  : false;
 
  // §5.2 threat overlays: rival Hideouts & zombie Lairs occupying a selected building
  const selectedHideout: RivalHideout | undefined = selectedBuilding
  ? settlement.rivalHideouts?.get(selectedBuilding.id)
- : undefined;
- const selectedLair: ZombieLair | undefined = selectedBuilding
- ? settlement.zombieLairs?.get(selectedBuilding.id)
- : undefined;
+ : undefined;  const selectedLair: ZombieLair | undefined = selectedBuilding
+  ? settlement.zombieLairs?.get(selectedBuilding.id)
+  : undefined;
+  const selectedOccupation: BuildingOccupation | undefined = selectedBuilding
+  ? settlement.occupiedBuildings?.buildings.get(selectedBuilding.id)
+  : undefined;
  const selectedSearch = selectedBuilding ? settlement.buildingSearches?.get(selectedBuilding.id) : undefined;
+
+ // §IFZ regional Lair pressure — the strategic layer: every STANDING lair
+ // (even undiscovered ones) keeps feeding its neighbourhood and committing
+ // night hordes, so the region stays hot until the nests are actually cleared.
+ const lairMap: Map<string | number, ZombieLair> = settlement.zombieLairs;
+ const standingLairs: ZombieLair[] = lairMap
+   ? Array.from(lairMap.values()).filter((l) => !l.isCleared)
+   : [];
+ const lairCommittedInfected = standingLairs.reduce((n, l) => n + (l.population || 0), 0);
+ const lairPressureLevel =
+   standingLairs.length === 0
+     ? 'NONE'
+     : standingLairs.length >= 3 || lairCommittedInfected >= 80
+     ? 'CRITICAL'
+     : lairCommittedInfected >= 30
+     ? 'HIGH'
+     : 'MODERATE';
  const selectedSquadDistance = selectedBuilding && selectedSquad ? Math.hypot(selectedSquad.x-selectedBuilding.center.x,selectedSquad.z-selectedBuilding.center.z) : null;
  const selectedHiddenGroup = selectedBuilding
  ? (
@@ -400,12 +429,14 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  onCreateSquad?.(
  newSquadName.trim() || `TACTICAL SQUAD ${squads.length + 1}`,
  newSquadLeaderId,
- newSquadGeneralCount
+ newSquadGeneralCount,
+ newSquadWeaponLoadout
  );
  setIsFormingSquad(false);
  setNewSquadName('');
  setNewSquadLeaderId('');
  setNewSquadGeneralCount(1);
+ setNewSquadWeaponLoadout('knife');
  }}
  className="flex flex-col gap-2"
  >
@@ -742,7 +773,9 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  </div>
 
  <div className="grid grid-cols-1 gap-2">
- {Object.values(FUNCTIONAL_BUILDING_DEFINITIONS).map((bldg) => (
+ {/* Legacy alias defs are save-compat duplicates — each facility appears
+ once under its canonical name in the catalog. */}
+ {Object.values(FUNCTIONAL_BUILDING_DEFINITIONS).filter((bldg) => !isLegacyAliasBuildingType(bldg.id)).map((bldg) => (
  <div
  key={bldg.id}
  className="p-2.5 bg-[#11141A] border border-[#222832] flex items-center justify-between gap-2 clip-card-chip"
@@ -755,7 +788,7 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  {bldg.description}
  </div>
  <div className="text-[9px] font-mono text-[#A0AEC0] mt-1">
- COST: {bldg.freestandingCost.wood} Wood, {bldg.freestandingCost.metal} Metal, {bldg.freestandingCost.bricks} Bricks
+ COST: {bldg.freestandingCost.wood} Wood, {bldg.freestandingCost.metal} Metal, {bldg.freestandingCost.bricks} Bricks{bldg.freestandingCost.tools ? `, ${bldg.freestandingCost.tools} Tools` : ''}
  </div>
  </div>
 
@@ -789,10 +822,13 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  {/* Active Research Progress Plate */}
  <div className="p-3 bg-[#11141A] border border-[#222832] flex flex-col gap-1.5 clip-card-chip">
  <div className="flex items-center justify-between text-xs font-heading font-bold">
- <span className="text-[#CBD5E1]">AVAILABLE RESEARCH POINTS</span>
+ <span className="text-[#CBD5E1]">SCIENTIFIC MATERIALS</span>
  <span className="text-[#CBD5E1]">
- {Math.floor(research?.researchPoints ?? 0)} RP (+{calculateResearchGenerationRate(settlement).totalRatePerSec.toFixed(1)}/s)
+ {Math.floor(getScientificMaterials(settlement))} SciMat
  </span>
+ </div>
+ <div className="text-[10px] font-mono text-[#64748B]">
+ Produced by staffed Research Centers ({getResearchWorkerCount(settlement)} scientists) — completing a project consumes its cost.
  </div>        {research?.activeResearchId && (
  <div className="text-[11px] font-mono text-[#94A3B8] mt-1">
  CURRENT PROJECT: <span className="text-[#CBD5E1] font-bold">{RESEARCH_TREE_NODES[research.activeResearchId]?.name || research.activeResearchId}</span>
@@ -821,7 +857,7 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  {Object.values(RESEARCH_TREE_NODES).map((node) => {
  const isUnlocked = research?.unlockedNodes?.includes(node.id);
  const isCurrent = research?.activeResearchId === node.id;
- const canAfford = (research?.researchPoints ?? 0) >= node.costRP;
+ const canAfford = getScientificMaterials(settlement) >= node.costSciMat;
 
  return (
  <div
@@ -840,7 +876,7 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  <span className="font-heading font-bold text-xs uppercase">{node.name}</span>
  </div>
  <span className="text-[10px] font-mono">
- {isUnlocked ? 'RESEARCHED' : `${node.costRP} RP`}
+ {isUnlocked ? 'RESEARCHED' : `${node.costSciMat} SciMat`}
  </span>
  </div>
 
@@ -856,7 +892,7 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  : 'bg-[#12151a] border-[#1f242d] text-[#556070] cursor-not-allowed'
  }`}
  >
- {canAfford ? 'COMMENCE RESEARCH' : `NEEDS ${node.costRP} RP`}
+ {canAfford ? 'COMMENCE RESEARCH' : `NEEDS ${node.costSciMat} SciMat`}
  </button>
  )}
  </div>
@@ -909,12 +945,31 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  >
  REFUEL (+20L)
  </button>
+ {(() => {
+ const vehOrder = (settlement.vehicleWorkshopOrders || []).find(
+ (o) => String(o.vehicleId) === String(v.id)
+ );
+ if (vehOrder) {
+ const pct = Math.min(100, Math.round((vehOrder.mechanicHoursDone / vehOrder.mechanicHoursRequired) * 100));
+ return (
+ <button
+ disabled
+ className="flex-1 py-1 bg-[#0d1b22] border border-[#155e75] text-[10px] font-mono text-cyan-300"
+ >
+ IN BAY {pct}%
+ </button>
+ );
+ }
+ return (
  <button
  onClick={() => onRepairVehicle?.(v.id)}
- className="flex-1 py-1 bg-[#17202B] hover:bg-[#202C3C] border border-[#2C3B4E] text-[10px] font-mono text-[#A0AEC0]"
+ disabled={v.currentHp >= v.maxHp}
+ className="flex-1 py-1 bg-[#17202B] hover:bg-[#202C3C] border border-[#2C3B4E] text-[10px] font-mono text-[#A0AEC0] disabled:opacity-40"
  >
- REPAIR
+ WORKSHOP REPAIR
  </button>
+ );
+ })()}
  </div>
  </div>
  ))}
@@ -1012,8 +1067,150 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  </div>
  </div>
 
- {/* Weather & Climate Card */}
- <div className="p-3 bg-[#11141A] border border-[#222832] flex flex-col gap-2 clip-card-chip">
+ {/* Regional Lair Pressure Card (§IFZ) — the strategic consequence of nests */}
+ <div className="p-3 bg-[#11141A] border border-[#7C2D12] flex flex-col gap-2 clip-card-chip">
+ <div className="flex items-center justify-between">
+ <span className="font-heading font-bold text-xs text-[#FDBA74]">
+ REGIONAL LAIR PRESSURE
+ </span>
+ <span
+ className={`font-heading font-bold text-xs uppercase ${
+   lairPressureLevel === 'CRITICAL'
+     ? 'text-[#FF4D4D] animate-pulse'
+     : lairPressureLevel === 'HIGH'
+     ? 'text-[#FB923C]'
+     : lairPressureLevel === 'MODERATE'
+     ? 'text-[#FBBF24]'
+     : 'text-[#10B981]'
+ }`}
+ >
+ {lairPressureLevel}
+ </span>
+ </div>
+ {standingLairs.length === 0 ? (
+ <div className="text-[10px] font-mono text-[#94A3B8]">
+ NO ACTIVE NESTS — THE REGION IS QUIET. CLEARED LAIRS STAY CLEARED.
+ </div>
+ ) : (
+ <>
+ <div className="text-[10px] font-mono text-[#94A3B8]">
+ {standingLairs.length} ACTIVE LAIR{standingLairs.length === 1 ? '' : 'S'} · {lairCommittedInfected} INFECTED COMMITTED ACROSS THE REGION
+ </div>
+ <div className="text-[9px] font-mono text-[#718096]">
+ STANDING NESTS CLUSTER INFECTED AROUND THEM, OCCUPY NEARBY UNADAPTED
+ BUILDINGS, AND COMMIT NIGHT HORDES TOWARD THE COLONY. CLEAR A LAIR AND
+ ITS PRESSURE COLLAPSES — THE NEIGHBOURHOOD GENUINELY QUIETS.
+ </div>
+ </>
+ )}
+ </div>
+
+ {/* Water Economy Card (§Terminus) — cistern reserve as the settlement buffer */}
+ <div className="p-3 bg-[#11141A] border border-[#0E7490] flex flex-col gap-2 clip-card-chip">
+ <div className="flex items-center justify-between">
+ <span className="font-heading font-bold text-xs text-[#67E8F9]">
+ WATER RESERVE
+ </span>
+ <span
+ className={`font-heading font-bold text-xs uppercase ${
+   (settlement.waterState?.shortageDays || 0) > 0
+     ? 'text-[#FF4D4D] animate-pulse'
+     : 'text-[#22D3EE]'
+ }`}
+ >
+ {(settlement.waterState?.shortageDays || 0) > 0 ? 'SHORTAGE' : 'OK'}
+ </span>
+ </div>
+ <div className="text-[10px] font-mono text-[#94A3B8]">
+ {Math.round(settlement.stockpile?.water?.rainwater || 0) + Math.round(settlement.stockpile?.water?.purified_water || 0) + Math.round(settlement.stockpile?.water?.bottled_water || 0)} L STORE · {Math.round(settlement.waterState?.totalStored || 0)} L IN CISTERNS
+ </div>
+ <div className="text-[10px] font-mono text-[#94A3B8]">
+ {settlement.waterState?.cisterns.size || 0} CISTERN{(settlement.waterState?.cisterns.size || 0) === 1 ? '' : 'S'} · {Math.round(settlement.waterState?.totalCapacity || 0)} L CAPACITY
+ </div>
+ <div className="w-full h-1.5 bg-[#1A1E24]">
+ <div
+ className="h-full bg-[#22D3EE]"
+ style={{ width: `${settlement.waterState?.totalCapacity ? Math.min(100, (settlement.waterState.totalStored / settlement.waterState.totalCapacity) * 100) : 0}%` }}
+ />
+ </div>
+ <div className="text-[9px] font-mono text-[#718096]">
+ CISTERNS COLLECT RAIN BY ROOF AREA — A BIG WAREHOUSE BANKS FAR MORE THAN A
+ TINY HOUSE. CONSUMPTION DRAWS THE STORE FIRST, THEN THE CISTERN BUFFERS.
+ </div>
+ </div>  {/* Power Grid Card (§Terminus) — fuel-burning generators, priority shutdown */}
+  <div className="p-3 bg-[#11141A] border border-[#CA8A04] flex flex-col gap-2 clip-card-chip">
+    <div className="flex items-center justify-between">
+      <span className="font-heading font-bold text-xs text-[#FDE047]">
+        POWER GRID
+      </span>
+      <span
+        className={`font-heading font-bold text-xs uppercase ${
+          (() => {
+            const ps: import('../types/power').PowerState | undefined = settlement.powerState;
+            const noGens = !ps || (ps.generators?.size || 0) === 0;
+            const batStored = ps ? Array.from(ps.batteries?.values?.() || []).reduce((n, b) => n + b.storedKwh, 0) : 0;
+            if (noGens && batStored === 0) return 'text-[#64748B]';
+            if (noGens && batStored > 0) return 'text-[#22D3EE]';
+            if (ps?.lowFuel) return 'text-[#FF4D4D] animate-pulse';
+            if (ps && ps.demandKw > ps.supplyKw) return 'text-[#FB923C]';
+            return 'text-[#FDE047]';
+          })()
+        }`}
+      >
+        {(() => {
+          const ps: import('../types/power').PowerState | undefined = settlement.powerState;
+          const noGens = !ps || (ps.generators?.size || 0) === 0;
+          const batStored = ps ? Array.from(ps.batteries?.values?.() || []).reduce((n, b) => n + b.storedKwh, 0) : 0;
+          if (noGens && batStored === 0) return 'OFFLINE';
+          if (noGens && batStored > 0) return 'ON RESERVE';
+          if (ps?.lowFuel) return 'LOW FUEL';
+          if (ps && ps.demandKw > ps.supplyKw) return 'OVERLOADED';
+          return 'ONLINE';
+        })()}
+      </span>
+    </div>
+    <div className="text-[10px] font-mono text-[#94A3B8]">
+      {settlement.powerState?.generators?.size || 0} GENERATOR{(settlement.powerState?.generators?.size || 0) === 1 ? '' : 'S'} · {Math.round(settlement.powerState?.supplyKw || 0)} KW SUPPLY / {Math.round(settlement.powerState?.demandKw || 0)} KW DEMAND · {settlement.powerState?.poweredBuildingIds?.length || 0} POWERED
+    </div>
+    <div className="w-full h-1.5 bg-[#1A1E24]">
+      <div
+        className="h-full bg-[#FDE047]"
+        style={{ width: `${settlement.powerState?.supplyKw ? Math.min(100, ((settlement.powerState.demandKw || 0) / settlement.powerState.supplyKw) * 100) : 0}%` }}
+      />
+    </div>
+    {(() => {
+      const ps: import('../types/power').PowerState | undefined = settlement.powerState;
+      const bats = ps?.batteries;
+      if (!bats || bats.size === 0) return null;
+      const totalKwh = Array.from(bats.values()).reduce((n, b) => n + b.capacityKwh, 0);
+      const storedKwh = Array.from(bats.values()).reduce((n, b) => n + b.storedKwh, 0);
+      const draining = Array.from(bats.values()).some((b) => b.discharging);
+      return (
+        <>
+          <div className={`text-[10px] font-mono ${draining ? 'text-[#22D3EE]' : 'text-[#67E8F9]'}`}>
+            EMERGENCY RESERVE: {Math.round(storedKwh)} / {Math.round(totalKwh)} KWH{draining ? ' · FEEDING GRID' : storedKwh > 0 ? ' · ARMED (GRID EXTENSION)' : ' · EMPTY'}
+          </div>
+          <div className="w-full h-1.5 bg-[#1A1E24]">
+            <div
+              className={`h-full ${draining ? 'bg-[#22D3EE]' : 'bg-[#67E8F9]'}`}
+              style={{ width: `${totalKwh ? Math.min(100, (storedKwh / totalKwh) * 100) : 0}%` }}
+            />
+          </div>
+        </>
+      );
+    })()}
+    <div className="text-[9px] font-mono text-[#718096]">
+      GENERATORS RUN ONLY WHILE FACILITIES INSIDE THEIR RADIUS NEED POWER —
+      NO LOAD, NO BURN, SO FUEL IS CONSERVED. WHEN DEMAND EXCEEDS SUPPLY THE
+      LOWEST-PRIORITY FACILITIES SHUT DOWN FIRST — FLOODLIGHTS GO DARK BEFORE
+      THE HOSPITAL DOES. A CHARGED BATTERY BANK IS THE EMERGENCY RESERVE: IT
+      EXTENDS THE GRID FROM ITS OWN POSITION AND CARRIES CRITICAL FACILITIES
+      WHEN GENERATORS CAN\'T.
+    </div>
+  </div>
+
+  {/* Weather & Climate Card */}
+  <div className="p-3 bg-[#11141A] border border-[#222832] flex flex-col gap-2 clip-card-chip">
  <div className="flex items-center justify-between">
  <span className="font-heading font-bold text-xs text-[#CBD5E1]">
  ENVIRONMENTAL CLIMATE & SEASONS
@@ -1079,7 +1276,7 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
      <div className="text-[9px] font-mono text-amber-400">EST DURATION: ~{Math.round(selectedSearch.totalDurationSec || 20)}s (AREA BASED)</div>
    </div>
  ) : null}
- {selectedSearch?.searched ? <div className="text-[9px] font-mono text-[#A0AEC0]">SEARCH COMPLETE. SUPPLIES SECURED.</div> : <button disabled={!selectedSquad} onClick={()=>selectedBuilding&&onSearchBuilding?.(selectedBuilding)} className="w-full py-1.5 bg-[#17202B] disabled:opacity-35 border border-[#CBD5E1]/60 text-[10px] font-heading font-bold uppercase">{selectedSquadDistance!==null&&selectedSquadDistance<=16?(selectedSearch?.searchProgress?'SEARCHING...':'SEARCH STRUCTURE'):'DISPATCH SQUAD TO SEARCH'}</button>}
+ {isSelectedHQ ? <div className="text-[9px] font-mono text-[#A0AEC0]">COMMAND HQ — NEVER SCAVENGED.</div> : selectedSearch?.searched ? <div className="text-[9px] font-mono text-[#A0AEC0]">SEARCH COMPLETE. SUPPLIES SECURED.</div> : <button disabled={!selectedSquad} onClick={()=>selectedBuilding&&onSearchBuilding?.(selectedBuilding)} className="w-full py-1.5 bg-[#17202B] disabled:opacity-35 border border-[#CBD5E1]/60 text-[10px] font-heading font-bold uppercase">{selectedSquadDistance!==null&&selectedSquadDistance<=16?(selectedSearch?.searchProgress?'SEARCHING...':'SEARCH STRUCTURE'):'DISPATCH SQUAD TO SEARCH'}</button>}
  {selectedSearch?.lootedItems && selectedSearch.lootedItems.length > 0 ? (
    <div className="text-[9px] font-mono text-[#CBD5E1]">
      RECOVERED: {selectedSearch.lootedItems.map(l => `${l.label.replace(/([a-z])([A-Z])/g, '$1 $2').replaceAll('_',' ').replace(/\b\w/g, c => c.toUpperCase())} ×${l.quantity}`).join(', ')}
@@ -1127,17 +1324,36 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  <span className="text-[10px] font-mono text-[#A3E635]">ESC LVL {selectedLair.escalation}</span>
  </div>
  <div className="text-[11px] font-mono text-[#E8E8E8]">
- {selectedLair.occupantCount} OCCUPANTS · {selectedLair.initialOccupantCount - selectedLair.occupantCount} CLEARED
+ {selectedLair.population} INFECTED · BASELINE {selectedLair.baselinePopulation}
+ {selectedLair.population > selectedLair.baselinePopulation ? ' · SWOLLEN NEST' : ''}
  </div>
  <p className="text-[10px] font-mono text-[#94A3B8]">
- A persistent nest spawning infected day and night. Stand a squad on the site to clear it — the longer it stands, the worse it gets.
+ {selectedLair.population > selectedLair.baselinePopulation
+ ? `A nest of real infected that shelter by day and emerge by night. It has swollen past its founding garrison of ${selectedLair.baselinePopulation} — at ESC LVL ${selectedLair.escalation} the nest is a genuine hive. Kill every last one of them to clear it.`
+ : `A nest of real infected that shelter by day and emerge by night. Kill every one of them to clear it — a partially cleared nest regrows toward its founding garrison of ${selectedLair.baselinePopulation} while it stands, and neglect lets it swell beyond.`}
  </p>
- <button
- onClick={() => onAssaultThreat?.(selectedBuilding.id)}
- className="w-full py-1.5 bg-[#1A2E0A] hover:bg-[#24400E] border border-[#65A30D] text-[10px] font-heading font-bold text-[#BEF264] hover:text-white uppercase"
- >
- ASSAULT LAIR
- </button>
+ </div>
+ )}
+
+ {/* Building Occupation (§IFZ) — unadapted structure taken over by infected */}
+ {selectedOccupation && !selectedOccupation.isCleared && (
+ <div className="p-2.5 bg-[#1A1213] border border-[#7C2D12] flex flex-col gap-2 clip-card-chip">
+ <div className="flex items-center justify-between">
+ <span className="font-heading font-bold text-[10px] text-[#FDBA74] uppercase">
+ BUILDING OCCUPIED (§IFZ)
+ </span>
+ <span className="text-[10px] font-mono text-[#FB923C]">
+ {selectedOccupation.threatTier.toUpperCase()}
+ </span>
+ </div>
+ <div className="text-[11px] font-mono text-[#E8E8E8]">
+ {selectedOccupation.infectedRemaining}/{selectedOccupation.maxInfected} INFECTED INSIDE
+ </div>
+ <p className="text-[10px] font-mono text-[#94A3B8]">
+ UNADAPTED STRUCTURE TAKEN OVER BY INFECTED. BREACHING IT WAKES THE REAL
+ INFECTED INSIDE — KILL EVERY ONE TO RECLAIM THE BUILDING. ADAPTED
+ STRUCTURES ARE NEVER OCCUPIED.
+ </p>
  </div>
  )}
 
@@ -1194,50 +1410,57 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  </div>
 
  <div className="flex flex-col gap-2">
- {(
- [
- 'shelter_bunkhouse',
- 'cookhouse',
- 'greenhouse_hydro',
- 'storage_depot',
- 'water_cistern',
- 'infirmary_clinic',
- 'guard_watchtower',
- 'barricade_gatehouse',
- 'armory_cache',
- 'workshop_forge',
- 'timber_mill',
- 'scrap_smelter',
- 'comms_relay',
- 'research_lab',
- 'generator_station',
- 'community_hall',
- ] as FunctionalBuildingTypeId[]
- ).map((typeId) => {
- const def = FUNCTIONAL_BUILDING_DEFINITIONS[typeId];
- if (!def) return null;
- const cost = def.adaptationCost;
+ {/* Canonical adaptation blueprints only — legacy alias defs (shelter_bunkhouse,
+ storage_depot, infirmary_clinic, …) are save-compat duplicates of these and
+ are never offered again under an old name. Each facility appears once. */}
+ {Object.values(FUNCTIONAL_BUILDING_DEFINITIONS)
+ .filter((def) => def.adaptationAllowed && !isLegacyAliasBuildingType(def.id))
+ .sort(
+ (a, b) =>
+ FUNCTIONAL_CATEGORIES.findIndex((c) => c.id === a.category) -
+ FUNCTIONAL_CATEGORIES.findIndex((c) => c.id === b.category) ||
+ a.name.localeCompare(b.name)
+ )
+ .map((def) => {
+ if (!selectedBuilding || !selectedBuilding.polygon) return null;
+ const lock = getBuildingLockStatus(settlement, def.researchRequirement);
+ const locked = !lock.unlocked;
+ // §Terminus economics: exact full-conversion price for THIS structure,
+ // derived from its real shell volume (footprint × height), not a flat fee.
+ const area = Math.round(calculatePolygonArea(selectedBuilding.polygon));
+ const cost = getAdaptedCost(def.id, selectedBuilding.type, area, selectedBuilding.height);
 
  return (
  <div
- key={typeId}
- className="p-2.5 bg-[#11141A] border border-[#222832] flex items-center justify-between gap-2 clip-card-chip"
+ key={def.id}
+ className={`p-2.5 border flex items-center justify-between gap-2 clip-card-chip ${
+ locked ? 'bg-[#0C0F14] border-[#1A212C] opacity-70' : 'bg-[#11141A] border-[#222832]'
+ }`}
  >
  <div className="flex-1 min-w-0">
- <div className="font-heading font-bold text-xs text-[#E8E8E8] uppercase">
+ <div className={`font-heading font-bold text-xs uppercase ${locked ? 'text-[#94A3B8]' : 'text-[#E8E8E8]'}`}>
  {def.name}
  </div>
  <div className="text-[9px] font-mono text-[#718096] line-clamp-1">
  {def.description}
  </div>
- <div className="text-[9px] font-mono text-[#A0AEC0] mt-0.5">
- COST: {cost.wood} Wood, {cost.metal} Metal, {cost.bricks} Bricks
+ {locked ? (
+ <div className="text-[9px] font-mono text-[#B45309] mt-0.5">
+ <Lock className="w-3 h-3 inline mr-1" />REQUIRES RESEARCH: {lock.requiredName.toUpperCase()}
  </div>
+ ) : (
+ <div className="text-[9px] font-mono text-[#A0AEC0] mt-0.5">
+ FULL CONVERSION OF THIS STRUCTURE: {cost.wood}W / {cost.metal}M / {cost.bricks}B
+ {cost.tools ? ` / ${cost.tools} Tools` : ''}
+ </div>
+ )}
  </div>
 
  <button
- onClick={() => onAdaptBuilding?.(selectedBuilding, typeId)}
- className="px-2.5 py-1.5 bg-[#17202B] hover:bg-[#202C3C] border border-[#CBD5E1]/70 text-[10px] font-heading font-bold text-[#E8E8E8] hover:border-[#CBD5E1] uppercase shrink-0"
+ disabled={locked}
+ onClick={() => onAdaptBuilding?.(selectedBuilding, def.id)}
+ title={locked ? `Requires research: ${lock.requiredName}` : undefined}
+ className="px-2.5 py-1.5 bg-[#17202B] hover:bg-[#202C3C] border border-[#CBD5E1]/70 text-[10px] font-heading font-bold text-[#E8E8E8] hover:border-[#CBD5E1] uppercase shrink-0 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-[#17202B]"
  >
  ADAPT
  </button>

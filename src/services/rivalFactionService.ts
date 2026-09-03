@@ -1,5 +1,6 @@
 import {
   HostileHumanUnit,
+  LairThreatTier,
   TacticalSquadUnit,
   ZombieLair,
   ZombieUnit,
@@ -94,44 +95,184 @@ export function generateRivalHideouts(
   return map;
 }
 
+/** Shoelace polygon area (m²) — used to scale a lair's population with the
+ *  real footprint instead of a flat 14–29 garrison. */
+function polygonArea(poly?: Point2D[]): number {
+  if (!poly || poly.length < 3) return 0;
+  let sum = 0;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    sum += (poly[j].x - poly[i].x) * (poly[j].z + poly[i].z);
+  }
+  return Math.abs(sum) / 2;
+}
+
+export interface LairGenerationResult {
+  lairs: Map<string | number, ZombieLair>;
+  /** The lair's initial population as REAL infected units, seeded inside the
+   *  building and sheltered (dormant by day, waking at night or when a squad
+   *  enters). The lair's `population` field is synced from these units — there
+   *  is no abstract head-count separate from the zombies in the world. */
+  seededZombies: ZombieUnit[];
+}
+
+// ================================================================
+// Data-driven lair density (§5.2 balance) — how many nests a map holds
+// is no longer a coin flip between 1 and 2. The expected count scales with:
+//   • map size  — nest density per km² of fetch area (one nest per ~3 km²
+//     at normal intensity on day 1),
+//   • scenario infected intensity (zombieAggression / hordesLevel),
+//   • colony population (a thriving colony attracts more nests),
+//   • outbreak maturity (game day).
+// Nests are then spaced out (LAIR_MIN_SPACING_M) so a big map feels varied
+// rather than clumped, and the count is capped — each lair is a regional
+// threat with a garrison of REAL infected, not a pin on the map.
+// ================================================================
+const LAIR_DENSITY_PER_KM2 = 0.32;
+const LAIR_COUNT_MAX = 12;
+const LAIR_MIN_SPACING_M = 350;
+const LAIR_DEFAULT_MAP_RADIUS_M = 1200;
+const LAIR_DEFAULT_POPULATION = 20;
+const LAIR_AGGRESSION_MULT: Record<string, number> = {
+  low: 0.7,
+  normal: 1.0,
+  high: 1.35,
+};
+
+export interface LairGenerationContext {
+  /** Map fetch radius in metres (MapData.radius) — nest count scales with
+   *  land area. Omit for a compact map default (~1–2 nests). */
+  mapRadiusM?: number;
+  /** Colony population (named survivors + general pool) — bigger colonies
+   *  attract more nests. */
+  colonyPopulation?: number;
+  /** 1-based in-game day — the outbreak matures and nests multiply. */
+  day?: number;
+  /** Scenario infected intensity (zombieAggression). */
+  aggression?: 'low' | 'normal' | 'high';
+  /** Scenario hordes level (1–3) — extra regional pressure on top. */
+  hordesLevel?: number;
+}
+
+/** Expected nest count for a map under the colony's pressure context. */
+export function computeLairTargetCount(ctx: LairGenerationContext = {}): number {
+  const radiusM = ctx.mapRadiusM && ctx.mapRadiusM > 0 ? ctx.mapRadiusM : LAIR_DEFAULT_MAP_RADIUS_M;
+  const areaKm2 = Math.PI * Math.pow(radiusM / 1000, 2);
+  const aggression = LAIR_AGGRESSION_MULT[ctx.aggression ?? 'normal'] ?? LAIR_AGGRESSION_MULT.normal;
+  const hordesBoost =
+    ctx.hordesLevel && ctx.hordesLevel >= 1 ? 1 + (ctx.hordesLevel - 1) * 0.1 : 1;
+  const pop = Math.max(0, ctx.colonyPopulation ?? LAIR_DEFAULT_POPULATION);
+  const popScale = Math.min(1.6, Math.max(0.75, 0.75 + pop / 80));
+  const day = Math.max(1, ctx.day ?? 1);
+  const dayScale = Math.min(1.7, Math.max(0.9, 0.9 + (day - 1) * 0.045));
+  const expected =
+    areaKm2 * LAIR_DENSITY_PER_KM2 * aggression * hordesBoost * popScale * dayScale;
+  // ±10% run-to-run jitter so the same map is not always identical.
+  const jittered = expected * (0.9 + Math.random() * 0.2);
+  return Math.max(1, Math.min(LAIR_COUNT_MAX, Math.round(jittered)));
+}
+
 export function generateZombieLairs(
   buildings: BuildingPolygon[],
-  hqBuildingId: string | number | null = null
-): Map<string | number, ZombieLair> {
+  hqBuildingId: string | number | null = null,
+  context: LairGenerationContext = {}
+): LairGenerationResult {
   const map = new Map<string | number, ZombieLair>();
-  if (!buildings || buildings.length === 0) return map;
+  const seededZombies: ZombieUnit[] = [];
+  if (!buildings || buildings.length === 0) return { lairs: map, seededZombies };
 
   const candidates = buildings.filter(
     (b) => String(b.id) !== String(hqBuildingId) && (b.levels || 1) >= 1
   );
-  if (candidates.length === 0) return map;
+  if (candidates.length === 0) return { lairs: map, seededZombies };
 
   const shuffled = [...candidates].sort(() => 0.5 - Math.random());
-  const count = Math.min(shuffled.length, Math.random() < 0.7 ? 1 : 2);
+  // Data-driven target count, spaced across the map: greedily accept a
+  // shuffled candidate while it keeps LAIR_MIN_SPACING_M from the nests
+  // already chosen, then top up from the remainder if spacing ran out.
+  const target = Math.min(shuffled.length, computeLairTargetCount(context));
+  const chosen: BuildingPolygon[] = [];
+  for (const b of shuffled) {
+    if (chosen.length >= target) break;
+    const spaced = chosen.every((c) => {
+      const dx = (b.center?.x ?? 0) - (c.center?.x ?? 0);
+      const dz = (b.center?.z ?? 0) - (c.center?.z ?? 0);
+      return Math.hypot(dx, dz) >= LAIR_MIN_SPACING_M;
+    });
+    if (spaced) chosen.push(b);
+  }
+  if (chosen.length < target) {
+    for (const b of shuffled) {
+      if (chosen.length >= target) break;
+      if (!chosen.includes(b)) chosen.push(b);
+    }
+  }
 
-  for (let i = 0; i < count; i++) {
-    const bldg = shuffled[i];
+  for (const bldg of chosen) {
     const threatTier: ZombieLair['threatTier'] =
       bldg.levels >= 3 ? 'high' : bldg.levels >= 2 ? 'medium' : 'low';
-    const occupantCount = 14 + Math.floor(Math.random() * 16); // standing garrison
+    // IFZ: a Lair holds dozens of infected, scaled by how much of a sanctuary
+    // the structure is (footprint area + floors). Small sheds stay modest;
+    // big industrial blocks become genuine hives of 60–120+.
+    const footprint = Math.max(40, Math.round(polygonArea(bldg.polygon)));
+    const floors = Math.max(1, bldg.levels || 1);
+    const population =
+      18 +
+      Math.floor(Math.random() * 18) +
+      Math.min(70, Math.round(footprint / 28)) +
+      (floors - 1) * 14;
+    const homeRadius = Math.min(
+      70,
+      26 + Math.round(Math.sqrt(footprint) * 1.1) + floors * 5
+    );
+    // Randomized per-lair cadence + a random initial offset so this lair does
+    // not stir at the same wall-clock instant as every other lair.
+    const intervalSec = LAIR_SPAWN_BASE_MIN_SEC + Math.floor(Math.random() * LAIR_SPAWN_JITTER_SEC);
+
+    const lairId = `lair_${bldg.id}`;
+    const center = bldg.center || { x: 0, z: 0 };
+
+    // The lair's initial population is REAL infected sheltering inside the
+    // building: seed one ZombieUnit per head of population, scattered across
+    // the footprint so the player actually fights them in the interior.
+    const variantFor = (i: number): 'shambler' | 'runner' | 'brute' => {
+      const roll = (i * 7 + bldg.levels) % 10;
+      if (roll >= 9) return 'brute';
+      if (roll >= 7) return 'runner';
+      return 'shambler';
+    };
+    for (let s = 0; s < population; s++) {
+      const pt = randomPointInPolygon(bldg.polygon, center);
+      const zmb = createZombieUnit(variantFor(s), pt.x, pt.z, 0, false);
+      zmb.lairId = lairId;
+      zmb.homeX = center.x;
+      zmb.homeZ = center.z;
+      zmb.homeRadius = homeRadius;
+      // Locality (§5.2): most of the nest's population stays put; a small
+      // minority become roamers that spread into the neighbourhood.
+      zmb.isRoamer = Math.random() < 0.15;
+      seededZombies.push(zmb);
+    }
 
     map.set(bldg.id, {
-      id: `lair_${bldg.id}`,
+      id: lairId,
       buildingId: bldg.id,
       buildingName: bldg.name || `Structure #${bldg.id}`,
       isDiscovered: false,
       isCleared: false,
-      occupantCount,
-      initialOccupantCount: occupantCount,
-      spawnIntervalSec: 40,
-      lastSpawnAt: Date.now(),
+      population,
+      baselinePopulation: population,
+      homeRadius,
+      spawnAccumSec: Math.random() * intervalSec,
+      lastActivity: Date.now(),
       escalation: 0,
       escalationAccumSec: 0,
       threatTier,
+      replenishAccumSec: 0,
+      hordeAccumSec: 0,
     });
   }
 
-  return map;
+  return { lairs: map, seededZombies };
 }
 
 // ==========================================
@@ -275,19 +416,143 @@ export interface LairTickResult {
   notifications: { title: string; desc: string; type: 'warn' | 'info' | 'success' }[];
 }
 
-const LAIR_ASSAULT_RADIUS = 26;
-const LAIR_ESCALATION_INTERVAL_SEC = 120;
+// Escalation ticks roughly every 10 real minutes at 1x speed — previously 120s
+// made every lair ramp up and notify far too often.
+const LAIR_ESCALATION_INTERVAL_SEC = 600;
+// Each lair stirs on its own randomized cadence with an independent initial
+// offset, so lairs never all emerge in lockstep. The base is the NIGHT
+// interval; daylight emergence is throttled (see LAIR_EMERGE_DAY_MULT) so
+// normal sunlight dormancy applies instead of a 24/7 factory.
+const LAIR_SPAWN_BASE_MIN_SEC = 70;
+const LAIR_SPAWN_JITTER_SEC = 90;
+const LAIR_EMERGE_DAY_MULT = 3;
+// A partially cleared lair regrows one interior infected per interval while no
+// squad is nearby (you must commit enough firepower to finish the job).
+const LAIR_REPLENISH_INTERVAL_SEC: Record<LairThreatTier, number> = {
+  low: 500,
+  medium: 380,
+  high: 280,
+};
+// The founding garrison is a SOFT baseline, not a ceiling: a neglected nest's
+// emergence swells its garrison by +40% of the baseline per escalation level
+// (escalation 0 keeps it at founding strength, 3 → ~2.2×, 6 → ~3.4×), so an
+// old unmolested lair becomes a genuine 100+ hive. The absolute cap is purely
+// a sim-safety bound for how many real infected one lair can hold alive.
+const LAIR_GARRISON_GROWTH_PER_ESCALATION = 0.4;
+const LAIR_GARRISON_HARD_CAP = 220;
+
+/** Garrison ceiling for a lair at a given escalation — baseline × growth
+ *  multiplier, hard-capped. Never below the founding garrison. */
+function lairGarrisonCeiling(baselinePopulation: number, escalation: number): number {
+  const grown = Math.round(
+    baselinePopulation * (1 + LAIR_GARRISON_GROWTH_PER_ESCALATION * Math.max(0, escalation))
+  );
+  return Math.max(baselinePopulation, Math.min(LAIR_GARRISON_HARD_CAP, grown));
+}
+// NIGHT MOBILIZATION: a standing lair periodically commits a strike group of
+// its OWN resident infected toward the settlement. The interval starts long and
+// shrinks as the lair escalates, so an old, neglected nest becomes a nightly
+// incursion engine. Escalation 0 → 300s, escalation 6 → 90s.
+const LAIR_HORDE_BASE_SEC = 300;
+const LAIR_HORDE_MIN_SEC = 90;
+const LAIR_HORDE_ESCALATION_STEP_SEC = 35;
+// A single strike group is capped so one lair can never out-produce the whole
+// global nightfall wave; the floor keeps a healthy nest's raid meaningful.
+const LAIR_HORDE_MAX_SIZE = 18;
+const LAIR_HORDE_MIN_SIZE = 2;
 
 /**
- * Advances every Lair: persistent day/night spawning, escalation while uncleared,
- * and garrison depletion when a squad stands inside the assault radius.
+ * NIGHT MOBILIZATION (ecological model — a lair raid never conjures
+ * population): commits a strike group of the lair's OWN resident infected
+ * toward the settlement. `residents` are the living lair-affiliated ZombieUnits
+ * currently gathered at / near the nest (the lair tick selects them); this
+ * only RETARGETS those existing zombies — no ZombieUnit is created, so the
+ * lair can never inflate its population by raiding. Their lairId stays intact:
+ * killing a mobilized infected anywhere (en route or at the perimeter) thins
+ * the lair's real population, and one that survives the incursion keeps its
+ * home anchor and eventually returns to the nest, rejoining the population.
+ *
+ * Size scales with the lair's current population and escalation and never
+ * exceeds the number of residents actually at home. The returned zombies are
+ * mutated in place — they are the world's own records, the same objects the
+ * caller keeps tick to tick.
+ */
+export function mobilizeLairHorde(
+  lair: ZombieLair,
+  residents: ZombieUnit[],
+  hqPos: Point2D
+): ZombieUnit[] {
+  const escalation = lair.escalation ?? 0;
+  const population = lair.population ?? residents.length;
+  const desired = Math.min(
+    LAIR_HORDE_MAX_SIZE,
+    Math.max(LAIR_HORDE_MIN_SIZE, Math.floor(population * 0.3) + escalation)
+  );
+  const pool = [...residents].sort(() => Math.random() - 0.5);
+  const strikeGroup = pool.slice(0, Math.min(desired, pool.length));
+  for (const zmb of strikeGroup) {
+    // March on the settlement: a committed raid order aimed at the HQ. The
+    // home anchor is deliberately KEPT — survivors walk back to the nest once
+    // the incursion ends (killing them anywhere still counts against the lair).
+    zmb.targetPos = {
+      x: hqPos.x + (Math.random() - 0.5) * 24,
+      z: hqPos.z + (Math.random() - 0.5) * 24,
+    };
+  }
+  return strikeGroup;
+}
+
+/** Random point inside a polygon (rejection sampling, center fallback). */
+function randomPointInPolygon(poly: Point2D[] | undefined, center: Point2D): Point2D {
+  if (!poly || poly.length < 3) return { ...center };
+  const xs = poly.map((p) => p.x);
+  const zs = poly.map((p) => p.z);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minZ = Math.min(...zs), maxZ = Math.max(...zs);
+  const inside = (pt: Point2D) => {
+    let isIn = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const a = poly[i], b = poly[j];
+      if ((a.z > pt.z) !== (b.z > pt.z) && pt.x < ((b.x - a.x) * (pt.z - a.z)) / (b.z - a.z) + a.x) isIn = !isIn;
+    }
+    return isIn;
+  };
+  for (let attempt = 0; attempt < 24; attempt++) {
+    const pt = {
+      x: minX + Math.random() * (maxX - minX),
+      z: minZ + Math.random() * (maxZ - minZ),
+    };
+    if (inside(pt)) return pt;
+  }
+  return { ...center };
+}
+
+/**
+ * Advances every Lair as the home base of a REAL infected population:
+ *
+ * - `population` is synced each tick to the count of living ZombieUnits carrying
+ *   this lair's id — killing ANY lair-affiliated infected (inside or emerged)
+ *   reduces the lair. There is no abstract counter and no "stand within 26m to
+ *   drain the garrison" mechanic.
+ * - `baselinePopulation` is the founding garrison — a SOFT baseline, not a
+ *   ceiling. A partially cleared lair REGROWS toward it while no squad is in
+ *   its home radius, so a raid must be finished or the nest recovers.
+ * - Emergence emits affiliated infected into the home radius on a per-lair
+ *   jittered cadence; daylight throttles it and spawned infected follow the
+ *   normal sunlight-dormancy rules (no forced 24/7 alert level). A neglected
+ *   lair SWELLS beyond its baseline as escalation climbs, up to
+ *   `lairGarrisonCeiling` — old unmolested nests become hives of 100+.
+ * - The lair is cleared only when its last living infected is killed.
  */
 export function tickZombieLairs(
   lairs: Map<string | number, ZombieLair>,
+  zombies: ZombieUnit[],
   squads: TacticalSquadUnit[],
   buildings: BuildingPolygon[],
   now: number,
-  deltaSec: number
+  deltaSec: number,
+  isNight: boolean,
+  hqPos: Point2D | null = null
 ): LairTickResult {
   const updatedLairs = new Map(lairs);
   const spawnedZombies: ZombieUnit[] = [];
@@ -295,14 +560,19 @@ export function tickZombieLairs(
   const notifications: { title: string; desc: string; type: 'warn' | 'info' | 'success' }[] = [];
 
   const buildingCenters = new Map<string, Point2D>();
-  for (const b of buildings) buildingCenters.set(String(b.id), b.center);
+  const buildingPolys = new Map<string, Point2D[]>();
+  for (const b of buildings) {
+    buildingCenters.set(String(b.id), b.center);
+    if (b.polygon) buildingPolys.set(String(b.id), b.polygon);
+  }
 
   for (const [key, lair] of updatedLairs.entries()) {
     if (lair.isCleared) continue;
 
     const center = buildingCenters.get(String(lair.buildingId)) || { x: 0, z: 0 };
+    const poly = buildingPolys.get(String(lair.buildingId));
 
-    // A. Escalation — the longer a Lair stands, the worse the surrounding area gets.
+    // A. Escalation — the longer a Lair stands, the more active its nights get.
     let escalation = lair.escalation;
     let escalationAccum = lair.escalationAccumSec + deltaSec;
     if (escalationAccum >= LAIR_ESCALATION_INTERVAL_SEC && escalation < 6) {
@@ -315,61 +585,157 @@ export function tickZombieLairs(
       });
     }
 
-    // B. Persistent spawning (day and night) for as long as the Lair stands.
-    const intervalSec = Math.max(15, lair.spawnIntervalSec - escalation * 4);
-    let lastSpawnAt = lair.lastSpawnAt;
-    if (now - lastSpawnAt >= intervalSec * 1000) {
-      lastSpawnAt = now;
-      const groupSize = Math.min(8, 2 + escalation);
+    // B. Population = the lair's actual living infected. Every lair-affiliated
+    //    zombie that dies (inside the building or out roaming) reduces it.
+    let population = zombies.filter(
+      (z) => z.lairId === lair.id && z.currentHp > 0
+    ).length;
+
+    // C. Regrowth — a partially cleared lair replenishes while unmolested, back
+    //    to its FOUNDING GARRISON (baselinePopulation) — never beyond it; only
+    //    escalation-driven emergence (D) swells a nest past its baseline.
+    //    Fresh infected spawn INSIDE the building (sheltered from the sun, so
+    //    they follow normal day/night rules and wake when a squad enters or
+    //    night falls).
+    const squadNear = squads.some(
+      (sq) =>
+        sq.isDeployed &&
+        sq.currentHp > 0 &&
+        Math.hypot(sq.x - center.x, sq.z - center.z) <= lair.homeRadius
+    );
+    let replenishAccum = lair.replenishAccumSec;
+    // Only a PARTIALLY cleared lair regrows: population must still be > 0, so
+    // killing the last affiliated infected finishes the job rather than letting
+    // the nest respawn from nothing.
+    if (population > 0 && population < lair.baselinePopulation && !squadNear) {
+      replenishAccum += deltaSec;
+      const replenishInterval = LAIR_REPLENISH_INTERVAL_SEC[lair.threatTier];
+      while (replenishAccum >= replenishInterval && population < lair.baselinePopulation) {
+        replenishAccum -= replenishInterval;
+        const pt = randomPointInPolygon(poly, center);
+        const zmb = createZombieUnit('shambler', pt.x, pt.z, 0, isNight);
+        zmb.lairId = lair.id;
+        zmb.homeX = center.x;
+        zmb.homeZ = center.z;
+        zmb.homeRadius = lair.homeRadius;
+        zmb.isRoamer = Math.random() < 0.15;
+        spawnedZombies.push(zmb);
+        population += 1;
+      }
+    }
+
+    // D. Emergence — the lair's local infected ecosystem: affiliated infected
+    //    periodically leave the nest into its home radius. Daylight throttles
+    //    this (sunlight dormancy) and night quickens it. Spawned infected carry
+    //    lairId and follow the normal isDormant rules — NOT a forced 24/7 alarm.
+    //    Gated on population > 0 (a nest with no living infected is DESTROYED,
+    //    never a factory conjuring infected out of nothing) AND on the garrison
+    //    ceiling: emergence is what makes a NEGLECTED nest swell past its
+    //    baseline as escalation climbs — at/above the ceiling the lair has as
+    //    many real infected as it can support and pauses (the accumulator keeps
+    //    banking, so it resumes the instant the garrison thins).
+    // The base cadence is stable per lair (derived from its id) so it never
+    // re-rolls each tick.
+    const garrisonCeiling = lairGarrisonCeiling(lair.baselinePopulation, escalation);
+    let seed = 0;
+    for (let c = 0; c < String(lair.id).length; c++) seed = (seed * 31 + String(lair.id).charCodeAt(c)) >>> 0;
+    const lairBaseInterval = LAIR_SPAWN_BASE_MIN_SEC + (seed % LAIR_SPAWN_JITTER_SEC);
+    const intervalSec = Math.max(30, lairBaseInterval - escalation * 6) * (isNight ? 1 : LAIR_EMERGE_DAY_MULT);
+    let spawnAccum = (lair.spawnAccumSec ?? Math.random() * intervalSec) + deltaSec;
+    if (population > 0 && population < garrisonCeiling && spawnAccum >= intervalSec) {
+      spawnAccum = 0;
+      lair.lastActivity = now;
+      const groupSize = Math.min(5, 2 + escalation);
       for (let i = 0; i < groupSize; i++) {
         const angle = Math.random() * Math.PI * 2;
-        const dist = 8 + Math.random() * 12;
+        const dist = 6 + Math.random() * 14;
         const variant = Math.random() < 0.2 ? 'runner' : 'shambler';
         const zmb = createZombieUnit(
           variant,
           center.x + Math.cos(angle) * dist,
           center.z + Math.sin(angle) * dist,
           0,
-          true // active day & night
+          isNight
         );
-        zmb.alertLevel = 1; // stays active through the day (§6.1 weather gate)
-        zmb.isDormant = false;
+        // Normal sunlight rules apply — no forced alert level. Most stay local;
+        // a minority are roamers that drift beyond the home radius.
+        zmb.lairId = lair.id;
+        zmb.homeX = center.x;
+        zmb.homeZ = center.z;
+        zmb.homeRadius = lair.homeRadius;
+        zmb.isRoamer = Math.random() < 0.15;
         spawnedZombies.push(zmb);
+        population += 1;
       }
     }
 
-    // C. Deliberate clearance — a deployed squad standing in the assault radius
-    //    depletes the garrison through sustained combat (§5).
-    let occupantCount = lair.occupantCount;
-    const assaultingSquad = squads.find(
-      (sq) =>
-        sq.isDeployed &&
-        sq.currentHp > 0 &&
-        Math.hypot(sq.x - center.x, sq.z - center.z) <= LAIR_ASSAULT_RADIUS
-    );
-    if (assaultingSquad) {
-      const dps = Math.max(
-        2,
-        assaultingSquad.damagePerVolley / Math.max(1, assaultingSquad.fireRate)
-      );
-      occupantCount = Math.max(0, occupantCount - dps * deltaSec);
+    // E. NIGHT MOBILIZATION — the Lair feeds the regional incursion WITHOUT
+    //    conjuring population. While the lair stands (population > 0) and the
+    //    HQ is known, at NIGHT it periodically commits a strike group of its
+    //    OWN resident infected toward the settlement: living lair-affiliated
+    //    zombies currently at / near the nest are RETARGETED to march on the
+    //    HQ (mobilizeLairHorde). No zombie is created — the lair can only raid
+    //    as strong as the residents actually home, killing mobilized infected
+    //    anywhere thins the nest, and survivors keep their anchor and return.
+    //    Escalation shortens the interval: a neglected lair becomes a nightly
+    //    engine.
+    let hordeAccum = lair.hordeAccumSec ?? 0;
+    let hordeMobilized = false;
+    if (population > 0 && isNight && hqPos) {
+      hordeAccum += deltaSec;
+      const hordeInterval = Math.max(LAIR_HORDE_MIN_SEC, LAIR_HORDE_BASE_SEC - escalation * LAIR_HORDE_ESCALATION_STEP_SEC);
+      if (hordeAccum >= hordeInterval) {
+        hordeAccum = 0;
+        // Residents must actually be gathered at / near the nest to be
+        // committed — nothing is summoned out of thin air. Zombies already
+        // fighting (a squad assaulting the lair) stay behind.
+        const residentsHere = zombies.filter(
+          (z) =>
+            z.lairId === lair.id &&
+            z.currentHp > 0 &&
+            z.state !== 'chasing' &&
+            z.state !== 'attacking_unit' &&
+            z.state !== 'attacking_building' &&
+            Math.hypot(z.x - center.x, z.z - center.z) <= (lair.homeRadius ?? 40)
+        );
+        const mobilized =
+          residentsHere.length > 0 ? mobilizeLairHorde(lair, residentsHere, hqPos) : [];
+        hordeMobilized = mobilized.length > 0;
+      }
+    } else if (!isNight) {
+      // Daytime: the accumulator idles (sunlight dormancy applies) and does
+      // NOT bank toward an instant horde at dusk — each night starts fresh
+      // and the first mobilization takes a full interval of night.
+      hordeAccum = 0;
+    }
+    if (hordeMobilized && lair.isDiscovered) {
+      notifications.push({
+        title: 'LAIR MOBILIZING',
+        desc: `${lair.buildingName} is committing infected toward the settlement — intercept the horde to thin the nest, or assault the lair itself.`,
+        type: 'warn',
+      });
     }
 
-    const clearedNow = occupantCount <= 0;
+    const clearedNow = population <= 0;
     updatedLairs.set(key, {
       ...lair,
-      occupantCount,
+      population,
+      baselinePopulation: lair.baselinePopulation,
+      homeRadius: lair.homeRadius,
+      spawnAccumSec: spawnAccum,
+      lastActivity: lair.lastActivity,
       escalation,
       escalationAccumSec: escalationAccum,
-      lastSpawnAt,
+      replenishAccumSec: replenishAccum,
+      hordeAccumSec: hordeAccum,
       isCleared: clearedNow || lair.isCleared,
     });
 
     if (clearedNow) {
-      clearedLairs.push({ ...lair, occupantCount: 0, isCleared: true });
+      clearedLairs.push({ ...lair, population: 0, isCleared: true });
       notifications.push({
         title: 'LAIR CLEARED',
-        desc: `${lair.buildingName} has been cleared — the persistent infected spawns from this nest have stopped.`,
+        desc: `${lair.buildingName} has been cleared — every infected in the nest is dead and the neighbourhood is quiet again.`,
         type: 'success',
       });
     }

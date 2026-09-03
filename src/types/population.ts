@@ -1,4 +1,5 @@
 import { LootItem } from './loot';
+import { LabourCommitment } from './labour';
 
 export type StatTier = 'novice' | 'skilled' | 'expert';
 
@@ -65,6 +66,8 @@ export interface CitizenBreakdownStats {
   unemployed: number;
   totalWorkers: number;
   squadMembers: number;
+  committedWorkers?: number;
+  labourCommitments?: LabourCommitment[];
 }
 
 export interface ChildCitizen {
@@ -83,6 +86,7 @@ export interface GeneralPopulation {
   workerPriorities?: Record<WorkerJobTypeId, WorkerPriorityLevel>;
   workerLimits?: Record<WorkerJobTypeId, number>;
   unassigned: number;
+  labourCommitments?: LabourCommitment[];
 }
 
 export type SquadPhysicalAction =
@@ -113,8 +117,11 @@ export interface SquadInventory {
   items: SquadLootItem[];
 }
 
+export type SquadWeaponLoadout = 'knife' | 'pistol' | 'shotgun' | 'assault_rifle';
+
 export interface Squad {
   id: string;
+  weaponLoadout?: SquadWeaponLoadout;
   name: string;
   leaderId: string; // NamedSurvivor ID, or '' for a leaderless all-recruit squad (generic Field Leader)
   generalCount: number; // general pop members: 0-3 with a named leader, 4 for a leaderless squad (Total squad max = 4)
@@ -123,6 +130,8 @@ export interface Squad {
   currentWeightKg: number;
   maxWeightKg: number;
   createdAt: number;
+  /** Permanent combat proficiency from Shooting Range training (0-4). */
+  trainingTier?: number;
 }
 
 export type GroupDisposition = 'willing' | 'distrustful' | 'hostile';

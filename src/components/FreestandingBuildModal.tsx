@@ -18,11 +18,13 @@ import {
  Wrench,
  X,
  Zap,
-} from 'lucide-react';
-import {
- FUNCTIONAL_BUILDING_DEFINITIONS,
- FUNCTIONAL_CATEGORIES,
+} from 'lucide-react';import {
+  FUNCTIONAL_BUILDING_DEFINITIONS,
+  FUNCTIONAL_CATEGORIES,
+  isLegacyAliasBuildingType,
 } from '../data/functionalBuildings';
+import { getFreestandingDimensions } from '../services/freestandingFootprint';
+import { isResearchUnlocked } from '../services/researchService';
 import { Point2D } from '../types/map';
 import {
  FunctionalBuildingTypeId,
@@ -48,19 +50,23 @@ export const FreestandingBuildModal: React.FC<FreestandingBuildModalProps> = ({
  onArmBlueprint,
 }) => {
  const [selectedCategory, setSelectedCategory] = useState<FunctionalCategory>('basic');
- const [selectedTypeId, setSelectedTypeId] = useState<FunctionalBuildingTypeId>('shelter_bunkhouse');
+ // Default to the canonical Shelter module — legacy alias defs (e.g.
+ // shelter_bunkhouse) are save-compat duplicates and never lead the picker.
+ const [selectedTypeId, setSelectedTypeId] = useState<FunctionalBuildingTypeId>('shelter');
  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
  if (!isOpen) return null;
 
  const currentDef = FUNCTIONAL_BUILDING_DEFINITIONS[selectedTypeId];
- const cost = currentDef?.freestandingCost;
-
- const canAfford =
- cost &&
- settlement.stockpile.materials.wood >= cost.wood &&
- settlement.stockpile.materials.metal >= cost.metal &&
- settlement.stockpile.materials.bricks >= cost.bricks;
+ // §Terminus: every freestanding facility has its own PREDEFINED module
+ // footprint (never a generic 8×8 box) — show the real one being placed.
+ const currentDims = currentDef ? getFreestandingDimensions(currentDef.id) : null;
+ const cost = currentDef?.freestandingCost; const canAfford =
+   cost &&
+   settlement.stockpile.materials.wood >= (cost.wood || 0) &&
+   settlement.stockpile.materials.metal >= (cost.metal || 0) &&
+   settlement.stockpile.materials.bricks >= (cost.bricks || 0) &&
+   (settlement.stockpile.materials.tools || 0) >= (cost.tools || 0);
 
  const posToUse: Point2D = targetPosition || { x: 0, z: 0 };
 
@@ -79,9 +85,26 @@ export const FreestandingBuildModal: React.FC<FreestandingBuildModalProps> = ({
  }
  };
 
+ // Adaptation-type facilities can only be erected freestanding once the
+ // colony researches Advanced Masonry (service-enforced in buildFreestanding).
+ // Genuinely freestanding IFZ structures (walls/gates/towers, adaptationAllowed
+ // false) are always listed; locked facilities are hidden until unlocked.
+ const masonryUnlocked = isResearchUnlocked(settlement, 'advanced_masonry');
+ // Legacy alias defs are save-compat duplicates of a canonical building and
+ // never surface in the freestanding picker (each facility appears once).
  const categoryDefs = Object.values(FUNCTIONAL_BUILDING_DEFINITIONS).filter(
- (def) => def.category === selectedCategory
+ (def) =>
+   def.category === selectedCategory &&
+   !isLegacyAliasBuildingType(def.id) &&
+   (!def.adaptationAllowed || masonryUnlocked)
  );
+ const lockedCount = Object.values(FUNCTIONAL_BUILDING_DEFINITIONS).filter(
+ (def) =>
+   def.category === selectedCategory &&
+   !isLegacyAliasBuildingType(def.id) &&
+   def.adaptationAllowed &&
+   !masonryUnlocked
+ ).length;
 
  return (
  <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm font-mono select-none">
@@ -143,7 +166,7 @@ export const FreestandingBuildModal: React.FC<FreestandingBuildModalProps> = ({
  onClick={() => {
  setSelectedCategory(cat.id);
  const first = Object.values(FUNCTIONAL_BUILDING_DEFINITIONS).find(
- (d) => d.category === cat.id
+ (d) => d.category === cat.id && !isLegacyAliasBuildingType(d.id)
  );
  if (first) setSelectedTypeId(first.id);
  }}
@@ -164,6 +187,11 @@ export const FreestandingBuildModal: React.FC<FreestandingBuildModalProps> = ({
  <div className="text-[10px] text-[#9ca3af] uppercase font-bold mb-1.5">
  2. Select Freestanding Blueprint:
  </div>
+ {lockedCount > 0 && (
+ <div className="px-2 py-1.5 bg-[#1a150e] border border-[#4d371a] text-[#fde68a] text-[10px]">
+ {lockedCount} facility type{lockedCount === 1 ? '' : 's'} in this category {lockedCount === 1 ? 'is' : 'are'} locked behind Advanced Masonry research — freestanding facilities need masonry expertise.
+ </div>
+ )}
  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
  {categoryDefs.map((def) => {
  const isSelected = selectedTypeId === def.id;
@@ -189,6 +217,7 @@ export const FreestandingBuildModal: React.FC<FreestandingBuildModalProps> = ({
  <span className="text-[#9ca3af]">Freestanding Cost:</span>
  <span className="text-white font-bold">
  {defCost.wood}W / {defCost.metal}M / {defCost.bricks}B
+ {defCost.tools ? ` / ${defCost.tools}T` : ''}
  </span>
  </div>
  </button>
@@ -202,47 +231,64 @@ export const FreestandingBuildModal: React.FC<FreestandingBuildModalProps> = ({
  <div className="bg-[#121417] p-3 border border-[#24272c] space-y-2">
  <div className="font-black text-xs uppercase text-white flex justify-between">
  <span>Construction Breakdown: {currentDef.name}</span>
- <span className="text-[#f59e0b]">Standard 8x8m Module</span>
+ {currentDims && (
+ <span className="text-[#f59e0b]">
+ Module {currentDims.width}×{currentDims.length} m · {Math.round(currentDims.width * currentDims.length)} m²
+ </span>
+ )}
  </div>
 
  {/* Material checks */}
- <div className="grid grid-cols-3 gap-2 text-center text-[10px]">
+ <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-[10px]">
  <div
  className={`p-2 border ${
- settlement.stockpile.materials.wood >= cost.wood
+ settlement.stockpile.materials.wood >= (cost.wood || 0)
  ? 'bg-[#142417] border-[#22c55e] text-[#4ade80]'
  : 'bg-[#291719] border-[#ef4444] text-[#ef4444]'
  }`}
  >
  <div className="uppercase">Wood Required</div>
  <div className="text-base font-black">
- {cost.wood} / {settlement.stockpile.materials.wood}
+ {(cost.wood || 0)} / {settlement.stockpile.materials.wood}
  </div>
  </div>
 
  <div
  className={`p-2 border ${
- settlement.stockpile.materials.metal >= cost.metal
+ settlement.stockpile.materials.metal >= (cost.metal || 0)
  ? 'bg-[#142417] border-[#22c55e] text-[#4ade80]'
  : 'bg-[#291719] border-[#ef4444] text-[#ef4444]'
  }`}
  >
  <div className="uppercase">Metal Required</div>
  <div className="text-base font-black">
- {cost.metal} / {settlement.stockpile.materials.metal}
+ {(cost.metal || 0)} / {settlement.stockpile.materials.metal}
  </div>
  </div>
 
  <div
  className={`p-2 border ${
- settlement.stockpile.materials.bricks >= cost.bricks
+ settlement.stockpile.materials.bricks >= (cost.bricks || 0)
  ? 'bg-[#142417] border-[#22c55e] text-[#4ade80]'
  : 'bg-[#291719] border-[#ef4444] text-[#ef4444]'
  }`}
  >
  <div className="uppercase">Bricks Required</div>
  <div className="text-base font-black">
- {cost.bricks} / {settlement.stockpile.materials.bricks}
+ {(cost.bricks || 0)} / {settlement.stockpile.materials.bricks}
+ </div>
+ </div>
+
+ <div
+ className={`p-2 border ${
+ (settlement.stockpile.materials.tools || 0) >= (cost.tools || 0)
+ ? 'bg-[#142417] border-[#22c55e] text-[#4ade80]'
+ : 'bg-[#291719] border-[#ef4444] text-[#ef4444]'
+ }`}
+ >
+ <div className="uppercase">Tools Required</div>
+ <div className="text-base font-black">
+ {(cost.tools || 0)} / {settlement.stockpile.materials.tools || 0}
  </div>
  </div>
  </div>
