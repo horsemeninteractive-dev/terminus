@@ -11,6 +11,7 @@ import { tickWaterEconomy } from './waterService';
 import { tickPowerGrid } from './powerService';
 import { tickSquadTraining } from './trainingService';
 import { tickResourceGathering } from './resourceGatheringService';
+import { tickForestryWork } from './forestryService';
 import { tickCombatSimulation } from './combatService';
 import { tickVehicleWorkshops } from './vehicleWorkshopService';
 import { getPrimaryHQ } from './buildingOperational';
@@ -140,7 +141,18 @@ export function runSimulationPipeline(args: {
   const events: ToastMessage[] = [];
   const economyResult = runEconomyStages(state, deltaSeconds, clock.speed, clock.day, clock.isNight, pathGrid);
   events.push(...economyResult.events);
-  const gatheringResult = tickResourceGathering(economyResult.newState, mapData, deltaSeconds * clock.speed, clock.isNight, alarmActive, pathGrid);
+  // §IFZ Forester's Hut & Sawmill — spatial forestry: staffed huts replant/
+  // regrow wood nodes inside their working radius, and staffed sawmills
+  // auto-cut the nearest mature tree inside theirs (map nodes may change, so
+  // the gathering stage below sees the updated forest).
+  const forestry = tickForestryWork(
+    economyResult.newState,
+    mapData,
+    deltaSeconds * clock.speed,
+    clock.isNight,
+    alarmActive
+  );
+  const gatheringResult = tickResourceGathering(forestry.newState, forestry.mapData, deltaSeconds * clock.speed, clock.isNight, alarmActive, pathGrid);
   const gathering = gatheringResult.newState;
   const combat = tickCombatSimulation(zombies, squads, gathering.adaptedBuildings, noiseEvents, clock, getPrimaryHQ(gathering)?.center || null, deltaSeconds, gathering, droppedItems, hostileHumans, pathGrid, alarmActive);
   const infection = tickInfectionSimulation(gathering, deltaSeconds, clock.speed, clock.day);

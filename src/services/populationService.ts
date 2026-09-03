@@ -1482,6 +1482,8 @@ export function tickSettlementSimulation(
           metal: (order.totalCost.metal * targetProgress) / 100,
           bricks: (order.totalCost.bricks * targetProgress) / 100,
           tools: ((order.totalCost.tools || 0) * targetProgress) / 100,
+          scientific_materials:
+            ((order.totalCost.scientific_materials || 0) * targetProgress) / 100,
         };
         const deducted = order.deductedCost;
         const deltas = {
@@ -1489,6 +1491,10 @@ export function tickSettlementSimulation(
           metal: Math.max(0, costTargets.metal - (deducted.metal || 0)),
           bricks: Math.max(0, costTargets.bricks - (deducted.bricks || 0)),
           tools: Math.max(0, costTargets.tools - (deducted.tools || 0)),
+          scientific_materials: Math.max(
+            0,
+            costTargets.scientific_materials - (deducted.scientific_materials || 0)
+          ),
         };
         // Only the active construction window draws labour/materials this
         // tick; queued structures hold. A higher-priority project that is
@@ -1504,8 +1510,14 @@ export function tickSettlementSimulation(
         // its delta as the stockpile can currently cover; if that is short of
         // its full need, the remaining stock is reserved for it and work
         // advances only by the granted share.
-        const grantKeys = ['wood', 'metal', 'bricks', 'tools'] as const;
-        const granted: Record<string, number> = { wood: 0, metal: 0, bricks: 0, tools: 0 };
+        const grantKeys = ['wood', 'metal', 'bricks', 'tools', 'scientific_materials'] as const;
+        const granted: Record<string, number> = {
+          wood: 0,
+          metal: 0,
+          bricks: 0,
+          tools: 0,
+          scientific_materials: 0,
+        };
         let materialShort = false;
         for (const key of grantKeys) {
           const need = deltas[key] || 0;
@@ -1523,6 +1535,11 @@ export function tickSettlementSimulation(
           metal: Math.max(0, (order.totalCost.metal || 0) - (order.deductedCost.metal || 0)),
           bricks: Math.max(0, (order.totalCost.bricks || 0) - (order.deductedCost.bricks || 0)),
           tools: Math.max(0, (order.totalCost.tools || 0) - (order.deductedCost.tools || 0)),
+          scientific_materials: Math.max(
+            0,
+            (order.totalCost.scientific_materials || 0) -
+              (order.deductedCost.scientific_materials || 0)
+          ),
         };
         let scarcityHeld = false;
         for (const key of grantKeys) {

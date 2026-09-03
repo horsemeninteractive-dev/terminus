@@ -399,7 +399,7 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     name: "Forester's Hut",
     category: 'production',
     description:
-      'Forestry and timber management post. Workers fell, replant, and harvest nearby trees to provide a steady supply of raw logs.',
+      'Forestry and timber management post. Staffed crews replant and tend actual trees within a 40 m working radius — depleted stumps regrow and thin forest gains new saplings, keeping wood renewable — while the hut ships a steady supply of raw logs to a Sawmill.',
     researchRequirement: 'basic_forestry',
     iconName: 'Trees',
     badgeColor: '#15803d',
@@ -413,11 +413,11 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     adaptationCost: { wood: 25, metal: 10, bricks: 15, tools: 1 },
     freestandingCost: { wood: 75, metal: 30, bricks: 45, tools: 2 },
     durability: { adaptationBase: 320, freestandingBase: 200 },
-    functions: ['Timber Harvesting', 'Forest Replenishment', 'Wood Logistics'],
+    functions: ['Forest Replenishment', 'Sapling Planting', 'Wood Logistics'],
     outputs: [{ resource: 'logs', amountPerDay: 15 }],
     baseDefense: 30,
     freestandingDefense: 15,
-    capacityLabel: 'Output: 15 Logs/day — feed a Sawmill',
+    capacityLabel: 'Replants & regrows trees within 40 m · +15 Logs/day',
     preferredOsmTypes: ['residential', 'industrial'],
   },
   sawmill: {
@@ -426,7 +426,7 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     name: 'Sawmill',
     category: 'production',
     description:
-      'High-torque motorized band saws that mill felled logs into structural lumber, increasing wood yield and construction efficiency.',
+      'High-torque motorized band saws. Staffed crews auto-cut the nearest mature tree within a 30 m working area straight into structural wood (deposited to the stockpile), and the mill also converts felled logs into lumber at +60% yield.',
     researchRequirement: 'advanced_woodworks',
     iconName: 'Hammer',
     badgeColor: '#d97706',
@@ -440,11 +440,11 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     adaptationCost: { wood: 50, metal: 45, bricks: 30, tools: 2 },
     freestandingCost: { wood: 150, metal: 130, bricks: 80, tools: 4 },
     durability: { adaptationBase: 440, freestandingBase: 280 },
-    functions: ['Lumber Milling', 'Wood Processing', 'Building Material Prep'],
+    functions: ['Auto Tree Cutting (30 m)', 'Lumber Milling', 'Wood Processing'],
     recipes: [{ id: 'logs_to_lumber', name: 'Logs to Lumber', inputs: [{ resource: 'logs', amountPerDay: 10 }], outputs: [{ resource: 'wood', amountPerDay: 16 }] }],
     baseDefense: 40,
     freestandingDefense: 20,
-    capacityLabel: 'Milling: 10 Logs → 16 Wood/day (+60%)',
+    capacityLabel: 'Auto-cuts trees within 30 m · 10 Logs → 16 Wood/day',
     preferredOsmTypes: ['industrial', 'warehouse'],
   },
   tool_factory: {
@@ -1127,6 +1127,16 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     },
     adaptationCost: { wood: 40, metal: 45, bricks: 35, tools: 2 },
     freestandingCost: { wood: 120, metal: 130, bricks: 100, tools: 4 },
+    // §IFZ: 1 Scientific Material required to establish a Research Center — a
+    // one-time flat surcharge (never volume-scaled), separate from the
+    // size-derived construction bill below.
+    constructionSurcharge: {
+      wood: 0,
+      metal: 0,
+      bricks: 0,
+      tools: 0,
+      scientific_materials: 1,
+    },
     durability: { adaptationBase: 480, freestandingBase: 300 },
     functions: ['Technology Research', 'Scientific Material Production', 'Scientific Analysis'],
     baseDefense: 40,
@@ -2202,6 +2212,24 @@ export const ADAPT_REFERENCE_VOLUME_M3 = 800;
  * size. Omitting the physical metrics falls back to the reference shell
  * (~800 m³), i.e. the raw `adaptationCost` of the definition.
  */
+/**
+ * One-time flat establishment surcharge for a facility type (e.g. the 1
+ * Scientific Material IFZ requires to build a Research Center). Charged once
+ * per facility — never volume-, fit-, or percentage-scaled.
+ */
+export function getConstructionSurcharge(
+  typeId: FunctionalBuildingTypeId
+): ResourceCost {
+  const surcharge = FUNCTIONAL_BUILDING_DEFINITIONS[typeId]?.constructionSurcharge;
+  return {
+    wood: 0,
+    metal: 0,
+    bricks: 0,
+    tools: 0,
+    scientific_materials: surcharge?.scientific_materials || 0,
+  };
+}
+
 export function getAdaptedCost(
   typeId: FunctionalBuildingTypeId,
   bldgType?: string,
@@ -2220,11 +2248,13 @@ export function getAdaptedCost(
   // else keeps a 1-unit floor so no size-scaled conversion is ever "free".
   const scaled = (v: number) =>
     v > 0 ? Math.max(1, Math.round(v * scale * fit)) : 0;
+  const surcharge = getConstructionSurcharge(typeId);
 
   return {
     wood: scaled(def.adaptationCost.wood),
     metal: scaled(def.adaptationCost.metal),
     bricks: scaled(def.adaptationCost.bricks),
     tools: def.adaptationCost.tools ? scaled(def.adaptationCost.tools) : 0,
+    scientific_materials: surcharge.scientific_materials,
   };
 }

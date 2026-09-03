@@ -64,7 +64,7 @@ export interface ResourceNode {
   heightOffset?: number;
   rotation: number;
   scale: number;
-  source: 'osm_point' | 'road_side' | 'park_scatter' | 'alley_scatter' | 'building_perimeter';
+  source: 'osm_point' | 'road_side' | 'park_scatter' | 'alley_scatter' | 'building_perimeter' | 'forester';
   amount: number;
   maxAmount: number;
   isDepleted: boolean;

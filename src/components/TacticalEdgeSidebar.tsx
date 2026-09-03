@@ -1452,6 +1452,9 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  <div className="text-[9px] font-mono text-[#A0AEC0] mt-0.5">
  FULL CONVERSION OF THIS STRUCTURE: {cost.wood}W / {cost.metal}M / {cost.bricks}B
  {cost.tools ? ` / ${cost.tools} Tools` : ''}
+ {cost.scientific_materials
+ ? ` / ${cost.scientific_materials} SciMat (one-time)`
+ : ''}
  </div>
  )}
  </div>

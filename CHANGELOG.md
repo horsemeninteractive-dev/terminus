@@ -66,6 +66,36 @@ Releasing:
   the squad.
 
 ### Changed
+- **Forester's Hut and Sawmill now do real spatial tree work (audit #12/#13).**
+  A new forestry stage runs between the economy and gathering stages of the
+  simulation pipeline. Staffed **Forester's Huts** manage the actual wood
+  `ResourceNode`s inside a 40 m working radius: depleted trees are replanted
+  as saplings and regrow (the crew's growth budget is split across the trees
+  it tends — constant throughput), and when the radius runs thin it plants
+  brand-new saplings on clear ground (clear of buildings, roads, water, and
+  other trees) at an average one-per-45 s cadence — making wood a renewable
+  resource instead of a depletable map read. Staffed **Sawmills** auto-cut the
+  nearest mature tree inside a 30 m working area straight into wood through
+  the capacity-aware deposit path (a full stockpile pauses the saw rather than
+  felling timber it cannot store). Both are crew jobs only — unstaffed or
+  under-construction buildings do nothing, and crews shelter at night and
+  during alarms like the gatherers. The logs→lumber recipe chain is retained
+  as the documented Terminus extension on top of the real mechanic, and the
+  two defs' copy/labels now describe the working radii. Newly planted trees
+  carry `source: 'forester'` and render like ordinary trees.
+- **Research Centers cost 1 Scientific Material to establish (audit #34, P1).**
+  IFZ requires 1 Scientific Material to build a Research Center; Terminus now
+  charges it as a flat, one-time `constructionSurcharge` on both adaptation
+  and freestanding construction — never volume- or percentage-scaled, so a
+  huge converted lab and a tiny freestanding one both cost exactly 1. It rides
+  the existing progressive-construction material flow (the crew consumes it
+  alongside wood/metal/bricks as work progresses), is charged once per
+  facility (expanding a half-converted center does not double-charge), blocks
+  the build with a clear `1 SciMat` error when the stockpile lacks it, and is
+  surfaced in the freestanding modal's material breakdown, the building
+  inspector's exact-cost line, and `getAdaptedCost`. Material pools,
+  affordability checks, and the construction grant loop now understand the
+  `scientific_materials` key end to end.
 - **Expedition Center re-roled as the strategic logistics HQ (audit #40, P0/P1).**
   It is no longer a scavenging-speed buff: the +30%/+30% powered search-speed
   multiplier is gone from the scavenging sim, and the building is now the

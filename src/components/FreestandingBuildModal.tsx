@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';import {
   FUNCTIONAL_BUILDING_DEFINITIONS,
   FUNCTIONAL_CATEGORIES,
+  getConstructionSurcharge,
   isLegacyAliasBuildingType,
 } from '../data/functionalBuildings';
 import { getFreestandingDimensions } from '../services/freestandingFootprint';
@@ -61,12 +62,22 @@ export const FreestandingBuildModal: React.FC<FreestandingBuildModalProps> = ({
  // §Terminus: every freestanding facility has its own PREDEFINED module
  // footprint (never a generic 8×8 box) — show the real one being placed.
  const currentDims = currentDef ? getFreestandingDimensions(currentDef.id) : null;
- const cost = currentDef?.freestandingCost; const canAfford =
+ // §IFZ Research Center: a flat 1 Scientific Material surcharge rides on the
+ // freestanding bill — shown, required, and charged like any other material.
+ const cost = currentDef
+   ? {
+       ...currentDef.freestandingCost,
+       scientific_materials:
+         getConstructionSurcharge(currentDef.id).scientific_materials || 0,
+     }
+   : null;
+ const canAfford =
    cost &&
    settlement.stockpile.materials.wood >= (cost.wood || 0) &&
    settlement.stockpile.materials.metal >= (cost.metal || 0) &&
    settlement.stockpile.materials.bricks >= (cost.bricks || 0) &&
-   (settlement.stockpile.materials.tools || 0) >= (cost.tools || 0);
+   (settlement.stockpile.materials.tools || 0) >= (cost.tools || 0) &&
+   (settlement.stockpile.materials.scientific_materials || 0) >= (cost.scientific_materials || 0);
 
  const posToUse: Point2D = targetPosition || { x: 0, z: 0 };
 
@@ -218,6 +229,9 @@ export const FreestandingBuildModal: React.FC<FreestandingBuildModalProps> = ({
  <span className="text-white font-bold">
  {defCost.wood}W / {defCost.metal}M / {defCost.bricks}B
  {defCost.tools ? ` / ${defCost.tools}T` : ''}
+ {getConstructionSurcharge(def.id).scientific_materials
+ ? ` / ${getConstructionSurcharge(def.id).scientific_materials} SciMat`
+ : ''}
  </span>
  </div>
  </button>
@@ -291,6 +305,21 @@ export const FreestandingBuildModal: React.FC<FreestandingBuildModalProps> = ({
  {(cost.tools || 0)} / {settlement.stockpile.materials.tools || 0}
  </div>
  </div>
+
+ {(cost.scientific_materials || 0) > 0 && (
+ <div
+ className={`p-2 border ${
+ (settlement.stockpile.materials.scientific_materials || 0) >= (cost.scientific_materials || 0)
+ ? 'bg-[#142417] border-[#22c55e] text-[#4ade80]'
+ : 'bg-[#291719] border-[#ef4444] text-[#ef4444]'
+ }`}
+ >
+ <div className="uppercase">Sci Material Required</div>
+ <div className="text-base font-black">
+ {(cost.scientific_materials || 0)} / {settlement.stockpile.materials.scientific_materials || 0}
+ </div>
+ </div>
+ )}
  </div>
 
  {errorMsg && (

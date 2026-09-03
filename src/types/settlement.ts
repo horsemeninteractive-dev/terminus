@@ -182,6 +182,10 @@ export interface ResourceCost {
   metal: number;
   bricks: number;
   tools?: number;
+  /** One-time flat surcharges in stockpile-materials pools (e.g. the 1
+   *  Scientific Material IFZ requires to establish a Research Center).
+   *  Never volume- or percentage-scaled. */
+  scientific_materials?: number;
 }
 
 export interface BuildingDefenceProperties {
@@ -296,6 +300,9 @@ export interface FunctionalBuildingDefinition {
     dischargeKw: number;
     powerRadiusM: number;
   };
+  /** One-time flat establishment surcharge (per facility, never size-scaled).
+   *  §Research Center: 1 Scientific Material required to build. */
+  constructionSurcharge?: ResourceCost;
   storageCapacity?: number;
   housingCapacity?: number;
   squadCapacity?: number;

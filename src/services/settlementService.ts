@@ -3,6 +3,7 @@ import {
   calculatePolygonArea,
   FUNCTIONAL_BUILDING_DEFINITIONS,
   getAdaptedCost,
+  getConstructionSurcharge,
 } from '../data/functionalBuildings';
 import { BuildingPolygon, Point2D } from '../types/map';
 import {
@@ -295,7 +296,8 @@ export function canAffordCost(stockpile: SettlementStockpile, cost: ResourceCost
     stockpile.materials.wood >= (cost.wood || 0) &&
     stockpile.materials.metal >= (cost.metal || 0) &&
     stockpile.materials.bricks >= (cost.bricks || 0) &&
-    (stockpile.materials.tools || 0) >= (cost.tools || 0)
+    (stockpile.materials.tools || 0) >= (cost.tools || 0) &&
+    (stockpile.materials.scientific_materials || 0) >= (cost.scientific_materials || 0)
   );
 }
 
@@ -311,6 +313,10 @@ export function deductCost(stockpile: SettlementStockpile, cost: ResourceCost): 
       metal: Math.max(0, stockpile.materials.metal - (cost.metal || 0)),
       bricks: Math.max(0, stockpile.materials.bricks - (cost.bricks || 0)),
       tools: Math.max(0, (stockpile.materials.tools || 0) - (cost.tools || 0)),
+      scientific_materials: Math.max(
+        0,
+        (stockpile.materials.scientific_materials || 0) - (cost.scientific_materials || 0)
+      ),
     },
   };
 }
@@ -620,11 +626,26 @@ export function adaptBuilding(
     bricks: Math.ceil(baseCost.bricks * incrementalPercentage / 100),
     tools: baseCost.tools ? Math.ceil(baseCost.tools * incrementalPercentage / 100) : 0,
   };
-  if (!canAffordCost(state.stockpile, cost)) {
+  // §IFZ Research Center: establishing a NEW facility costs a flat 1 Scientific
+  // Material on top of the scaled construction bill — charged once (first
+  // conversion), never on later expansion increments.
+  const isNewFacility = !existing;
+  const finalCost: ResourceCost = isNewFacility
+    ? {
+        ...cost,
+        scientific_materials:
+          getConstructionSurcharge(typeId).scientific_materials || 0,
+      }
+    : cost;
+  if (!canAffordCost(state.stockpile, finalCost)) {
+    const scimatNote =
+      (finalCost.scientific_materials || 0) > 0
+        ? ` / ${finalCost.scientific_materials} SciMat`
+        : '';
     return {
       success: false,
       newState: state,
-      error: `Insufficient construction materials (Requires: ${cost.wood}W / ${cost.metal}M / ${cost.bricks}B)`,
+      error: `Insufficient construction materials (Requires: ${finalCost.wood}W / ${finalCost.metal}M / ${finalCost.bricks}B${scimatNote})`,
     };
   }
 
@@ -690,8 +711,8 @@ export function adaptBuilding(
     state: 'traveling',
     position: { ...(getPrimaryHQ(state)?.center || bldg.center) },
     targetPosition: { ...bldg.center },
-    totalCost: cost,
-    deductedCost: { wood: 0, metal: 0, bricks: 0, tools: 0 },
+    totalCost: finalCost,
+    deductedCost: { wood: 0, metal: 0, bricks: 0, tools: 0, scientific_materials: 0 },
     progress: 0,
     createdAt: Date.now(),
   };
@@ -892,12 +913,20 @@ export function buildFreestanding(
     };
   }
 
-  const cost = def.freestandingCost;
+  const surcharge = getConstructionSurcharge(typeId);
+  const cost: ResourceCost = {
+    ...def.freestandingCost,
+    scientific_materials: surcharge.scientific_materials || 0,
+  };
   if (!canAffordCost(state.stockpile, cost)) {
+    const scimatNote =
+      (cost.scientific_materials || 0) > 0
+        ? ` / ${cost.scientific_materials} SciMat`
+        : '';
     return {
       success: false,
       newState: state,
-      error: `Insufficient construction materials (Requires: ${cost.wood}W / ${cost.metal}M / ${cost.bricks}B)`,
+      error: `Insufficient construction materials (Requires: ${cost.wood}W / ${cost.metal}M / ${cost.bricks}B${scimatNote})`,
     };
   }
 
@@ -965,7 +994,7 @@ export function buildFreestanding(
     position: { ...(getPrimaryHQ(state)?.center || position) },
     targetPosition: { ...position },
     totalCost: cost,
-    deductedCost: { wood: 0, metal: 0, bricks: 0, tools: 0 },
+    deductedCost: { wood: 0, metal: 0, bricks: 0, tools: 0, scientific_materials: 0 },
     progress: 0,
     createdAt: Date.now(),
   };
