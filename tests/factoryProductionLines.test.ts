@@ -182,3 +182,21 @@ test('two factories running the same gear line each complete one pistol', () => 
   const r = tick(two);
   assert.equal(armoryCount(r, 'pistol'), 2, 'both factories complete their pistol line independently');
 });
+
+test('tool factory output accrues into the cumulative production tally (itemsProduced)', () => {
+  const state = mkState({ tf: { typeId: 'tool_factory', workers: 6 } }, { wood: 60, metal: 60 });
+  const r = tick(state, DAY * 4); // 4 full days
+  const produced = (r.lifetimeStats as any)?.itemsProduced?.tools ?? 0;
+  assert.ok(produced >= 11.5, `4 days × 3 tools/day should accrue ~12 produced (got ${produced})`);
+  // Tally equals what actually entered the stockpile.
+  assert.ok(Math.abs(r.stockpile.materials.tools - produced) < 0.5, 'tally tracks real stockpile output');
+});
+
+test('arms factory ammo line tallies crates (1/day) alongside pooled ammo without touching the crate stockpile', () => {
+  const state = mkState({ a: { typeId: 'arms_factory', workers: 6, recipe: 'ammo_crates' } }, { metal: 80 });
+  const r = tick(state, DAY * 3); // 3 full days
+  const items = (r.lifetimeStats as any)?.itemsProduced ?? {};
+  assert.ok(Math.abs(items.ammo - 60) < 1, `3 days × 20 rounds pooled (got ${items.ammo})`);
+  assert.ok(Math.abs(items.crates - 3) < 0.01, `3 days × 1 crate tallied (got ${items.crates})`);
+  assert.equal(r.stockpile.ammo.crates, undefined, 'crates meter never writes into the stockpile');
+});

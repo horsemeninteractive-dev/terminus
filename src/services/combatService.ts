@@ -748,6 +748,12 @@ export interface CombatTickResult {
   updatedHostileHumans: HostileHumanUnit[];
   capturedSquadIds: string[];
   ammoConsumed: number;
+  /** Fresh infected deaths this tick — the authoritative colony kill counter.
+   *  Every kill source (squad fire/melee, wire bleed, tower fire, vehicle ram)
+   *  funnels through the zombie update map exactly once: same-tick sources
+   *  arrive with currentHp <= 0 already, next-tick sources are caught the
+   *  following pass while still state !== 'dead'. */
+  zombiesKilled: number;
 }
 
 /** True when stepAlongPath produced the dead one-point path: the goal is
@@ -1179,9 +1185,17 @@ export function tickCombatSimulation(
       : medSquads;
 
   // 3. Update Zombies (Dormancy Lore, Noise Detection, Pathing, Combat vs Squads & Buildings)
+  // Zombies killed by squad fire / melee are mutated to currentHp <= 0 earlier
+  // in this same tick (step 2) and reach the map below still state !== 'dead';
+  // wire bleed kills the zombie inside the map itself. Tower / vehicle kills
+  // land next tick with currentHp <= 0 and state !== 'dead'. Either way this
+  // transition is the single point where a zombie becomes 'dead' — counting it
+  // once here is the authoritative colony kill tally (no double counts).
+  let zombiesKilled = 0;
   const updatedZombies = zombies
     .map((zombie) => {
       if (zombie.currentHp <= 0) {
+        if (zombie.state !== 'dead') zombiesKilled += 1;
         return { ...zombie, state: 'dead' as const };
       }
 
@@ -2030,6 +2044,7 @@ export function tickCombatSimulation(
     updatedAdaptedBuildings: adaptedBuildings,
     activeNoiseEvents,
     newVisualFx,
+    zombiesKilled,
     settlementNotifications,
     newInfections,
     fallenHeroEvents,
@@ -2476,7 +2491,7 @@ export function syncTacticalSquadUnits(
       z: hqPos.z + Math.sin(spawnAngle) * 12,
     };
 
-    return createTacticalSquadUnit(
+    const newUnit = createTacticalSquadUnit(
       sq.id,
       sq.name,
       sq.leaderId,
@@ -2487,6 +2502,16 @@ export function syncTacticalSquadUnits(
       hasLeader,
       sq.trainingTier ?? 0
     );
+
+    // §4.3 Apply weapon loadout chosen at muster time. The armory deduction
+    // already happened in createSquad — here we just stamp the weaponId on
+    // every member so the tactical unit reflects the correct gear.
+    const loadout = sq.weaponLoadout ?? 'knife';
+    if (loadout !== 'knife') {
+      newUnit.members = newUnit.members.map((m) => ({ ...m, weaponId: loadout as WeaponItemId }));
+      return recomputeSquadStats(newUnit);
+    }
+    return newUnit;
   });
 }
 

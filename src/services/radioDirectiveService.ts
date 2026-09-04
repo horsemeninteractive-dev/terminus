@@ -9,6 +9,61 @@ import { SettlementState } from '../types/settlement';
 import { GameClockState, ZombieUnit } from '../types/combat';
 import { getPrimaryHQ } from './buildingOperational';
 
+// ---------------------------------------------------------------------------
+// Transmission archive query helpers (pure — unit-tested)
+// ---------------------------------------------------------------------------
+
+export type TransmissionReadFilter = 'ALL' | 'UNREAD' | 'READ';
+
+export type TransmissionCategory = 'mission' | 'directive' | 'informational';
+
+export interface TransmissionLogFilters {
+  classification?: TransmissionClassification | 'ALL';
+  read?: TransmissionReadFilter;
+  /** mission-related / directive-related / informational (no relation). */
+  category?: TransmissionCategory | 'ALL';
+  /** true = only transmissions whose mission was declined. */
+  declinedOnly?: boolean;
+}
+
+/** A transmission's relationship to missions/directives (archive categorisation). */
+export function getTransmissionCategory(tx: RadioTransmission): TransmissionCategory {
+  if (tx.missionId) return 'mission';
+  if (tx.directiveId) return 'directive';
+  return 'informational';
+}
+
+/** True when the transmission briefs a mission the player explicitly declined. */
+export function isTransmissionDeclined(
+  tx: RadioTransmission,
+  declinedMissionIds: string[] = []
+): boolean {
+  return Boolean(tx.missionId && declinedMissionIds.includes(tx.missionId));
+}
+
+/**
+ * Applies archive filters. `declinedMissionIds` comes from mission state — a
+ * transmission counts as declined when its mission was refused.
+ */
+export function filterTransmissionLog(
+  log: RadioTransmission[],
+  filters: TransmissionLogFilters,
+  declinedMissionIds: string[] = []
+): RadioTransmission[] {
+  return log.filter((tx) => {
+    if (filters.classification && filters.classification !== 'ALL' && tx.classification !== filters.classification) {
+      return false;
+    }
+    if (filters.read === 'UNREAD' && tx.isRead) return false;
+    if (filters.read === 'READ' && !tx.isRead) return false;
+    if (filters.category && filters.category !== 'ALL' && getTransmissionCategory(tx) !== filters.category) {
+      return false;
+    }
+    if (filters.declinedOnly && !isTransmissionDeclined(tx, declinedMissionIds)) return false;
+    return true;
+  });
+}
+
 export const CLASSIFICATION_COLORS: Record<
   TransmissionClassification,
   { bg: string; border: string; text: string; badge: string; glow: string }
@@ -115,6 +170,7 @@ export function getInitialRadioDirectiveState(): RadioDirectiveState {
     transmissionLog: [initialTransmission],
     unreadCount: 1,
     currentIncomingTransmission: initialTransmission,
+    incomingQueue: ['tx_init_01'],
   };
 }
 
@@ -547,14 +603,26 @@ export function updateRadioDirectiveSystem(
     }
   }
 
+  // Maintain the ordered unread queue: preserve existing unread entries,
+  // append newly generated unread transmissions, drop anything now read.
+  const existingQueue = (currentState.incomingQueue || []).filter((id) => {
+    const rec = newLog.find((t) => t.id === id);
+    return rec && !rec.isRead;
+  });
+  const freshUnread = generatedTransmissions
+    .filter((tx) => !tx.isRead)
+    .map((tx) => tx.id)
+    .filter((id) => !existingQueue.includes(id));
+  const incomingQueue = [...existingQueue, ...freshUnread];
+  const firstQueued = incomingQueue.length > 0 ? newLog.find((t) => t.id === incomingQueue[0]) : null;
   const latestIncoming =
-    generatedTransmissions.length > 0
-      ? generatedTransmissions[0]
-      : currentState.currentIncomingTransmission;
+    firstQueued ||
+    (generatedTransmissions.length > 0 ? generatedTransmissions[0] : null) ||
+    (currentState.currentIncomingTransmission && !currentState.currentIncomingTransmission.isRead
+      ? currentState.currentIncomingTransmission
+      : null);
 
-  const newUnreadCount =
-    currentState.unreadCount +
-    generatedTransmissions.filter((tx) => !tx.isRead).length;
+  const newUnreadCount = newLog.filter((tx) => !tx.isRead).length;
 
   return {
     newState: {
@@ -564,6 +632,7 @@ export function updateRadioDirectiveSystem(
       transmissionLog: newLog,
       unreadCount: newUnreadCount,
       currentIncomingTransmission: latestIncoming,
+      incomingQueue,
     },
     newTransmissionsCount: generatedTransmissions.length,
   };
@@ -581,10 +650,14 @@ export function acknowledgeTransmission(
     tx.id === transmissionId ? { ...tx, isRead: true } : tx
   );
   const unreadCount = newLog.filter((tx) => !tx.id || !tx.isRead).length;
-  const currentIncoming =
-    state.currentIncomingTransmission?.id === transmissionId
-      ? null
-      : state.currentIncomingTransmission;
+  const incomingQueue = (state.incomingQueue || []).filter((id) => id !== transmissionId);
+  // The incoming pointer always advances to the next unread queued entry
+  // (never left on an already-read transmission).
+  const nextQueued =
+    incomingQueue.length > 0
+      ? newLog.find((t) => t.id === incomingQueue[0]) || null
+      : newLog.find((t) => !t.isRead) || null;
+  const currentIncoming = nextQueued;
 
   // Move associated pending directive to activeDirectives (so quest tracker only now populates!)
   let updatedActive = [...state.activeDirectives];
@@ -610,6 +683,7 @@ export function acknowledgeTransmission(
     transmissionLog: newLog,
     unreadCount,
     currentIncomingTransmission: currentIncoming,
+    incomingQueue,
   };
 }
 

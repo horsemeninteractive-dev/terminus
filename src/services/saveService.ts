@@ -12,6 +12,17 @@ import { createEmptyTrainingState } from '../types/training';
 
 const SAVE_STORAGE_KEY_PREFIX = 'terminus_ifz_save_';
 const SAVE_INDEX_KEY = 'terminus_ifz_save_index';
+/** Maximum save slots surfaced in the index (legacy UI contract). */
+const SAVE_INDEX_MAX = 20;
+/**
+ * Autosaves are checkpoint noise produced every dawn — keep only the newest
+ * handful and delete the rest. Old versions pruned the index but never removed
+ * the payload keys, so every save ever written stayed in localStorage until
+ * the quota filled and ALL saves (autosaves included) began throwing
+ * QuotaExceededError.
+ */
+const AUTOSAVE_KEEP = 4;
+const QUICKSAVE_KEEP = 8;
 
 function mapToEntries(map: any): any[] {
   if (!map) return [];
@@ -331,6 +342,92 @@ export class SaveGameService {
     return list.length > 0 ? list[0] : null;
   }
 
+  private removePayload(id: string): void {
+    try {
+      localStorage.removeItem(`${SAVE_STORAGE_KEY_PREFIX}${id}`);
+    } catch (e) {
+      console.warn(`Failed to remove save payload ${id}:`, e);
+    }
+  }
+
+  /**
+   * Delete every payload key that is not referenced by the current save index.
+   * Old pruning bugs (and writes that crashed between storing the payload and
+   * updating the index) leave orphaned keys behind; they accumulate until the
+   * localStorage quota fills.
+   */
+  private removeOrphanedPayloads(keepIds: Set<string>): void {
+    try {
+      const doomed: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith(SAVE_STORAGE_KEY_PREFIX)) {
+          const id = key.slice(SAVE_STORAGE_KEY_PREFIX.length);
+          if (!keepIds.has(id)) doomed.push(key);
+        }
+      }
+      for (const key of doomed) localStorage.removeItem(key);
+    } catch (e) {
+      console.warn('Failed to reconcile orphaned save payloads:', e);
+    }
+  }
+
+  /**
+   * Free localStorage headroom BEFORE a new save payload is written. The id
+   * about to be written (`protectId`) is never pruned; the caller re-adds its
+   * index entry after the payload lands.
+   *
+   * Normal mode caps autosaves/quicksaves and drops the oldest entries past
+   * the global slot cap — enough to keep dawn autosaves succeeding forever.
+   * Aggressive mode (retry after a quota failure) additionally cuts manual
+   * saves to the newest few so a huge map can still be written.
+   */
+  private pruneSaveStorage(protectId: string, aggressive = false, newType?: SaveGameMeta['type']): void {
+    let survivors = this.listSaves().filter((s) => s.id !== protectId);
+
+    // The save about to be written counts toward its own type's cap, so keep
+    // (cap - 1) existing entries of that type (the caller adds the new one).
+    const roomFor = (cap: number, type: SaveGameMeta['type']) =>
+      newType === type ? Math.max(0, cap - 1) : cap;
+    const dropOldestOfType = (type: SaveGameMeta['type'], cap: number) => {
+      if (cap < 0) return;
+      const ofType = survivors
+        .filter((s) => s.type === type)
+        .sort((a, b) => a.timestamp - b.timestamp); // oldest first
+      const dropped = ofType.slice(0, Math.max(0, ofType.length - cap));
+      for (const s of dropped) {
+        this.removePayload(s.id);
+      }
+      const droppedIds = new Set(dropped.map((s) => s.id));
+      survivors = survivors.filter((s) => !droppedIds.has(s.id));
+    };
+
+    // Autosaves regenerate every dawn — keep them tight so repeat sessions can
+    // never fill the quota again. Player-made saves live longer.
+    dropOldestOfType('autosave', roomFor(aggressive ? 1 : AUTOSAVE_KEEP, 'autosave'));
+    dropOldestOfType('quicksave', roomFor(aggressive ? 2 : QUICKSAVE_KEEP, 'quicksave'));
+    if (aggressive) dropOldestOfType('manual', roomFor(3, 'manual'));
+
+    // Global slot cap: leave room for the incoming save, drop the oldest
+    // survivors past that point and delete their payloads (the legacy bug).
+    survivors = survivors.sort((a, b) => b.timestamp - a.timestamp);
+    for (const s of survivors.slice(SAVE_INDEX_MAX - 1)) {
+      this.removePayload(s.id);
+    }
+    survivors = survivors.slice(0, SAVE_INDEX_MAX - 1);
+
+    // Sweep orphaned payloads left behind by older versions / crashed writes.
+    const keepIds = new Set<string>([...survivors.map((s) => s.id), protectId]);
+    this.removeOrphanedPayloads(keepIds);
+
+    // Persist the shrunk index (without protectId — the caller prepends it).
+    try {
+      localStorage.setItem(SAVE_INDEX_KEY, JSON.stringify(survivors));
+    } catch (e) {
+      console.warn('Failed to persist pruned save index:', e);
+    }
+  }
+
   /**
    * Save a full game session
    */
@@ -347,6 +444,7 @@ export class SaveGameService {
       mapData: any;
       caravans: any[];
       radioState?: any;
+      missionState?: any;
       tutorialStep?: string;
       hasCompletedFirstScavenge?: boolean;
       combatSquads?: any[];
@@ -427,6 +525,7 @@ export class SaveGameService {
         mapData: payload.mapData,
         caravans: payload.caravans,
         radioState: payload.radioState,
+        missionState: payload.missionState,
         tutorialStep: payload.tutorialStep,
         hasCompletedFirstScavenge: payload.hasCompletedFirstScavenge ?? true,
         combatSquads: payload.combatSquads,
@@ -441,14 +540,31 @@ export class SaveGameService {
     };
 
     try {
-      // Store save data
-      localStorage.setItem(`${SAVE_STORAGE_KEY_PREFIX}${id}`, JSON.stringify(fullSaveData));
+      // Free space BEFORE writing the payload: cap autosaves/quicksaves, drop
+      // the oldest slots past the global cap, and delete payloads orphaned by
+      // old index-only pruning. Without this, localStorage fills with every
+      // save ever written and new autosaves throw QuotaExceededError.
+      this.pruneSaveStorage(id, false, type);
+      try {
+        localStorage.setItem(`${SAVE_STORAGE_KEY_PREFIX}${id}`, JSON.stringify(fullSaveData));
+      } catch (writeErr) {
+        // The payload still did not fit (a huge map, or mostly player-named
+        // saves left). Drop harder — oldest autosaves first, then quicksaves
+        // and the oldest manual saves — and retry once before giving up.
+        console.warn('Save quota hit — pruning aggressively and retrying once.', writeErr);
+        this.pruneSaveStorage(id, true, type);
+        localStorage.setItem(`${SAVE_STORAGE_KEY_PREFIX}${id}`, JSON.stringify(fullSaveData));
+      }
 
       // Update index
       const existingList = this.listSaves().filter((s) => s.id !== id);
       const updatedList = [meta, ...existingList];
-      // Keep max 20 saves in index
-      const pruned = updatedList.slice(0, 20);
+      // Keep max 20 saves in index — anything that falls off has its payload
+      // deleted (prune already guaranteed room, this slice is belt & braces).
+      const pruned = updatedList.slice(0, SAVE_INDEX_MAX);
+      for (const dropped of updatedList.slice(SAVE_INDEX_MAX)) {
+        this.removePayload(dropped.id);
+      }
       localStorage.setItem(SAVE_INDEX_KEY, JSON.stringify(pruned));
     } catch (e) {
       console.error('Failed to save game to localStorage:', e);
@@ -517,11 +633,16 @@ export class SaveGameService {
       data.meta.id = id;
       data.meta.name = `[Imported] ${data.meta.name}`;
 
+      this.pruneSaveStorage(id, false, data.meta.type);
       localStorage.setItem(`${SAVE_STORAGE_KEY_PREFIX}${id}`, JSON.stringify(data));
 
       const existingList = this.listSaves().filter((s) => s.id !== id);
-      const updatedList = [data.meta, ...existingList].slice(0, 20);
-      localStorage.setItem(SAVE_INDEX_KEY, JSON.stringify(updatedList));
+      const updatedList = [data.meta, ...existingList];
+      const pruned = updatedList.slice(0, SAVE_INDEX_MAX);
+      for (const dropped of updatedList.slice(SAVE_INDEX_MAX)) {
+        this.removePayload(dropped.id);
+      }
+      localStorage.setItem(SAVE_INDEX_KEY, JSON.stringify(pruned));
 
       return data.meta;
     } catch (e) {

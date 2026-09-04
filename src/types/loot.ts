@@ -175,6 +175,52 @@ export function generateBuildingLoot(
       }
       break;
 
+    case 'school':
+      items.push({
+        id: `mat_scientific_${Date.now()}_1`,
+        name: 'Scientific Research Data & Equipment',
+        category: 'materials',
+        quantity: Math.max(1, Math.round((1 + Math.floor(Math.random() * 2)) * scale)),
+        weightKg: 1.0,
+        description: 'Scientific instruments, lab notes, and research specimens.',
+      });
+      items.push({
+        id: `med_firstaid_${Date.now()}_2`,
+        name: 'Infirmary First-Aid Kit',
+        category: 'medical',
+        quantity: Math.round((1 + Math.floor(Math.random() * 3)) * scale),
+        weightKg: 0.8,
+        description: 'School nurse emergency supplies.',
+      });
+      items.push({
+        id: `food_canned_${Date.now()}_3`,
+        name: 'Cafeteria Preserved Rations',
+        category: 'food',
+        quantity: Math.round((2 + Math.floor(Math.random() * 5)) * scale),
+        weightKg: 0.5,
+        description: 'Pantry goods salvaged from school cafeteria.',
+      });
+      break;
+
+    case 'commercial':
+      items.push({
+        id: `food_pantry_${Date.now()}_1`,
+        name: 'Office Breakroom Supplies',
+        category: 'food',
+        quantity: Math.round((2 + Math.floor(Math.random() * 4)) * scale),
+        weightKg: 0.5,
+        description: 'Non-perishable snacks and beverages recovered from commercial suites.',
+      });
+      items.push({
+        id: `mat_tools_${Date.now()}_2`,
+        name: 'Utility Maintenance Tools',
+        category: 'materials',
+        quantity: Math.round((1 + Math.floor(Math.random() * 3)) * scale),
+        weightKg: 1.2,
+        description: 'Hardware tools and maintenance gear.',
+      });
+      break;
+
     case 'residential':
     default:
       items.push({

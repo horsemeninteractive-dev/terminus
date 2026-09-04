@@ -7,6 +7,7 @@ import { createInitialSettlementState } from '../services/settlementService';
 import { DAILY_WATER_PER_PERSON, STARTING_WATER_DAYS } from '../services/waterService';
 import { createInitialGameClock } from '../services/combatService';
 import { getInitialRadioDirectiveState } from '../services/radioDirectiveService';
+import { getInitialMissionState, reconcileMissionSnapshot } from '../services/missionService';
 import { DEFAULT_PRESET } from '../data/sampleMapData';
 import { soundService, ToastMessage } from '../services/soundService';
 import type { BuildingPolygon, LocationPreset, MapData, SettlementPlacement } from '../types/map';
@@ -14,6 +15,7 @@ import type { CaravanDispatchConfig, SettlementRecord, TradeCaravan } from '../t
 import type { GameScenarioSettings, GameSettings, SatelliteQuality } from '../types/saveGame';
 import type { GameClockState, TacticalSquadUnit, ZombieUnit } from '../types/combat';
 import type { SettlementState } from '../types/settlement';
+import type { MissionState } from '../types/mission';
 import type { RadioDirectiveState, RadioTransmission } from '../types/radioDirective';
 import type { TimeOfDay, WorldScene } from '../render/WorldScene';
 
@@ -33,6 +35,7 @@ export interface SaveLoadRuntime {
   mapDataRef: MutableRefObject<MapData | null>;
   caravans: TradeCaravan[];
   radioDirectiveState: RadioDirectiveState;
+  missionState: MissionState;
   combatSquads: TacticalSquadUnit[];
   scavengeQueue: Record<string, Array<string | number>>;
   zombies: ZombieUnit[];
@@ -63,6 +66,7 @@ export interface SaveLoadRuntime {
   setCaravans: Dispatch<SetStateAction<TradeCaravan[]>>;
   setRadioDirectiveState: Dispatch<SetStateAction<RadioDirectiveState>>;
   setActiveRadioTransmission: Dispatch<SetStateAction<RadioTransmission | null>>;
+  setMissionState: Dispatch<SetStateAction<MissionState>>;
   setDangerLevel: Dispatch<SetStateAction<number>>;
   setTimeOfDay: Dispatch<SetStateAction<TimeOfDay>>;
   setCombatSquads: Dispatch<SetStateAction<TacticalSquadUnit[]>>;
@@ -106,6 +110,7 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
     mapDataRef,
     caravans,
     radioDirectiveState,
+    missionState,
     combatSquads,
     scavengeQueue,
     zombies,
@@ -135,6 +140,7 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
     setCaravans,
     setRadioDirectiveState,
     setActiveRadioTransmission,
+    setMissionState,
     setDangerLevel,
     setTimeOfDay,
     setCombatSquads,
@@ -194,6 +200,7 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
             mapData: mapDataRef.current || mapData,
             caravans,
             radioState: radioDirectiveState,
+            missionState: missionState,
             hasCompletedFirstScavenge: true,
             combatSquads,
             zombies,
@@ -267,6 +274,7 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
           mapData: mapDataRef.current || mapData,
           caravans,
           radioState: radioDirectiveState,
+          missionState: missionState,
           hasCompletedFirstScavenge: true,
           combatSquads,
           scavengeQueue,
@@ -331,6 +339,30 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
         if (payload.radioState) {
           setRadioDirectiveState(payload.radioState);
           setActiveRadioTransmission(payload.radioState.currentIncomingTransmission || null);
+        }
+        if (payload.missionState) {
+          // Reconcile the world snapshot on load so the next tick fires no
+          // false triggers from the time that passed while the game was off.
+          setMissionState(() =>
+            reconcileMissionSnapshot(
+              {
+                ...getInitialMissionState(),
+                ...payload.missionState,
+                // Merge, not replace: factions added in later versions keep
+                // their defaults on older saves that predate them.
+                factionRelations: {
+                  ...getInitialMissionState().factionRelations,
+                  ...(payload.missionState.factionRelations || {}),
+                },
+              },
+              payload.settlement || settlement,
+              payload.gameClock || gameClock
+            )
+          );
+        } else {
+          setMissionState((prev) =>
+            reconcileMissionSnapshot(prev, payload.settlement || settlement, payload.gameClock || gameClock)
+          );
         }
         setDangerLevel(payload.dangerLevel || 0);
         setTimeOfDay((payload.timeOfDay as TimeOfDay) || 'day');
@@ -493,6 +525,7 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
       setIsExtinct(false);
       setRadioDirectiveState(getInitialRadioDirectiveState());
       setActiveRadioTransmission(getInitialRadioDirectiveState().currentIncomingTransmission);
+      setMissionState(getInitialMissionState());
 
       setIsNewGameModalOpen(false);
 

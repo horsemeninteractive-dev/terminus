@@ -4,6 +4,12 @@ import { getPrimaryHQ } from '../services/buildingOperational';
 import { createFogGrid, markExploredCells, discoverGroupsInVision, discoverThreatsInVision } from '../services/fogOfWarService';
 import { generateRivalHideouts, generateZombieLairs } from '../services/rivalFactionService';
 import { updateRadioDirectiveSystem } from '../services/radioDirectiveService';
+import {
+  applyMissionRewards,
+  reconcileMissionSnapshot,
+  updateMissionSystem,
+} from '../services/missionService';
+import { enqueueTransmissions } from '../services/transmissionService';
 import { calculateGlobalNetworkStats, tickCaravansSimulation } from '../services/caravanService';
 import {
   evaluateSettlementLoss,
@@ -17,9 +23,11 @@ import type { AppViewMode } from '../App';
 import type { WorldScene } from '../render/WorldScene';
 import type { GameClockState, ZombieUnit, TacticalSquadUnit } from '../types/combat';
 import type { SettlementState } from '../types/settlement';
+import type { ScavengeLootFilter } from '../components/TacticalMinimapWidget';
 import type { MapData, ResourceNode, BuildingPolygon } from '../types/map';
 import type { HiddenSurvivorGroup } from '../types/population';
 import type { RadioDirectiveState, RadioTransmission } from '../types/radioDirective';
+import type { MissionState } from '../types/mission';
 import type { SettlementRecord, TradeCaravan } from '../types/caravan';
 
 export interface WorldEffectsRuntime {
@@ -37,7 +45,7 @@ export interface WorldEffectsRuntime {
   pathGridRef: React.MutableRefObject<PathGrid | null>;
   roadGraphRef: React.MutableRefObject<RoadNetworkGraph | null>;
   sceneRef: React.MutableRefObject<WorldScene | null>;
-  fogVisibleCellsRef: React.MutableRefObject<Set<string>>;
+  fogVisibleCellsRef: React.MutableRefObject<Set<number>>;
   combatSquadsRef: React.MutableRefObject<TacticalSquadUnit[]>;
   radioAlertIdsRef: React.MutableRefObject<Set<string>>;
   lairDiscoveryAlertIdsRef: React.MutableRefObject<Set<string>>;
@@ -46,7 +54,7 @@ export interface WorldEffectsRuntime {
   selectedVehicleId: string | null;
   selectedResourceNode: ResourceNode | null;
   isScavengeViewActive: boolean;
-  scavengeFilterType: string | null;
+  scavengeFilterType: ScavengeLootFilter;
   showStreetLabels: boolean;
   showSatelliteOverlay: boolean;
   labelDetailMode: 'detailed' | 'minimal';
@@ -88,6 +96,8 @@ export interface WorldEffectsRuntime {
   setRadioDirectiveState: React.Dispatch<React.SetStateAction<RadioDirectiveState>>;
   setActiveRadioTransmission: React.Dispatch<React.SetStateAction<RadioTransmission | null>>;
   setIsRadioModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  missionState: MissionState;
+  setMissionState: React.Dispatch<React.SetStateAction<MissionState>>;
   setZombies: React.Dispatch<React.SetStateAction<ZombieUnit[]>>;
   addTacticalAlert: (title: string, desc: string, type: 'danger' | 'warn' | 'info' | 'success', onClick?: () => void) => void;
 }
@@ -171,6 +181,8 @@ export function useWorldEffects(runtime: WorldEffectsRuntime): WorldEffectsOutpu
     setRadioDirectiveState,
     setActiveRadioTransmission,
     setIsRadioModalOpen,
+    missionState,
+    setMissionState,
     setZombies,
     addTacticalAlert,
   } = runtime;
@@ -622,6 +634,7 @@ export function useWorldEffects(runtime: WorldEffectsRuntime): WorldEffectsOutpu
   }, [viewMode, isDescentActive, mapData, activeSettlementId, caravans]);
 
   // Safe Zones Operations Radio Directive System Evaluation Loop (§TERMINUS PROTOCOL)
+  // + Campaign mission engine tick (TRIGGER → TRANSMISSION → RESPONSE → MISSION).
   useEffect(() => {
     if (viewMode !== 'world' || isDescentActive || !mapData) return;
     const interval = setInterval(() => {
@@ -662,6 +675,50 @@ export function useWorldEffects(runtime: WorldEffectsRuntime): WorldEffectsOutpu
 
         return newState;
       });
+
+      // Campaign mission engine — derives events from the world snapshot,
+      // fires triggers, queues briefing transmissions (never missions
+      // directly), evaluates active mission tasks, applies rewards.
+      const curSettlement = settlementRef.current || settlement;
+      const curClock = gameClockRef.current || gameClock;
+      const ctx = {
+        mapData,
+        caravans,
+        settlements: Object.values(settlements || {}).map((s) => ({
+          id: s.id,
+          name: s.name,
+        })),
+      };
+      setMissionState((prevMission) => {
+        const result = updateMissionSystem(prevMission, curSettlement, curClock, ctx);
+        if (result.newTransmissions.length > 0) {
+          setRadioDirectiveState((prevRadio) =>
+            enqueueTransmissions(prevRadio, result.newTransmissions)
+          );
+          for (const tx of result.newTransmissions) {
+            if (radioAlertIdsRef.current.has(tx.id)) continue;
+            radioAlertIdsRef.current.add(tx.id);
+            soundService.playRadioChirp();
+            addTacticalAlert(
+              `RADIO: ${tx.classification}`,
+              `${tx.callsign}: ${tx.title}`,
+              tx.priority === 'critical'
+                ? 'danger'
+                : tx.priority === 'high'
+                ? 'warn'
+                : 'info',
+              () => {
+                setActiveRadioTransmission(tx);
+                setIsRadioModalOpen(true);
+              }
+            );
+          }
+        }
+        if (result.rewards) {
+          setSettlement((prev) => applyMissionRewards(prev, result.rewards!));
+        }
+        return result.newState;
+      });
     }, 1000);
 
     return () => clearInterval(interval);
@@ -670,6 +727,8 @@ export function useWorldEffects(runtime: WorldEffectsRuntime): WorldEffectsOutpu
     isDescentActive,
     Boolean(mapData),
     addTacticalAlert,
+    caravans,
+    settlements,
   ]);
 
   // Inter-Colony Trade Caravans Simulation Loop (Every 1 second) (§7.5)

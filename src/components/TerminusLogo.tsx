@@ -101,6 +101,27 @@ export const TerminusLogo: React.FC<TerminusLogoProps> = ({
     xl: 'gap-2 md:gap-3',
   };
 
+  const subtitleBoxStyles = {
+    sm: 'border-[1.5px] px-2 py-0.5 shadow-[0_0_10px_rgba(185,28,28,0.5)]',
+    md: 'border-[2px] px-2.5 py-1 shadow-[0_0_12px_rgba(185,28,28,0.55)]',
+    lg: 'border-[2.5px] md:border-[3px] px-2.5 py-1 md:px-3 md:py-1.5 shadow-[0_0_14px_rgba(185,28,28,0.55)]',
+    xl: 'border-[3px] md:border-[4px] p-2 md:p-3 shadow-[0_0_18px_rgba(185,28,28,0.55)]',
+  };
+
+  const subtitleTextStyles = {
+    sm: 'text-[9px] md:text-[10px] tracking-[0.14em]',
+    md: 'text-[11px] md:text-xs tracking-[0.16em]',
+    lg: 'text-xs sm:text-sm md:text-base tracking-[0.16em] md:tracking-[0.18em]',
+    xl: 'text-xl sm:text-2xl md:text-3xl tracking-[0.18em]',
+  };
+
+  const subtitleTabStyles = {
+    sm: 'w-0.5 h-1.5 -bottom-1.5',
+    md: 'w-1 h-2 -bottom-2',
+    lg: 'w-1 md:w-1.5 h-2.5 md:h-3 -bottom-2.5 md:-bottom-3',
+    xl: 'w-1.5 h-3.5 md:h-4 -bottom-3.5 md:-bottom-4',
+  };
+
   return (
     <div className={`flex flex-col select-none ${className}`}>
       <h1
@@ -127,10 +148,23 @@ export const TerminusLogo: React.FC<TerminusLogoProps> = ({
       </h1>
 
       {showSubtitle && (
-        <div className="text-[11px] md:text-xs font-heading font-bold tracking-[0.22em] text-[#8C9BAE] uppercase mt-2.5 flex items-center justify-center gap-2">
-          <span className="w-2 h-2 bg-[#B31217] clip-card-chip inline-block" />
-          <span>REAL-WORLD SURVIVAL STRATEGY</span>
-          <span className="w-2 h-2 bg-[#B31217] clip-card-chip inline-block" />
+        <div
+          className={`mt-2.5 md:mt-3 ${
+            className.includes('items-start') ? 'self-start' : 'self-center text-center'
+          }`}
+        >
+          <div
+            className={`relative ${subtitleBoxStyles[size]} border-[#B31217] inline-block`}
+          >
+            <h2
+              className={`${subtitleTextStyles[size]} font-heading font-bold text-[#EF4444] whitespace-nowrap`}
+            >
+              REAL-WORLD SURVIVAL STRATEGY
+            </h2>
+            <div
+              className={`absolute bg-[#B31217] rounded-b-full -skew-x-12 right-[12%] ${subtitleTabStyles[size]}`}
+            />
+          </div>
         </div>
       )}
     </div>

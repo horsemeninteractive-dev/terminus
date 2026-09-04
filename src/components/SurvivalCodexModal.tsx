@@ -47,9 +47,10 @@ const CODEX_TOPICS: CodexTopic[] = [
  summary: 'Choosing the ideal initial fortification and establishing colony territory.',
  content: {
  overview:
- 'The Headquarters (HQ) is the heartbeat of your Infection Free Zone. If your HQ falls, the settlement collapses. Choose a building with large floor space, multi-floor levels, and solid masonry for higher structural defense rating.',
+ 'The Headquarters (HQ) is the heartbeat of the settlement. If your HQ falls, the colony collapses. Choose a building with large floor space, multi-floor levels, and solid masonry for a higher structural defense rating.',
  keyPoints: [
- 'Large floor footprints offer higher base defense ratings and storage space.',
+ 'The PRIMARY HQ is command infrastructure, not a warehouse: its vault is a fixed 850 storage units and it commands a fixed squad complement of 2 — no matter how vast the building is.',
+ 'Larger footprints still raise the HQ\'s defense rating and initial bunk capacity; ADDITIONAL HQs and SQUAD QUARTERS scale with their size.',
  'Masonry (brick/stone) buildings resist zombie breaches better than light wooden structures.',
  'Initial HQ selection provides starting stockpile drop points and safe bunk rooms for your initial survivor detachment.',
  ],
@@ -69,8 +70,9 @@ const CODEX_TOPICS: CodexTopic[] = [
  overview:
  'Tactical squads are 4-person units formed from your named survivors and general workforce. They execute real-time movement, building breach operations, and defensive firepower along street corridors.',
  keyPoints: [
- 'Line of sight and range determine weapon effectiveness. Assault rifles have high burst DPS, while Hunting Rifles excel at long-range perimeter defense.',
- 'Pistols consume less ammunition but require close-range engagements.',
+ 'Line of sight and range determine weapon effectiveness: Pistol 28 m, Pump Shotgun 22 m, Assault Rifle 36 m, Hunting Rifle 42 m, Heavy Machine Gun 42 m, Sniper Rifle 52 m.',
+ 'Assault rifles deliver high burst DPS at mid range; Hunting Rifles and Snipers own the long field; Pistols are close-quarters weapons that spend less ammunition.',
+ 'Bows are silent and consume no ammunition (40 m range) — the right tool for quiet sectors.',
  'Kevlar vests and ballistic helmets reduce trauma damage during melee zombie swarms.',
  ],
  proTips: [
@@ -87,11 +89,12 @@ const CODEX_TOPICS: CodexTopic[] = [
  summary: 'Sensory behavior, noise mechanics, darkness aggression, and dawn recoveries.',
  content: {
  overview:
- 'Infected are sensitive to ultraviolet light. During daytime (06:00 - 20:00), they shelter inside dark building interiors. When night falls, roaming hordes emerge and actively follow sound events, gunfire acoustics, and engine noises.',
+ 'Infected are sensitive to ultraviolet light. During the day (07:00 - 19:00) they shelter inside dark building interiors. When night falls, roaming hordes emerge and actively follow sound events, gunfire acoustics, and engine noises.',
  keyPoints: [
- 'Daylight (06:00 - 20:00): Safe scavenging and construction window.',
- 'Dusk (18:00 - 20:00): Recall squads to HQ or defensible positions.',
- 'Night (20:00 - 05:00): Relentless infected aggression. Barricade doors and illuminate perimeter.',
+ 'Day (07:00 - 19:00): Safe scavenging and construction window.',
+ 'Dusk (19:00 - 21:00): Infected roaming accelerates — recall squads to HQ or defensible positions.',
+ 'Night (21:00 - 05:00): Nightfall incursion and relentless aggression. Barricade doors and illuminate the perimeter.',
+ 'Dawn (05:00 - 07:00): The horde withdraws; construction and scavenging can safely resume.',
  'Noise radius from gunfire draws nearby hordes. Equip silencers or melee weapons when clearing quiet sectors.',
  ],
  proTips: [
@@ -126,12 +129,14 @@ const CODEX_TOPICS: CodexTopic[] = [
  summary: 'Repurposing real-world structures into functional survival infrastructure.',
  content: {
  overview:
- 'Every real-world building mapped from OpenStreetMap can be adapted into functional survival modules: Shelter Bunkhouses, Storage Depots, Cookhouses, Hydroponic Greenhouses, Research Labs, and Smelters.',
+ 'Every real-world building mapped from OpenStreetMap can be adapted into functional survival infrastructure: Shelters, Warehouses, Cookhouses, Greenhouses, Research Centres, Medbays, and more. Purpose-built facilities (Cisterns, Generator Stations, Battery Banks, walls, towers) are freestanding-only — you build them, you never find them.',
  keyPoints: [
- 'Shelters: Provide bed capacity to avoid the"Homeless colonists" -25 morale penalty.',
- 'Cookhouses: Process raw canned goods and harvested crops into nourishing warm meals.',
+ 'Shelters provide bed capacity and prevent the severe "homeless" morale penalty; Houses improve mood further.',
+ 'Cookhouse: 2 Grain + 1 Wood → 4 Food Rations, or 2 Raw Meat + 1 Wood → 5 Food Rations — the morale engine.',
+ 'Barn / Livestock Pen: 2 Grain → 2 Raw Meat + 1 Fertilizer. Cannery: 1 Food Ration + 1 Metal → 1 Canned Good (long-storage reserve).',
+ 'Sawmill: 10 Logs → 16 Wood · Scrapyard: 10 Scrap → 14 Metal · Chemical Plant: 2 Wood → 1 Fertilizer, 1 Fuel → 3 Fertilizer, 6 Wood → 1 Fuel, 3 Fertilizer → 1 Fuel.',
+ 'Fields produce 4 Grain per cycle (7 when fertilized); Vast Fields yield 22/day. Greenhouses ignore outdoor weather — essential in winter.',
  'Deconstruction: Dismantle ruined or redundant buildings to recover wood, metal, and brick scrap.',
- 'Greenhouses: Essential during freezing winter seasons when outdoor farmland yields drop to zero.',
  ],
  proTips: [
  'Assign skilled Foremen to construction tasks to double structural build velocity.',
@@ -186,8 +191,10 @@ const CODEX_TOPICS: CodexTopic[] = [
  overview:
  'Colony morale directly governs work velocity, combat resolve, and natural population growth. Morale is driven by food diversity, adequate housing, and safety from recent attacks.',
  keyPoints: [
- 'High Morale (>80%): +20% Work Speed, +15% Squad Accuracy, passive birth and survivor arrival rate.',
- 'Low Morale (<40%): Colonist strikes, desertion risks, sluggish combat performance.',
+ 'Morale ≥85: +30% work productivity, +15% squad damage, +10% weapon fire rate, +50% passive birth rate.',
+ 'Morale 65–84: baseline performance — no bonus, no penalty.',
+ 'Morale 40–64: −30% productivity, −20% squad damage, population growth frozen.',
+ 'Morale <40: severe stall (−65% productivity, −40% squad damage) — strikes, desertion risk, sluggish combat.',
  'Seasons: Winter causes severe freezing weather, halts outdoor farming, and increases wood/fuel heating consumption.',
  ],
  proTips: [
@@ -230,10 +237,9 @@ export const SurvivalCodexModal: React.FC<SurvivalCodexModalProps> = ({
  <div className="p-2 bg-[#1E293B] border border-[#E8E8E8]/40 text-[#E8E8E8]">
  <BookOpen className="w-5 h-5" />
  </div>
- <div>
- <h2 className="text-xl font-heading font-black tracking-wide text-white uppercase">
- INFECTION FREE ZONE // SURVIVAL CODEX
- </h2>
+ <div>                <h2 className="text-xl font-heading font-black tracking-wide text-white uppercase">
+                  TERMINUS // SURVIVAL CODEX
+                </h2>
  <p className="text-xs font-mono text-[#94A3B8]">
  Tactical field manual, combat ballistics, infection triage, and settlement logistics
  </p>

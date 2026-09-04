@@ -13,11 +13,15 @@ import type { AppViewMode } from '../App';
 import { soundService, ToastMessage } from '../services/soundService';
 import { FUNCTIONAL_BUILDING_DEFINITIONS } from '../data/functionalBuildings';
 import { acknowledgeTransmission } from '../services/radioDirectiveService';
+import { handleTransmissionResponse } from '../services/missionService';
+import { enqueueTransmissions } from '../services/transmissionService';
+import type { MissionState } from '../types/mission';
 import type { GameClockState } from '../types/combat';
 import type { SettlementState, FunctionalBuildingTypeId } from '../types/settlement';
 import type { RadioDirectiveState, RadioTransmission } from '../types/radioDirective';
-import type { GameSettings } from '../types/saveGame';
-import type { Point2D, BuildingPolygon } from '../types/map';
+import type { GameSettings, GameScenarioSettings } from '../types/saveGame';
+import type { MapData, Point2D, BuildingPolygon, LocationPreset } from '../types/map';
+import type { SettlementRecord, TradeCaravan } from '../types/caravan';
 
 export interface GlobalGameModalsProps {
   activeRadioTransmission: RadioTransmission | null;
@@ -33,13 +37,18 @@ export interface GlobalGameModalsProps {
   handleQuickSave: () => void;
   handleRestartGame: () => void;
   handleSaveGame: (name: string, overwriteId?: string) => void;
-  handleStartNewGame: () => void;
-  handleToggleAlarm: () => void;
+  handleStartNewGame: (scenario: GameScenarioSettings, preset: LocationPreset, openGlobeDirectly?: boolean) => void;
+  handleToggleAlarm: (active: boolean) => void;
   handleUpdateJobPriorities: (allocation: Partial<SettlementState['jobPriorities']>) => void;
   handleVacateSurvivorRole: (buildingId: string | number) => void;
   isAlarmActive: boolean;
   isCodexModalOpen: boolean;
   isCreditsModalOpen: boolean;
+  missionState: MissionState;
+  setMissionState: React.Dispatch<React.SetStateAction<MissionState>>;
+  mapData: MapData | null;
+  caravans: TradeCaravan[];
+  settlements: Record<string, SettlementRecord>;
   isFreestandingModalOpen: boolean;
   isNewGameModalOpen: boolean;
   isPauseMenuOpen: boolean;
@@ -74,6 +83,7 @@ export interface GlobalGameModalsProps {
   setToastMessage: (msg: ToastMessage | null) => void;
   setViewMode: (m: AppViewMode) => void;
   settlement: SettlementState;
+  settlementRef?: React.MutableRefObject<SettlementState>;
 }
 
 export const GlobalGameModals: React.FC<GlobalGameModalsProps> = (props) => {
@@ -108,6 +118,11 @@ export const GlobalGameModals: React.FC<GlobalGameModalsProps> = (props) => {
     isSettingsModalOpen,
     mannedGatesCount,
     mannedTowersCount,
+    missionState,
+    setMissionState,
+    mapData,
+    caravans,
+    settlements,
     radioDirectiveState,
     saveLoadMode,
     setActiveRadioTransmission,
@@ -133,6 +148,45 @@ export const GlobalGameModals: React.FC<GlobalGameModalsProps> = (props) => {
     setViewMode,
     settlement,
   } = props;
+
+  // Route mission briefing responses (accept/decline/branch) into the mission
+  // engine. The mission is created HERE — never by a simulation tick.
+  const handleMissionResponse = React.useCallback(
+    (txId: string, action?: string) => {
+      const tx = radioDirectiveState?.transmissionLog?.find((t) => t.id === txId);
+      if (!tx?.missionId || !action) return;
+      const ctx = {
+        mapData: mapData || undefined,
+        caravans,
+        settlements: (Object.values(settlements) as SettlementRecord[]).map((s) => ({
+          id: s.id,
+          name: s.name,
+        })),
+      };
+      const result = handleTransmissionResponse(
+        missionState,
+        tx,
+        action,
+        settlement,
+        gameClock,
+        ctx
+      );
+      setMissionState(result.newState);
+      if (result.newTransmissions.length > 0 && radioDirectiveState) {
+        setRadioDirectiveState((prev) => enqueueTransmissions(prev, result.newTransmissions));
+      }
+    },
+    [
+      radioDirectiveState,
+      missionState,
+      mapData,
+      caravans,
+      settlements,
+      settlement,
+      gameClock,
+    ]
+  );
+
   return (
     <>
     
@@ -206,8 +260,12 @@ export const GlobalGameModals: React.FC<GlobalGameModalsProps> = (props) => {
           {isResearchModalOpen && (
             <ResearchTreeModal
               settlement={settlement}
-              onUpdateSettlement={setSettlement}
+              onUpdateSettlement={(updated) => {
+                if (props.settlementRef) props.settlementRef.current = updated;
+                setSettlement(updated);
+              }}
               onClose={() => setIsResearchModalOpen(false)}
+              isNight={gameClock.isNight}
             />
           )}
     
@@ -271,7 +329,20 @@ export const GlobalGameModals: React.FC<GlobalGameModalsProps> = (props) => {
               setActiveRadioTransmission(tx);
               setRadioDirectiveState((prev) => acknowledgeTransmission(prev, tx.id));
             }}
+            declinedMissionIds={missionState.declinedMissionIds}
+            onAcknowledge={(txId, action) => {
+              handleMissionResponse(txId, action);
+            }}
             onActionTrigger={(actionType) => {
+              // Mission response choices (accept/decline/branch) are handled by
+              // the mission engine, not the directive action dispatcher.
+              if (
+                actionType === 'accept' ||
+                actionType === 'decline' ||
+                actionType.startsWith('branch:')
+              ) {
+                return;
+              }
               setIsRadioModalOpen(false);
               handleDirectiveAction(actionType);
             }}

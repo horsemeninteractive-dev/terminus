@@ -192,7 +192,6 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  totalStorageCapacity,
  totalLivingCapacity,
  totalDefenseRating,
- hq,
  namedSurvivors = [],
  generalPopulation,
   squads = [],

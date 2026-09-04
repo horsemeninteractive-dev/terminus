@@ -49,6 +49,8 @@ export default function App() {
     // Radio directives
     radioDirectiveState, setRadioDirectiveState, isRadioModalOpen, setIsRadioModalOpen,
     activeRadioTransmission, setActiveRadioTransmission,
+    // Campaign missions
+    missionState, setMissionState,
     isCelebrationModalOpen, setIsCelebrationModalOpen, handleClaimDawnReward,
     // Sidebar & alerts
     activeSidebarTab, setActiveSidebarTab, isQuestListOpen, setIsQuestListOpen,
@@ -159,6 +161,8 @@ export default function App() {
     setRadioDirectiveState,
     setActiveRadioTransmission,
     setIsRadioModalOpen,
+    missionState,
+    setMissionState,
     setZombies,
     addTacticalAlert,
   });
@@ -300,6 +304,7 @@ export default function App() {
     mapDataRef,
     caravans,
     radioDirectiveState,
+    missionState,
     combatSquads,
     scavengeQueue,
     zombies,
@@ -329,6 +334,7 @@ export default function App() {
     setCaravans,
     setRadioDirectiveState,
     setActiveRadioTransmission,
+    setMissionState,
     setDangerLevel,
     setTimeOfDay,
     setCombatSquads,
@@ -519,7 +525,8 @@ export default function App() {
       handleConfirmSettlementPlacement={handleConfirmSettlementPlacement} handleContinueGame={handleContinueGame} handleDirectiveAction={handleDirectiveAction}
       handleSelectExistingSettlement={handleSelectExistingSettlement} isCelebrationModalOpen={isCelebrationModalOpen} isDescentActive={isDescentActive}
       isInitialCommsPending={isInitialCommsPending} isPwaUpdateAvailable={isPwaUpdateAvailable} isQuestListOpen={isQuestListOpen}
-      isRadioModalOpen={isRadioModalOpen} loadingMessage={loadingMessage} radioDirectiveState={radioDirectiveState}
+      isRadioModalOpen={isRadioModalOpen} loadingMessage={loadingMessage} missionState={missionState}
+      radioDirectiveState={radioDirectiveState}
       setActivePlacement={setActivePlacement} setActiveRadioTransmission={setActiveRadioTransmission} setActiveSettlementId={setActiveSettlementId}
       setIsCodexModalOpen={setIsCodexModalOpen} setIsCreditsModalOpen={setIsCreditsModalOpen} setIsPwaUpdateAvailable={setIsPwaUpdateAvailable}
       setIsSaveLoadModalOpen={setIsSaveLoadModalOpen} setIsSettingsModalOpen={setIsSettingsModalOpen} setMapData={setMapData}
@@ -596,7 +603,9 @@ export default function App() {
       isCodexModalOpen={isCodexModalOpen} isCreditsModalOpen={isCreditsModalOpen} isFreestandingModalOpen={isFreestandingModalOpen}
       isNewGameModalOpen={isNewGameModalOpen} isPauseMenuOpen={isPauseMenuOpen} isPopulationModalOpen={isPopulationModalOpen}
       isRadioModalOpen={isRadioModalOpen} isResearchModalOpen={isResearchModalOpen} isSaveLoadModalOpen={isSaveLoadModalOpen}
-      isSettingsModalOpen={isSettingsModalOpen} mannedGatesCount={mannedGatesCount} mannedTowersCount={mannedTowersCount}
+      isSettingsModalOpen={isSettingsModalOpen}      mannedGatesCount={mannedGatesCount} mannedTowersCount={mannedTowersCount}
+      missionState={missionState} setMissionState={setMissionState} mapData={mapData}
+      caravans={caravans} settlements={settlements}
       radioDirectiveState={radioDirectiveState} saveLoadMode={saveLoadMode} setActiveRadioTransmission={setActiveRadioTransmission}
       setIsCodexModalOpen={setIsCodexModalOpen} setIsCreditsModalOpen={setIsCreditsModalOpen} setIsFreestandingModalOpen={setIsFreestandingModalOpen}
       setIsMedbayModalOpen={setIsMedbayModalOpen} setIsNewGameModalOpen={setIsNewGameModalOpen} setIsPauseMenuOpen={setIsPauseMenuOpen}
@@ -605,6 +614,7 @@ export default function App() {
       setPendingAdaptType={setPendingAdaptType} setPendingFreestandingType={setPendingFreestandingType} setRadioDirectiveState={setRadioDirectiveState}
       setSaveLoadMode={setSaveLoadMode} setSelectedBuilding={setSelectedBuilding} setSettlement={setSettlement}
       setToastMessage={setToastMessage} setViewMode={setViewMode} settlement={settlement}
+      settlementRef={settlementRef}
       />
     </div>
   );

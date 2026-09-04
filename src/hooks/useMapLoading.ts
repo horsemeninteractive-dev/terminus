@@ -3,7 +3,7 @@ import { getMapFromCache, saveMapToCache } from '../services/mapCache';
 import { getBundledMapData } from '../services/bundledMapData';
 import { fetchFromOverpass } from '../services/osmFetcher';
 import { fetchElevationGrid } from '../services/elevationService';
-import { processOsmData } from '../services/mapProcessor';
+import { processOsmData, recategorizeBuilding } from '../services/mapProcessor';
 import { generateHiddenGroupsForMap } from '../services/populationService';
 import { getPrimaryHQ } from '../services/buildingOperational';
 import { generateWorldVehicles } from '../services/vehicleService';
@@ -151,6 +151,11 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
         try {
           const cached = await getMapFromCache(lat, lon, radius);
           if (cached && cached.elevation?.grid?.length > 1 && !cached.source.includes('Topographic Sector Generator')) {
+            if (cached.buildings) {
+              for (const b of cached.buildings) {
+                b.type = recategorizeBuilding(b);
+              }
+            }
             setMapData(cached);
             setCacheSource('IndexedDB Local Cache');
             setLoadingMessage('Preparing settlement & tactical grid...');
@@ -224,7 +229,7 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
       const deadline = new Promise<never>((_, reject) => {
         deadlineId = setTimeout(
           () => reject(new Error('Live map survey timed out.')),
-          40000
+          60000
         );
       });
 
@@ -351,18 +356,26 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
       dayEstablished: gameClock.day,
     };
 
-    // Save previous active colony state and append new one
-    setSettlements((prev) => ({
-      ...prev,
-      [activeSettlementId]: {
-        ...prev[activeSettlementId],
-        state: settlement,
-        // Cache the sim-owned map so node depletion survives the switch away.
-        cachedMapData: mapDataRef.current || mapData || undefined,
-        cachedZombies: zombies,
-      },
-      [newId]: newRecord,
-    }));
+    // Save previous active colony state and append new one. Only preserve the
+    // previous colony when it actually exists in the registry — on a NEW GAME the
+    // registry was cleared, so the stale active id has no record and writing one
+    // here would produce a placement-less entry that crashes the globe beacons.
+    setSettlements((prev) => {
+      const next: Record<string, SettlementRecord> = {
+        ...prev,
+        [newId]: newRecord,
+      };
+      if (prev[activeSettlementId]) {
+        next[activeSettlementId] = {
+          ...prev[activeSettlementId],
+          state: settlement,
+          // Cache the sim-owned map so node depletion survives the switch away.
+          cachedMapData: mapDataRef.current || mapData || undefined,
+          cachedZombies: zombies,
+        };
+      }
+      return next;
+    });
 
     setActiveSettlementId(newId);
     setSettlement(newSettlementState);
@@ -467,16 +480,16 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
     if (targetId === activeSettlementId && viewMode === 'world') return;
 
     // 1. Save current active colony state
-    const updatedSettlements: Record<string, SettlementRecord> = {
-      ...settlements,
-      [activeSettlementId]: {
-        ...settlements[activeSettlementId],
+    const updatedSettlements: Record<string, SettlementRecord> = { ...settlements };
+    if (updatedSettlements[activeSettlementId]) {
+      updatedSettlements[activeSettlementId] = {
+        ...updatedSettlements[activeSettlementId],
         state: settlement,
         // Cache the sim-owned map so node depletion survives the switch away.
         cachedMapData: mapDataRef.current || mapData || undefined,
         cachedZombies: zombies,
-      },
-    };
+      };
+    }
     setSettlements(updatedSettlements);
 
     const target = updatedSettlements[targetId];
@@ -521,13 +534,13 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
   // Dispatch Trade Caravan (§7.5)
   const handleDispatchCaravan = (config: CaravanDispatchConfig) => {
     try {
-      const currentSettlements = {
-        ...settlements,
-        [activeSettlementId]: {
-          ...settlements[activeSettlementId],
+      const currentSettlements: Record<string, SettlementRecord> = { ...settlements };
+      if (currentSettlements[activeSettlementId]) {
+        currentSettlements[activeSettlementId] = {
+          ...currentSettlements[activeSettlementId],
           state: settlement,
-        },
-      };
+        };
+      }
 
       const res = dispatchCaravan(currentSettlements, config, gameClock.day);
       if (!res.success || !res.newCaravan) {

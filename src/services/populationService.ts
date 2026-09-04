@@ -29,7 +29,7 @@ import {
 import { getPrimaryHQ, isBuildingOperational } from './buildingOperational';
 import { getPoweredBuildingIds } from './powerService';
 import { getActiveLaw } from './lawService';
-import { recalculateSettlementStats } from './settlementService';
+import { bumpLifetimeStat, createInitialLifetimeStats, recalculateSettlementStats } from './settlementService';
 import { depositWithinCapacity, getStockpileUnits } from './stockpileCapacity';
 import { strandMaterialsAt } from './strandedLootService';
 import { calculateCropYieldFactors } from './weatherService';
@@ -873,6 +873,8 @@ export function recalculateLaborDistribution(state: SettlementState): Settlement
 
   return {
     ...state,
+    adaptedBuildings: new Map(state.adaptedBuildings),
+    freestandingBuildings: [...(state.freestandingBuildings || [])],
     generalPopulation: updatedGeneral,
   };
 }
@@ -1111,6 +1113,30 @@ export function createSquad(
   // per person), so leaderless squads carry exactly their member count.
   const squadPeople = (hasNamedLeader ? 1 : 0) + clampedGeneral;
 
+  // §4.3 Weapon deduction: for any non-knife loadout, pull one weapon per squad
+  // member from the colony armory. Knives are assumed infinite (melee default).
+  let updatedArmory = cleanedState.armory || { weapons: [], armor: [] };
+  if (weaponLoadout !== 'knife') {
+    const available = updatedArmory.weapons.filter((w) => w === weaponLoadout);
+    if (available.length < squadPeople) {
+      return {
+        success: false,
+        newState: state,
+        error: `Not enough ${weaponLoadout.replace('_', ' ')}s in the armory (need ${squadPeople}, have ${available.length}).`,
+      };
+    }
+    // Remove exactly squadPeople copies of the chosen weapon from the armory.
+    let toRemove = squadPeople;
+    const remainingWeapons = updatedArmory.weapons.filter((w) => {
+      if (w === weaponLoadout && toRemove > 0) {
+        toRemove--;
+        return false;
+      }
+      return true;
+    });
+    updatedArmory = { ...updatedArmory, weapons: remainingWeapons };
+  }
+
   const squadId = `squad_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
   const newSquad: Squad = {
     id: squadId,
@@ -1146,6 +1172,7 @@ export function createSquad(
     ...cleanedState,
     namedSurvivors: updatedSurvivors,
     squads: [...cleanedState.squads, newSquad],
+    armory: updatedArmory,
     squadInventories: {
       ...(cleanedState.squadInventories || {}),
       [newSquad.id]: { capacity: squadPeople, used: 0, items: [] },
@@ -1154,7 +1181,7 @@ export function createSquad(
 
   return {
     success: true,
-    newState: recalculateLaborDistribution(intermediate),
+    newState: bumpLifetimeStat(recalculateLaborDistribution(intermediate), 'squadsFormed'),
   };
 }
 
@@ -1311,7 +1338,7 @@ export function recruitHiddenGroup(
 
   return {
     success: true,
-    newState: recalculateLaborDistribution(intermediate),
+    newState: bumpLifetimeStat(recalculateLaborDistribution(intermediate), 'survivorsRecruited', addedGeneral + 1),
     recruitedName: group.leader.name,
     count: addedGeneral + 1,
   };
@@ -1602,6 +1629,15 @@ export function tickSettlementSimulation(
           completedConstructions.push(bldg.name);
           order.state = 'returning';
           stateChanged = true;
+          // The completion mutates records IN PLACE; hand the caller a fresh
+          // Map/array so React sees a changed reference and the renderer's
+          // updateAdaptedStates() refresh actually runs (it keys its effect on
+          // `settlement.adaptedBuildings`/`freestandingBuildings` identity).
+          // Without this, a finished building keeps its under-construction
+          // amber marker, orange edges and blueprint tint forever — the sim
+          // knows it is done, the screen does not.
+          state.adaptedBuildings = new Map(state.adaptedBuildings);
+          state.freestandingBuildings = [...(state.freestandingBuildings || [])];
         }
       }
       updatedOrders.push(order);
@@ -1819,6 +1855,10 @@ export function tickSettlementSimulation(
       if ((state.stockpile.medical.sterile_bandages || 0) >= bandagesNeeded && free >= producedKits) {
         state.stockpile.medical.sterile_bandages -= bandagesNeeded;
         state.stockpile.medical.first_aid_kits += producedKits;
+        if (!state.lifetimeStats) state.lifetimeStats = createInitialLifetimeStats();
+        if (!state.lifetimeStats.itemsProduced) state.lifetimeStats.itemsProduced = {};
+        state.lifetimeStats.itemsProduced.first_aid_kits =
+          (state.lifetimeStats.itemsProduced.first_aid_kits || 0) + producedKits;
         stateChanged = true;
       }
     }
@@ -1857,6 +1897,16 @@ export function tickSettlementSimulation(
   // citizens. At night workers return to shelter/HQ, so production holds.
   const dayFraction = deltaSeconds / 600;
   if (!isNight && dayFraction > 0) {
+    // Authoritative cumulative production counter: grows ONLY when a line
+    // actually delivers output, so mission "manufacture N" objectives measure
+    // real post-acceptance production instead of current possession (stock
+    // gained by scavenging/trade/rewards — or merely held before the mission
+    // — never counts, and consumption never erases progress).
+    if (!state.lifetimeStats) state.lifetimeStats = createInitialLifetimeStats();
+    if (!state.lifetimeStats.itemsProduced) state.lifetimeStats.itemsProduced = {};
+    const tallyProduced = (key: string, amount: number) => {
+      state.lifetimeStats!.itemsProduced![key] = (state.lifetimeStats!.itemsProduced![key] || 0) + amount;
+    };
     const RESOURCE_PATHS: Record<string, [keyof SettlementStockpile, string]> = {
       grain: ['food', 'grain'],
       fresh_harvest: ['food', 'fresh_harvest'],
@@ -2004,6 +2054,9 @@ export function tickSettlementSimulation(
           }
           stateChanged = true;
         }
+        if (recipe.gear && completed >= 1) {
+          tallyProduced(recipe.gear.itemId, completed);
+        }
         b.craftProgress = {
           ...(b.craftProgress || {}),
           [recipe.id]: Math.max(0, nextProgress - completed),
@@ -2036,7 +2089,16 @@ export function tickSettlementSimulation(
       for (const out of recipe.outputs) {
         // All production follows the same efficiency chain: recipe output,
         // staffing, colony morale, then any agriculture-specific modifiers.
-        addRes(out.resource, out.amountPerDay * dayFraction * ratio * outputMultiplier);
+        const produced = out.amountPerDay * dayFraction * ratio * outputMultiplier;
+        addRes(out.resource, produced);
+        tallyProduced(out.resource, produced);
+      }
+      // Alternate-unit line meters (recipe.tallies): accrue into the
+      // production tally without touching the stockpile (see ProductionRecipe).
+      if (recipe.tallies) {
+        for (const meter of recipe.tallies) {
+          tallyProduced(meter.resource, meter.amountPerDay * dayFraction * ratio * outputMultiplier);
+        }
       }
       stateChanged = true;
     }

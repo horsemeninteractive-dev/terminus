@@ -25,13 +25,16 @@ import {
   Sun,
   Zap,
   BatteryCharging,
+  FlaskConical,
 } from 'lucide-react';
 import { CISTERN_WEATHER_MULT } from '../services/waterService';
 import {
  calculatePolygonArea,
  FUNCTIONAL_BUILDING_DEFINITIONS,
  getCanonicalDefenseDef,
+ getBuildingWorkerSlots,
 } from '../data/functionalBuildings';
+import { RESEARCH_TREE_NODES } from '../data/researchTreeData';
 import { CATEGORY_COLORS } from '../render/BuildingRenderer';
 import { calculateBuildingRepairCost } from '../services/combatService';
 import {
@@ -677,6 +680,73 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
     </div>
    </div>
   )}
+
+  {/* §10 Scientific Research & Analysis — staffed scientists, active research project, and daily SciMat production */}
+  {activeDef &&
+    (adaptedInfo.typeId === 'research_center' || adaptedInfo.typeId === 'research_lab') &&
+    adaptedInfo.constructionStatus === 'completed' && (() => {
+      const slots = getBuildingWorkerSlots(adaptedInfo);
+      const staffed = Math.min(adaptedInfo.assignedWorkers || 0, slots);
+      const activeProject = settlement.research?.activeResearchId
+        ? RESEARCH_TREE_NODES[settlement.research.activeResearchId]
+        : null;
+      const progressSec = settlement.research?.activeProgressSec || 0;
+      const progressPct = activeProject
+        ? Math.min(100, (progressSec / activeProject.baseTimeSec) * 100)
+        : 0;
+      const isPowered = (settlement.powerState?.poweredBuildingIds || []).includes(String(adaptedInfo.buildingId));
+      const dailyOutput = ((staffed / Math.max(1, slots)) * (activeDef.outputs?.[0]?.amountPerDay ?? 8)).toFixed(1);
+
+      return (
+        <div className="bg-[#0e1117] p-2.5 border border-[#3b3c64] space-y-1.5 text-[11px]">
+          <div className="flex items-center justify-between">
+            <span className="text-[#a5b4fc] font-semibold flex items-center gap-1.5">
+              <FlaskConical className="w-3.5 h-3.5 text-[#818cf8]" /> Scientific Research (§10)
+            </span>
+            <span className="text-[10px] font-mono text-[#818cf8] font-bold">
+              {staffed} / {slots} SCIENTIST{slots === 1 ? '' : 'S'}
+            </span>
+          </div>
+
+          <div className="flex justify-between text-[10px] font-mono text-[#94a3b8]">
+            <span>SYNTHESIS:
+              <span className="text-emerald-300 font-bold ml-1">+{dailyOutput} SciMat/day</span>
+            </span>
+            <span>POWERED:
+              <span className="text-white font-bold ml-1">
+                {isPowered ? 'YES (+50% SPD)' : 'NO'}
+              </span>
+            </span>
+          </div>
+
+          {activeProject ? (
+            <div className="p-1.5 bg-[#131628] border border-[#2b2e50] space-y-1">
+              <div className="flex justify-between text-[10px]">
+                <span className="text-[#cbd5e1] font-bold truncate">PROJECT: {activeProject.name}</span>
+                <span className="text-[#818cf8] font-mono font-bold shrink-0">{progressPct.toFixed(1)}%</span>
+              </div>
+              <div className="w-full bg-[#1b1e36] h-1.5 overflow-hidden">
+                <div className="h-full bg-[#818cf8]" style={{ width: `${progressPct}%` }} />
+              </div>
+            </div>
+          ) : (
+            <div className="text-[10px] text-slate-400 italic">
+              No project currently active. Open the Tech Tree (Research) to select a technology to research.
+            </div>
+          )}
+
+          {staffed === 0 && (
+            <div className="p-1.5 bg-amber-950/40 border border-amber-500/40 text-[10px] text-amber-300">
+              ⚠️ Unstaffed facility: Assign scientists in the Citizens & Workers menu (bottom-left) to advance research and produce Scientific Materials.
+            </div>
+          )}
+
+          <div className="text-[9px] text-[#6b7280]">
+            Scientists staff research benches during the day shift to advance active projects and formulate Scientific Materials. At night, scientists shelter and active projects hold until dawn.
+          </div>
+        </div>
+      );
+    })()}
 
  {/* §7.1 Partial Adaptation — converted share of the real structure. */}
  <div className="bg-[#0e1117] p-2.5 border border-[#202836] space-y-1.5 text-[11px]">

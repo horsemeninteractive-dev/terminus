@@ -14,6 +14,29 @@ export interface RadioResponseOption {
   followUpTransmissionId?: string;
 }
 
+export type TransmissionPriority = 'critical' | 'high' | 'normal' | 'low' | 'background';
+
+/**
+ * Content-side transmission definition (data files). Timestamp and read state
+ * are filled in by the engine when the transmission is materialised.
+ */
+export interface TransmissionDefinition {
+  id: string;
+  classification: TransmissionClassification;
+  callsign: string;
+  frequency?: string;
+  title: string;
+  message: string;
+  audioCue?: 'chirp' | 'morse' | 'alarm' | 'static';
+  requiresAcknowledgement?: boolean;
+  priority?: TransmissionPriority;
+  source?: string;
+  missionId?: string;
+  responseOptions?: RadioResponseOption[];
+  /** Optional id of the transmission queued right after this one. */
+  followUpTransmissionId?: string;
+}
+
 export interface RadioTransmission {
   id: string;
   classification: TransmissionClassification;
@@ -27,6 +50,12 @@ export interface RadioTransmission {
   audioCue?: 'chirp' | 'morse' | 'alarm' | 'static';
   responseOptions?: RadioResponseOption[];
   requiresAcknowledgement?: boolean;
+  /** Transmission urgency — drives whether the game pauses/interrupts. */
+  priority?: TransmissionPriority;
+  /** In-world radio source (SZO Network, survivors, faction, automated…). */
+  source?: string;
+  /** Mission definition id this transmission briefs / belongs to. */
+  missionId?: string;
 }
 
 export type DirectiveConditionType =
@@ -64,4 +93,10 @@ export interface RadioDirectiveState {
   transmissionLog: RadioTransmission[];
   unreadCount: number;
   currentIncomingTransmission: RadioTransmission | null;
+  /**
+   * Ordered queue of unread transmission ids. Supports several pending
+   * transmissions at once without overwriting: `currentIncomingTransmission`
+   * is always the first unread entry. Absent on legacy saves (defaults []).
+   */
+  incomingQueue?: string[];
 }

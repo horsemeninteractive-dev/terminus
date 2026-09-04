@@ -168,7 +168,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           disableElevation,
           (progress, label) => loadProgressRef.current?.(progress, label)
         );
-        sceneRef.current!.setWireframe(showTerrainWireframe);
+        // The component may have unmounted (e.g. switched to the globe) while
+        // the async build was running — the cleanup nulls sceneRef, so guard.
+        if (!cancelled && sceneRef.current) {
+          sceneRef.current.setWireframe(showTerrainWireframe);
+        }
       } finally {
         if (!cancelled) {
           requestAnimationFrame(() => requestAnimationFrame(() => mapRenderedRef.current?.()));

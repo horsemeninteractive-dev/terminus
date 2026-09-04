@@ -1,5 +1,6 @@
 import type { MapData } from '../types/map';
 import { LOCATION_PRESETS } from '../data/sampleMapData';
+import { recategorizeBuilding } from './mapProcessor';
 
 /**
  * Bundled offline city maps.
@@ -36,7 +37,13 @@ async function loadMapModule(key: string): Promise<MapData | null> {
   if (!data || typeof data !== 'object') return null;
   const manifest = data as Partial<ChunkManifest>;
   if (manifest.format !== 'terminus-map-chunks-v1' || !manifest.base || !manifest.chunks) {
-    return data as MapData;
+    const map = data as MapData;
+    if (map.buildings) {
+      for (const b of map.buildings) {
+        b.type = recategorizeBuilding(b);
+      }
+    }
+    return map;
   }
 
   const baseKey = Object.keys(modules).find((candidate) => candidate.endsWith(`/${manifest.base}`));
@@ -52,6 +59,15 @@ async function loadMapModule(key: string): Promise<MapData | null> {
     const items = chunkModule.default ?? [];
     (result[chunk.kind] as unknown[]).push(...items);
   }
+
+  // Re-categorize all buildings using enhanced classification heuristics so pre-baked maps
+  // (e.g. Oxford, London) get their universities, schools, hospitals, etc. properly recognized.
+  if (result.buildings && result.buildings.length > 0) {
+    for (const b of result.buildings) {
+      b.type = recategorizeBuilding(b);
+    }
+  }
+
   result.stats = {
     ...result.stats,
     buildingCount: result.buildings.length,

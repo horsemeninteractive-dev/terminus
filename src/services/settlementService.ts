@@ -15,6 +15,7 @@ import {
   FunctionalBuildingTypeId,
   ResourceCost,
   SettlementHQ,
+  SettlementLifetimeStats,
   SettlementState,
   SettlementStockpile,
 } from '../types/settlement';
@@ -77,6 +78,39 @@ export const INITIAL_STOCKPILE: SettlementStockpile = {
     tools: 20,
   },
 };
+
+/** Zeroed lifetime stats — the fallback for legacy saves without the block. */
+export function createInitialLifetimeStats(): SettlementLifetimeStats {
+  return {
+    infectedKills: 0,
+    squadsFormed: 0,
+    buildingsAdapted: 0,
+    buildingsConstructed: 0,
+    survivorsRecruited: 0,
+    researchCompleted: 0,
+  };
+}
+
+/** Returns the settlement's lifetime stats, materialising defaults for old saves. */
+export function getLifetimeStats(state: SettlementState): SettlementLifetimeStats {
+  return state.lifetimeStats ?? createInitialLifetimeStats();
+}
+
+/**
+ * Returns a new settlement state with one lifetime stat incremented. Never
+ * mutates; legacy saves without the block get a fresh zeroed baseline.
+ */
+export function bumpLifetimeStat(
+  state: SettlementState,
+  key: Exclude<keyof SettlementLifetimeStats, 'itemsProduced'>,
+  amount = 1
+): SettlementState {
+  const stats = getLifetimeStats(state);
+  return {
+    ...state,
+    lifetimeStats: { ...stats, [key]: stats[key] + amount },
+  };
+}
 
 /**
  * Creates a fresh, empty settlement state configured by optional scenario settings
@@ -191,6 +225,7 @@ export function createInitialSettlementState(
     banner,
     scenarioSettings: scenario as GameScenarioSettings,
     scavengingResourceMultiplier,
+    lifetimeStats: createInitialLifetimeStats(),
     isInitialized: false,
     headquarters: [],
     primaryHQId: null,
@@ -750,7 +785,7 @@ export function adaptBuilding(
 
   return {
     success: true,
-    newState: recalculateLaborDistribution(intermediateState),
+    newState: bumpLifetimeStat(recalculateLaborDistribution(intermediateState), 'buildingsAdapted'),
   };
 }
 
@@ -1035,7 +1070,7 @@ export function buildFreestanding(
 
   return {
     success: true,
-    newState: recalculateLaborDistribution(intermediateState),
+    newState: bumpLifetimeStat(recalculateLaborDistribution(intermediateState), 'buildingsConstructed'),
   };
 }
 

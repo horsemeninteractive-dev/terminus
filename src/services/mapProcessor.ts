@@ -23,109 +23,253 @@ import {
 } from './projection';
 
 /**
- * Classify OSM tags into game BuildingCategory
+ * Classify OSM tags into game BuildingCategory using comprehensive semantic heuristics
  */
-export function categorizeBuilding(tags: Record<string, string>): BuildingCategory {
-  const b = (tags.building || '').toLowerCase();
+export function categorizeBuilding(
+  tags: Record<string, string>,
+  rawType?: string,
+  name?: string
+): BuildingCategory {
+  const b = (tags.building || rawType || '').toLowerCase();
   const amenity = (tags.amenity || '').toLowerCase();
   const shop = (tags.shop || '').toLowerCase();
   const healthcare = (tags.healthcare || '').toLowerCase();
   const office = (tags.office || '').toLowerCase();
   const industrial = (tags.industrial || '').toLowerCase();
+  const landuse = (tags.landuse || '').toLowerCase();
+  const emergency = (tags.emergency || '').toLowerCase();
+  const military = (tags.military || '').toLowerCase();
+  const tourism = (tags.tourism || '').toLowerCase();
+  const craft = (tags.craft || '').toLowerCase();
+  const manMade = (tags.man_made || '').toLowerCase();
+  const bUse = (tags['building:use'] || '').toLowerCase();
+  const operator = (tags.operator || '').toLowerCase();
+  const bName = (name || tags.name || tags['name:en'] || '').toLowerCase();
 
+  // 1. Hospital & Healthcare
   if (
     amenity === 'hospital' ||
     amenity === 'clinic' ||
+    amenity === 'doctors' ||
+    amenity === 'dentist' ||
+    amenity === 'nursing_home' ||
     healthcare === 'hospital' ||
-    healthcare === 'clinic'
+    healthcare === 'clinic' ||
+    healthcare === 'centre' ||
+    healthcare === 'rehabilitation' ||
+    b === 'hospital' ||
+    b === 'clinic' ||
+    emergency === 'ambulance_station' ||
+    /\b(hospital|clinic|infirmary|medical centre|health centre|surgery|urgent care)\b/i.test(bName)
   ) {
     return 'hospital';
   }
+
+  // 2. Pharmacy & Chemist
   if (
     amenity === 'pharmacy' ||
     shop === 'chemist' ||
     shop === 'medical_supply' ||
-    healthcare === 'pharmacy'
+    shop === 'pharmacy' ||
+    shop === 'herbalist' ||
+    healthcare === 'pharmacy' ||
+    healthcare === 'chemist' ||
+    b === 'pharmacy' ||
+    /\b(pharmacy|chemist|apotheke|drugstore)\b/i.test(bName)
   ) {
     return 'pharmacy';
   }
+
+  // 3. Police & Security / Military
+  if (
+    amenity === 'police' ||
+    amenity === 'prison' ||
+    emergency === 'police' ||
+    emergency === 'disaster_response' ||
+    military !== '' ||
+    b === 'police' ||
+    b === 'prison' ||
+    b === 'barracks' ||
+    b === 'military' ||
+    /\b(police|constabulary|gendarmerie|sheriff|precinct|patrol|barracks|military base)\b/i.test(bName)
+  ) {
+    return 'police';
+  }
+
+  // 4. Education, University, School & Scientific Research
+  if (
+    amenity === 'school' ||
+    amenity === 'university' ||
+    amenity === 'college' ||
+    amenity === 'kindergarten' ||
+    amenity === 'research_institute' ||
+    amenity === 'library' ||
+    amenity === 'prep_school' ||
+    amenity === 'music_school' ||
+    amenity === 'language_school' ||
+    b === 'school' ||
+    b === 'university' ||
+    b === 'college' ||
+    b === 'kindergarten' ||
+    b === 'education' ||
+    b === 'classroom' ||
+    b === 'faculty' ||
+    b === 'research' ||
+    b === 'library' ||
+    b === 'institute' ||
+    landuse === 'education' ||
+    tags.education !== undefined ||
+    operator.includes('university') ||
+    operator.includes('college') ||
+    operator.includes('school') ||
+    /\b(school|university|college|academy|high school|elementary|kindergarten|faculty|campus|institute|polytechnic|lyceum|lyc[ée]e|gymnasium|conservatory|laboratory|research lab)\b/i.test(bName)
+  ) {
+    return 'school';
+  }
+
+  // 5. Supermarket & Food Groceries
   if (
     shop === 'supermarket' ||
     shop === 'convenience' ||
     shop === 'grocery' ||
     shop === 'greengrocer' ||
-    shop === 'bakery'
+    shop === 'bakery' ||
+    shop === 'deli' ||
+    shop === 'butcher' ||
+    shop === 'seafood' ||
+    shop === 'farm' ||
+    shop === 'general' ||
+    shop === 'department_store' ||
+    b === 'supermarket' ||
+    /\b(supermarket|grocery|grocer|walmart|costco|aldi|lidl|carrefour|tesco|kroger|safeway|sainsbury|trader joe)\b/i.test(bName)
   ) {
     return 'supermarket';
   }
+
+  // 6. Fuel & Gas Station
   if (
     amenity === 'fuel' ||
+    amenity === 'charging_station' ||
     tags.highway === 'services' ||
-    b === 'gas_station'
+    b === 'gas_station' ||
+    b === 'service_station' ||
+    b === 'fuel' ||
+    /\b(gas station|petrol station|fuel station|service station|esso|bp|shell|texaco|total|chevron|exxon|mobil)\b/i.test(bName)
   ) {
     return 'gas_station';
   }
-  if (
-    amenity === 'police' ||
-    tags.emergency === 'police'
-  ) {
-    return 'police';
-  }
-  if (
-    amenity === 'school' ||
-    amenity === 'university' ||
-    amenity === 'college' ||
-    amenity === 'kindergarten'
-  ) {
-    return 'school';
-  }
+
+  // 7. Restaurant, Cafe & Hospitality
   if (
     amenity === 'restaurant' ||
     amenity === 'cafe' ||
     amenity === 'fast_food' ||
     amenity === 'bar' ||
-    amenity === 'pub'
+    amenity === 'pub' ||
+    amenity === 'food_court' ||
+    amenity === 'ice_cream' ||
+    amenity === 'biergarten' ||
+    tourism === 'hotel' ||
+    tourism === 'motel' ||
+    tourism === 'hostel' ||
+    tourism === 'guest_house' ||
+    b === 'restaurant' ||
+    b === 'hotel' ||
+    /\b(restaurant|cafe|café|bistro|bar|pub|tavern|pizzeria|diner|grill|bakery|cantina|inn)\b/i.test(bName)
   ) {
     return 'restaurant';
   }
+
+  // 8. Warehouse & Storage / Logistics
   if (
     b === 'warehouse' ||
-    tags.man_made === 'storage_tank' ||
-    tags.landuse === 'depot'
+    b === 'storage' ||
+    b === 'shed' ||
+    manMade === 'storage_tank' ||
+    manMade === 'silo' ||
+    landuse === 'depot' ||
+    landuse === 'storage' ||
+    industrial === 'warehouse' ||
+    industrial === 'depot' ||
+    industrial === 'logistics' ||
+    /\b(warehouse|storage depot|logistics centre|distribution center|silo)\b/i.test(bName)
   ) {
     return 'warehouse';
   }
+
+  // 9. Industrial & Manufacturing
   if (
     b === 'industrial' ||
     b === 'manufacture' ||
-    tags.landuse === 'industrial' ||
-    industrial !== ''
+    b === 'factory' ||
+    b === 'works' ||
+    b === 'mill' ||
+    b === 'hangar' ||
+    b === 'power_substation' ||
+    b === 'substation' ||
+    landuse === 'industrial' ||
+    landuse === 'quarry' ||
+    industrial !== '' ||
+    craft !== '' ||
+    manMade === 'works' ||
+    manMade === 'water_works' ||
+    manMade === 'wastewater_plant' ||
+    manMade === 'power_plant' ||
+    /\b(industrial|factory|plant|foundry|refinery|mill|manufacturing|workshop|quarry)\b/i.test(bName)
   ) {
     return 'industrial';
   }
+
+  // 10. Civic, Government & Worship
   if (
     amenity === 'townhall' ||
     amenity === 'courthouse' ||
     amenity === 'community_centre' ||
     amenity === 'place_of_worship' ||
+    amenity === 'fire_station' ||
+    amenity === 'post_office' ||
+    amenity === 'theatre' ||
+    amenity === 'cinema' ||
+    amenity === 'arts_centre' ||
+    amenity === 'museum' ||
     b === 'civic' ||
     b === 'public' ||
     b === 'cathedral' ||
-    b === 'church'
+    b === 'church' ||
+    b === 'chapel' ||
+    b === 'mosque' ||
+    b === 'synagogue' ||
+    b === 'temple' ||
+    b === 'shrine' ||
+    b === 'fire_station' ||
+    b === 'government' ||
+    office === 'government' ||
+    /\b(town hall|city hall|church|cathedral|chapel|mosque|synagogue|temple|fire station|community centre|museum|court)\b/i.test(bName)
   ) {
     return 'civic';
   }
+
+  // 11. Commercial & Offices
   if (
     shop !== '' ||
     office !== '' ||
     b === 'commercial' ||
     b === 'retail' ||
     b === 'office' ||
+    b === 'kiosk' ||
     amenity === 'bank' ||
-    amenity === 'post_office'
+    amenity === 'marketplace' ||
+    landuse === 'commercial' ||
+    landuse === 'retail' ||
+    bUse === 'retail' ||
+    bUse === 'commercial' ||
+    bUse === 'office' ||
+    /\b(bank|office|commercial|store|shop|market)\b/i.test(bName)
   ) {
     return 'commercial';
   }
+
+  // 12. Residential
   if (
     b === 'apartments' ||
     b === 'residential' ||
@@ -135,12 +279,42 @@ export function categorizeBuilding(tags: Record<string, string>): BuildingCatego
     b === 'terrace' ||
     b === 'dormitory' ||
     b === 'bungalow' ||
-    tags.landuse === 'residential'
+    b === 'cabin' ||
+    b === 'flats' ||
+    b === 'static_caravan' ||
+    landuse === 'residential' ||
+    bUse === 'residential'
   ) {
     return 'residential';
   }
 
-  return 'residential'; // Sensible default for most urban buildings
+  // 13. Other / Ancillary
+  if (
+    b === 'garage' ||
+    b === 'garages' ||
+    b === 'carport' ||
+    b === 'roof' ||
+    b === 'parking' ||
+    amenity === 'parking' ||
+    amenity === 'bicycle_parking'
+  ) {
+    return 'other';
+  }
+
+  return 'residential'; // Sensible default for general urban structures
+}
+
+/**
+ * Re-evaluates a building's category using its tags, rawType, and name.
+ * Used during map loading and save migration.
+ */
+export function recategorizeBuilding(b: {
+  type?: BuildingCategory;
+  tags?: Record<string, string>;
+  rawType?: string;
+  name?: string;
+}): BuildingCategory {
+  return categorizeBuilding(b.tags || {}, b.rawType, b.name);
 }
 
 /**
@@ -608,6 +782,43 @@ export function processOsmData(
   const buildings: BuildingPolygon[] = [];
   const roads: RoadSegment[] = [];
 
+  // 3A. Index POI nodes (amenities, shops, healthcare, schools, offices) to associate with enclosing building polygons
+  const poiNodes: Array<{ pt: Point2D; tags: Record<string, string> }> = [];
+  for (const n of nodeMap.values()) {
+    if (n.tags && (n.tags.amenity || n.tags.shop || n.tags.healthcare || n.tags.office || n.tags.emergency || n.tags.military || n.tags.name)) {
+      poiNodes.push({
+        pt: latLonToMeters(n.lat, n.lon, center.lat, center.lon),
+        tags: n.tags,
+      });
+    }
+  }
+
+  // 3B. Identify education and institutional campus areas to classify buildings located within them
+  const campusAreas: Array<{ polygon: Point2D[]; category: BuildingCategory }> = [];
+  for (const el of raw.elements) {
+    if (el.tags && el.type === 'way') {
+      const t = el.tags;
+      let cCat: BuildingCategory | null = null;
+      if (
+        t.amenity === 'school' ||
+        t.amenity === 'university' ||
+        t.amenity === 'college' ||
+        t.amenity === 'kindergarten' ||
+        t.landuse === 'education'
+      ) {
+        cCat = 'school';
+      } else if (t.amenity === 'hospital' || t.healthcare === 'hospital') {
+        cCat = 'hospital';
+      }
+      if (cCat) {
+        const w = wayMap.get(el.id);
+        if (w && w.points.length >= 3) {
+          campusAreas.push({ polygon: w.points, category: cCat });
+        }
+      }
+    }
+  }
+
   for (const el of raw.elements) {
     if (el.type === 'way' && el.nodes && el.nodes.length >= 2) {
       const wayObj = wayMap.get(el.id);
@@ -626,9 +837,33 @@ export function processOsmData(
           if (poly.length >= 3) {
             const simplified = simplifyPoints(poly, 0.4);
             const ccwPoly = ensureCCW(simplified);
-            const category = categorizeBuilding(tags);
-            const { height, levels } = estimateBuildingHeight(tags, category);
             const centerPt = calculateCentroid(ccwPoly);
+
+            // Transfer tags from POI nodes inside this building footprint (e.g. amenity=school node inside building=yes)
+            let mergedTags = { ...tags };
+            let effectiveName = tags.name;
+            for (const poi of poiNodes) {
+              if (isPointInPolygon(poi.pt, ccwPoly)) {
+                mergedTags = { ...poi.tags, ...mergedTags };
+                if (!effectiveName && poi.tags.name) {
+                  effectiveName = poi.tags.name;
+                }
+              }
+            }
+
+            let category = categorizeBuilding(mergedTags, tags.building, effectiveName);
+
+            // If still generic residential or other, check if building is located inside an educational or hospital campus area
+            if (category === 'residential' || category === 'other') {
+              for (const campus of campusAreas) {
+                if (isPointInPolygon(centerPt, campus.polygon)) {
+                  category = campus.category;
+                  break;
+                }
+              }
+            }
+
+            const { height, levels } = estimateBuildingHeight(mergedTags, category);
 
             // Filter out tiny sliver artifacts (< 12 sq meters)
             const area = Math.abs(polygonSignedArea(ccwPoly));
@@ -639,12 +874,12 @@ export function processOsmData(
                   id: `b_${el.id}`,
                   type: category,
                   rawType: tags.building,
-                  name: tags.name,
+                  name: effectiveName,
                   height,
                   levels,
                   center: centerPt,
                   polygon: ccwPoly,
-                  tags,
+                  tags: mergedTags,
                 });
               }
             }

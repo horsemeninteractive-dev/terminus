@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { GameSettings } from '../types/saveGame';
 import { gameSettingsService, DEFAULT_SETTINGS } from '../services/gameSettingsService';
-import { soundService } from '../services/soundService';
+import { soundService, RadioVoiceCharacter } from '../services/soundService';
 
 interface GameSettingsModalProps {
  isOpen: boolean;
@@ -240,9 +240,15 @@ export const GameSettingsModal: React.FC<GameSettingsModalProps> = ({
  <select
  value={radioSettings.radioVoiceAssignments?.[character] || ''}
  onChange={(e) => {
- const assignments = { ...(radioSettings.radioVoiceAssignments || {}), [character]: e.target.value };
- soundService.updateSettings({ radioVoiceAssignments: assignments });
- setRadioSettings((prev) => ({ ...prev, radioVoiceAssignments: assignments }));
+  const assignments: Record<RadioVoiceCharacter, string> = {
+    vance: '',
+    operator: '',
+    system: '',
+    ...(radioSettings.radioVoiceAssignments || {}),
+    [character]: e.target.value,
+  };
+  soundService.updateSettings({ radioVoiceAssignments: assignments });
+  setRadioSettings((prev) => ({ ...prev, radioVoiceAssignments: assignments }));
  }}
  className="min-w-0 flex-1 bg-[#080C14] border border-[#24334A] text-[#CBD5E1] px-1.5 py-1"
  >

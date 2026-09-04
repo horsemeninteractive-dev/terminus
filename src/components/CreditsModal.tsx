@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { soundService } from '../services/soundService';
+import { TerminusLogo } from './TerminusLogo';
 import hiLogo from '../assets/images/HILogo.png';
 import menuBgNight from '../assets/images/main_menu_night.jpg';
 import menuBgDusk from '../assets/images/main_menu_dusk.jpg';
@@ -272,21 +273,8 @@ export const CreditsModal: React.FC<CreditsModalProps> = ({ isOpen, onClose }) =
         <div className="flex-grow flex items-center justify-center relative">
           {/* LOGO */}
           {currentSectionIndex === -1 && (
-            <div key="logo-step" className="text-center animate-logo-fade">
-              <img
-                src={hiLogo}
-                alt="Horsemen Interactive"
-                className="h-20 md:h-24 object-contain mx-auto mb-8 opacity-90"
-              />
-              <h1 className="text-[72px] md:text-[108px] font-display font-bold tracking-[0.14em] text-[#E8E8E8] leading-none drop-shadow-[0_0_28px_rgba(179,18,23,0.5)]">
-                TERMINUS
-              </h1>
-              <div className="relative -mt-1 border-[4px] border-[#B31217] p-2 md:p-3 inline-block shadow-[0_0_18px_rgba(185,28,28,0.55)]">
-                <h2 className="text-2xl md:text-3xl font-heading font-bold tracking-[0.18em] text-[#EF4444]">
-                  REAL-WORLD SURVIVAL STRATEGY
-                </h2>
-                <div className="absolute w-1.5 h-4 bg-[#B31217] -bottom-4 right-[12%] rounded-b-full -skew-x-12" />
-              </div>
+            <div key="logo-step" className="text-center animate-logo-fade flex flex-col items-center justify-center">
+              <TerminusLogo size="xl" showSubtitle={true} />
             </div>
           )}
 
@@ -294,10 +282,19 @@ export const CreditsModal: React.FC<CreditsModalProps> = ({ isOpen, onClose }) =
           {currentSectionData && (
             <div
               key={`section-${currentSectionIndex}`}
-              className={`absolute inset-x-0 bottom-1/2 mb-4 text-center ${
+              className={`absolute inset-x-0 ${
+                currentSectionIndex === 0 ? 'top-1/2 -translate-y-1/2' : 'bottom-1/2 mb-4'
+              } text-center ${
                 isExiting ? 'animate-fly-out-left' : 'animate-fly-in-left'
               }`}
             >
+              {currentSectionIndex === 0 && (
+                <img
+                  src={hiLogo}
+                  alt="Horsemen Interactive"
+                  className="h-36 md:h-48 object-contain mx-auto mb-6 drop-shadow-[0_0_30px_rgba(179,18,23,0.6)]"
+                />
+              )}
               <h2 className="text-4xl md:text-5xl font-heading font-bold tracking-[0.08em] text-[#EF4444]">
                 {currentSectionData.section}
               </h2>

@@ -245,10 +245,28 @@ export const GlobeView: React.FC<GlobeViewProps> = ({
  };
  }, []);
 
+  // When returning to GLOBE phase from Street View, dispatch a window resize so that
+  // GlobeScene's onWindowResize handler fires and the WebGL renderer correctly
+  // re-measures the now-visible container (it may have stale dimensions while hidden).
+  useEffect(() => {
+    if (selectionPhase === 'GLOBE') {
+      // A short rAF delay ensures the visibility style has been applied and the
+      // container has its final layout dimensions before we resize.
+      const raf = requestAnimationFrame(() => {
+        window.dispatchEvent(new Event('resize'));
+      });
+      return () => cancelAnimationFrame(raf);
+    }
+  }, [selectionPhase]);
+
  // Update 3D multi-settlement colony beacons and caravan trajectories
  useEffect(() => {
  if (!globeSceneRef.current) return;
- const settlementList = (Object.values(settlements) as SettlementRecord[]).map((s) => ({
+ // Guard against malformed registry entries (e.g. legacy saves that contain a
+ // placement-less record) — a broken beacon row must never blank the globe.
+ const settlementList = (Object.values(settlements) as SettlementRecord[])
+ .filter((s) => s && s.placement)
+ .map((s) => ({
  id: s.id,
  name: s.name,
  lat: s.placement.center.lat,
@@ -478,15 +496,20 @@ export const GlobeView: React.FC<GlobeViewProps> = ({
  )}
 
  {/* 2. Step 1: Zoomed-out 3D Satellite Globe Selection (Screenshot 972) */}
- {selectionPhase === 'GLOBE' && (
- <>
- {/* 3D WebGL Satellite Globe Canvas */}
+ {/* IMPORTANT: The canvas container is ALWAYS mounted (never conditionally removed)
+ so the GlobeScene's WebGL canvas stays attached to the DOM. When Street View is
+ active we use CSS pointer-events:none + visibility:hidden to hide it without
+ unmounting — if the div is removed, React evicts the canvas from the DOM and
+ returning to GLOBE shows a permanent black screen. */}
  <div
  id="globe-canvas-container"
  ref={containerRef}
  className="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing"
+ style={selectionPhase !== 'GLOBE' ? { visibility: 'hidden', pointerEvents: 'none' } : undefined}
  />
 
+ {selectionPhase === 'GLOBE' && (
+ <>
  {/* Floating 3D Map Pin tracking the active location on the globe (Screenshot 972) */}
  {pinScreenPos.visible && (
  <div

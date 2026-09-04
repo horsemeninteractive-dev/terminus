@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { soundService } from '../services/soundService';
+import { TerminusLogo } from './TerminusLogo';
 import hiLogo from '../assets/images/HILogo.png';
 
 interface IntroSequenceProps {
@@ -273,6 +274,15 @@ export const IntroSequence: React.FC<IntroSequenceProps> = ({ onComplete }) => {
         </div>
       ),
     },
+    {
+      id: 'terminus',
+      title: '',
+      renderLogo: () => (
+        <div className="flex flex-col items-center justify-center">
+          <TerminusLogo size="xl" showSubtitle={true} />
+        </div>
+      ),
+    },
   ];
 
   const currentLogo = logoSequence[currentIndex];
@@ -305,9 +315,11 @@ export const IntroSequence: React.FC<IntroSequenceProps> = ({ onComplete }) => {
           className="animate-logo-cycle relative z-20 flex flex-col items-center justify-center gap-6"
         >
           <div>{currentLogo.renderLogo()}</div>
-          <h2 className="text-2xl md:text-3xl font-display font-black tracking-widest uppercase text-white drop-shadow-md">
-            {currentLogo.title}
-          </h2>
+          {Boolean(currentLogo.title) && (
+            <h2 className="text-2xl md:text-3xl font-display font-black tracking-widest uppercase text-white drop-shadow-md">
+              {currentLogo.title}
+            </h2>
+          )}
         </div>
       )}
     </div>

@@ -11,14 +11,14 @@ import {
  Users,
  X,
 } from 'lucide-react';
-import { NamedSurvivor, Squad, StatTier } from '../types/population';
+import { NamedSurvivor, Squad, StatTier, SquadWeaponLoadout } from '../types/population';
 import { SettlementState } from '../types/settlement';
 
 interface SquadManagementModalProps {
  isOpen: boolean;
  onClose: () => void;
  settlement: SettlementState;
- onCreateSquad: (name: string, leaderId: string, generalCount: number) => void;
+ onCreateSquad: (name: string, leaderId: string, generalCount: number, weaponLoadout?: SquadWeaponLoadout) => void;
  onModifyGeneralMembers?: (squadId: string, newCount: number) => void;
  onModifyGeneralCount?: (squadId: string, newCount: number) => void;
  onDisbandSquad: (squadId: string) => void;

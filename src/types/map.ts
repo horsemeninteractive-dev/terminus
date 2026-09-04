@@ -18,6 +18,26 @@ export interface Point2D {
   z: number; // local Z in meters (South)
 }
 
+/**
+ * World-space bounds of an on-screen drag-selection box. The AABB fields
+ * (minX/maxX/minZ/maxZ) bound the region for fast rejection; `polygon` — when
+ * present — holds the perspective-correct ground-plane corners of the screen
+ * rectangle (its projected quad), which is the EXACT region the player sees
+ * under the box. Point-in-area tests should prefer the polygon, because with an
+ * oblique camera the axis-aligned box around the projected corners over-covers
+ * the visible region and pulls in buildings/nodes outside the drawn box.
+ */
+export interface WorldAreaBounds {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  /** Ground-plane corners of the screen rect, in screen order (top-left,
+   * top-right, bottom-right, bottom-left projected onto y=0). Optional — absent
+   * for legacy callers or degenerate projections; fall back to the AABB. */
+  polygon?: Point2D[];
+}
+
 export interface GeoPoint {
   lat: number;
   lon: number;

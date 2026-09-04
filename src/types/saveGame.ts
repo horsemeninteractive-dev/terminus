@@ -217,6 +217,7 @@ export interface SaveGameData {
     mapData: any;
     caravans: any[];
     radioState?: any;
+    missionState?: any;
     tutorialStep?: string;
     hasCompletedFirstScavenge: boolean;
     combatSquads?: any[];

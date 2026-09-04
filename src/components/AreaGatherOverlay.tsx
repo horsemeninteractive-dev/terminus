@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Axe, Crosshair, X, Hammer, ShieldAlert, Check } from 'lucide-react';
 import { soundEngine } from '../services/soundService';
+import type { WorldAreaBounds } from '../types/map';
 
 export type GatherResourceType = 'wood' | 'metal' | 'bricks' | 'demolish' | 'scavenge';
 
@@ -8,9 +9,9 @@ interface AreaGatherOverlayProps {
   isActive: boolean;
   gatherType: GatherResourceType;
   onCancel: () => void;
-  onDesignateArea: (type: GatherResourceType, bounds: { minX: number; maxX: number; minZ: number; maxZ: number }) => void;
-  onDragBoundsChange?: (bounds: { minX: number; maxX: number; minZ: number; maxZ: number } | null) => void;
-  screenRectToWorldBounds?: (x1: number, y1: number, x2: number, y2: number) => { minX: number; maxX: number; minZ: number; maxZ: number };
+  onDesignateArea: (type: GatherResourceType, bounds: WorldAreaBounds) => void;
+  onDragBoundsChange?: (bounds: WorldAreaBounds | null) => void;
+  screenRectToWorldBounds?: (x1: number, y1: number, x2: number, y2: number) => WorldAreaBounds;
 }
 
 export const AreaGatherOverlay: React.FC<AreaGatherOverlayProps> = ({

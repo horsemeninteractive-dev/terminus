@@ -30,6 +30,7 @@ interface ResearchTreeModalProps {
   onUpdateSettlement: (updated: SettlementState) => void;
   onClose: () => void;
   onOpenBuildingDrawer?: () => void;
+  isNight?: boolean;
 }
 
 const BRANCH_ICONS: Record<ResearchBranch, React.FC<{ className?: string }>> = {
@@ -111,7 +112,7 @@ const fmtTime = (seconds: number) => {
   return `${h}H ${m}M`;
 };
 
-export const ResearchTreeModal: React.FC<ResearchTreeModalProps> = ({ settlement, onUpdateSettlement, onClose }) => {
+export const ResearchTreeModal: React.FC<ResearchTreeModalProps> = ({ settlement, onUpdateSettlement, onClose, isNight = false }) => {
   const [activeBranch, setActiveBranch] = useState<ResearchBranch>('medicine');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -237,7 +238,9 @@ export const ResearchTreeModal: React.FC<ResearchTreeModalProps> = ({ settlement
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2 text-[11px] text-[#AEBEC0]">
               <span className="uppercase tracking-wider">Researchers</span>
-              <strong className="text-white">{researcherCount}</strong>
+              <strong className={researcherCount > 0 ? (isNight ? 'text-sky-300' : 'text-[#37F59A]') : 'text-amber-400'}>
+                {researcherCount} {isNight ? '(Resting: Night)' : ''}
+              </strong>
             </div>
             <div className="flex items-center gap-1.5 border border-[#2F8F5B] bg-[#0E241A] px-2.5 py-1" title="Scientific Materials in stockpile — produced by staffed Research Centers">
               <BookOpenCheck className="w-4 h-4 text-[#37F59A]" />
@@ -364,9 +367,24 @@ export const ResearchTreeModal: React.FC<ResearchTreeModalProps> = ({ settlement
                   <div className="flex items-center justify-between text-[10px] text-[#87999B]"><span className="uppercase tracking-wider">Scientific Materials Cost</span><span className="text-white font-bold"><BookOpenCheck className="inline w-3.5 h-3.5 mr-1 text-[#37F59A]" />{selected.costSciMat}</span></div>
                   {selectedActive && (
                     <>
-                      <div className="mt-2 flex items-center justify-between text-[11px]"><span className="text-[#87999B]">ESTIMATED TIME</span><strong className="text-white">{fmtTime(getEstimatedResearchSeconds(settlement, selected, research.activeProgressSec))}</strong></div>
+                      <div className="mt-2 flex items-center justify-between text-[11px]">
+                        <span className="text-[#87999B]">ESTIMATED TIME</span>
+                        <strong className="text-white">
+                          {isNight ? 'PAUSED (NIGHT REST)' : fmtTime(getEstimatedResearchSeconds(settlement, selected, research.activeProgressSec))}
+                        </strong>
+                      </div>
                       <div className="mt-1 flex items-center justify-between text-[11px]"><span className="text-[#87999B]">PROGRESS</span><strong className="text-[#38BDF8]">{selectedProgress.toFixed(1)}%</strong></div>
                       <div className="mt-2 h-2 w-full bg-[#1C262A] overflow-hidden"><div className="h-full bg-[#38BDF8]" style={{ width: `${selectedProgress}%` }} /></div>
+                      {researcherCount === 0 && (
+                        <div className="mt-2 p-1.5 bg-amber-950/40 border border-amber-500/50 text-[10px] text-amber-300">
+                          ⚠️ No scientists assigned to completed Research Centers. Assign scientists in Citizens (bottom-left) to advance this project.
+                        </div>
+                      )}
+                      {isNight && researcherCount > 0 && (
+                        <div className="mt-2 p-1.5 bg-sky-950/40 border border-sky-500/50 text-[10px] text-sky-300">
+                          🌙 Night Shift: Researchers shelter overnight. Research will resume at dawn.
+                        </div>
+                      )}
                     </>
                   )}
 
@@ -379,7 +397,7 @@ export const ResearchTreeModal: React.FC<ResearchTreeModalProps> = ({ settlement
                   ) : (
                     <>
                       <button onClick={start} className="mt-3 w-full py-2.5 bg-[#243941] hover:bg-[#2E4A54] disabled:opacity-40 border border-[#4E8FA0] text-white font-heading text-xs font-bold uppercase flex items-center justify-center gap-2" disabled={!!check && !check.allowed}>Start Research <Zap className="w-4 h-4" /></button>
-                      <div className="mt-2 text-[11px] text-[#87999B]"><span className="uppercase">Estimated time:</span> <strong className="text-white">{fmtTime(getEstimatedResearchSeconds(settlement, selected))}</strong></div>
+                      <div className="mt-2 text-[11px] text-[#87999B]"><span className="uppercase">Estimated time:</span> <strong className="text-white">{isNight ? 'Resumes at Dawn' : fmtTime(getEstimatedResearchSeconds(settlement, selected))}</strong></div>
                       {check && !check.allowed && <div className="mt-1 text-[10px] text-[#f59e0b]">{check.reason}</div>}
                     </>
                   )}

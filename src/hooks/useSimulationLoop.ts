@@ -356,6 +356,61 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
         };
       }
 
+      // Post-deposit queue resume: a squad that was 'returning' to deposit loot
+      // and now has an empty inventory (the logistics pipeline just unloaded it)
+      // should immediately proceed to the next building in its scavenge queue
+      // rather than standing idle at the storage depot.
+      if (mapData?.buildings) {
+        const curQueue = scavengeQueueRef.current;
+        for (let i = 0; i < combatResult.updatedSquads.length; i++) {
+          const sq = combatResult.updatedSquads[i];
+          if (sq.currentHp <= 0 || sq.mountedVehicleId || sq.manualOrder || sq.holdHaul || sq.onExpedition) continue;
+          const queue = curQueue[sq.squadId];
+          if (!queue?.length) continue;
+          // Check: inventory is empty (just deposited) and near or at the dropoff
+          const inv = workingSettlement.squadInventories?.[sq.squadId];
+          if (inv?.items?.length) continue; // Still carrying — hasn't deposited yet
+          // The combat tick clears targetPos and sets state 'idle' the moment a
+          // 'returning' squad ARRIVES at its destination, so a squad mid-walk
+          // still carries loot and is skipped above; only a squad that has
+          // finished its trip (arrived, unloaded, no destination left) reaches
+          // this point. Requiring 'idle' + no targetPos also keeps squads that
+          // are actively searching/combat/retreating (or waiting on a queued
+          // manual move) out of the resume path.
+          if (sq.targetPos) continue; // Still walking somewhere
+          if (sq.state !== 'idle') continue;
+          const searches = workingSettlement.buildingSearches || (new Map() as Map<string | number, BuildingSearchState>);
+          const nextBuilding = findNextScavengeTarget(
+            queue.filter((id) => !isHQBuilding(workingSettlement, id)),
+            mapData.buildings,
+            searches
+          );
+          if (nextBuilding) {
+            combatResult.updatedSquads[i] = orderSquadMove(
+              combatResult.updatedSquads,
+              sq.squadId,
+              nextBuilding.center,
+              nextBuilding.id,
+              nextBuilding.name || nextBuilding.type
+            ).find((s) => s.squadId === sq.squadId) || sq;
+          } else {
+            // Queue exhausted — clear it and leave the squad idle at the depot
+            setScavengeQueue((prev) => {
+              const next = { ...prev };
+              delete next[sq.squadId];
+              return next;
+            });
+            combatResult.updatedSquads[i] = {
+              ...sq,
+              state: 'idle',
+              targetPos: null,
+              targetBuildingId: null,
+              targetBuildingName: null,
+            };
+          }
+        }
+      }
+
       // Scavenging Over Time: progress search when squad is inside/at building footprint
       if (mapData?.buildings) {
         // IFZ storage gate — deposit re-check: a squad that held its haul out

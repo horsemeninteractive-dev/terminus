@@ -473,6 +473,10 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
         name: 'Ammunition Crates',
         inputs: [{ resource: 'metal', amountPerDay: 6 }],
         outputs: [{ resource: 'ammo', amountPerDay: 20 }],
+        // One full day of line time = one sealed ammunition crate (20 rounds).
+        // Counted toward "Manufacture N Ammunition Crates" objectives via the
+        // production tally — never added to the stockpile itself.
+        tallies: [{ resource: 'crates', amountPerDay: 1 }],
       },
       {
         id: 'manufacture_pistol',

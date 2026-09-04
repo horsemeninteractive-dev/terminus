@@ -21,6 +21,139 @@ Releasing:
 
 ---
 
+## [0.2.2] – 2026-09-04
+
+### Added
+
+- **Campaign mission framework.** The full narrative chain
+  TRIGGER → TRANSMISSION → PLAYER RESPONSE → MISSION CREATED → TASKS → OUTCOME
+  → FOLLOW-UP TRANSMISSION is now data-driven (`missionRegistry` loads campaign
+  and dynamic content once at boot). Triggers never create missions directly —
+  they queue a briefing, and the mission only exists once the player responds.
+  Task progress is DERIVED from authoritative game state every tick (buildings,
+  lairs, research, stockpile, squads, population, caravans), never from fake
+  quest-only counters, and triggers use a persisted world-snapshot diff so
+  systems that don't emit events still drive narrative exactly once. Dedupe
+  (`triggeredEventIds` / `startedMissionIds` / `processedTransmissionIds`) and
+  the mission state itself survive save/load and offline catch-up. Mission
+  actions can jump the camera to their target (`focus_building:<id>` LOCATE,
+  focus lair, open build menu).
+- **Radio briefings & transmission archive.** Campaign transmissions (e.g.
+  OP-WATERLINE, OP-FOODSHORT) arrive as queued incoming briefings with an
+  ordered unread queue, and the radio console gains an archive with READ /
+  UNREAD, classification, mission/directive/informational category, and
+  declined-only filters — plus a persistent unread-count badge.
+- **Faction standings.** Named factions (the SZO Network patron network, distant
+  settlements like Gravel Bend, and encountered survivor groups) now carry
+  persistent standing that missions and transmissions shift and gate on:
+  response options and completion rewards apply signed deltas, declining a
+  faction's work drops its standing, and crossing a faction's cutoff breaks
+  contact (a queued transmission, gated content, and a one-shot flag) until
+  standing recovers above the threshold.
+- **Articulated humanoid characters.** Workers, squad members, hostile NPCs and
+  zombies are no longer cone placeholders — every character is a rigged,
+  animated humanoid (new `HumanoidRig`): stride cycles with natural
+  contralateral gait, a rifle-port run matching the squads' ~10 m/s tactical
+  run, weapon-aimed and attack poses, harvest/build work poses, zombie
+  shamble/run/attack/lurch, and idle breathing with head drift. Boots get ankle
+  pivots so soles stay flat on the ground at any gait phase (previously legs
+  floated or sank up to 1 cm), and rifles are re-laid along the arm so raising
+  the arm aims the muzzle (idle no longer points rifles at the sky, and the
+  aim pose no longer aims backward over the shoulder).
+- **Flat roof material system.** Flat roofs get their own procedural A–E
+  material family — gravel ballast, EPDM rubber, mineral felt/bitumen, modern
+  TPO, and paved terrace — allocated deterministically by building archetype
+  (commercial/industrial bias EPDM/TPO/gravel; residential/outbuildings bias
+  felt/gravel; player-accessible rooftops like the HQ and completed
+  adaptations bias strongly to paved terrace). Each family carries its own
+  albedo, bump relief and a roughness map with baked weathering — corner
+  dirt/grime, moss streaks, rainwater puddle masks (low roughness) and edge
+  wear — plus per-building UV rotation (0/90/180/270°) and offset so
+  neighbouring roofs never tile identically. Pitched/gabled roofs keep their
+  existing tile/slate/corrugated textures; the two roof classes never share a
+  material.
+- **Photographic globe textures.** The globe now preloads NASA Blue Marble
+  satellite imagery with its matching normal map and a specular-derived PBR
+  roughness map (water smooth, land matte) at application boot, so the 3D
+  planet renders photorealistically on frame 0 with no pop-in or mid-screen
+  loading.
+- **Squad armory loadouts at muster (§4.3).** Forming a squad with a ranged
+  loadout now deducts one weapon per member from the colony armory (with a
+  clear "not enough rifles" error when short) and stamps the real weapon id on
+  every member, so the tactical unit reflects the gear the player paid for.
+- **Radial group-health gauge on zombie pins.** Individual zombie health bars
+  and yellow/red alert markers are gone from the world (IFZ shows no per-zombie
+  health); instead the clustered skull pin carries a radial meter — a dark
+  track with a filled arc sweeping the cluster's combined HP, flipping amber
+  below a third — per-cluster textures updating as the group takes damage.
+- **Colony lifetime stats.** A persisted cumulative record (kills, squads
+  formed, survivors recruited, research completed, items produced) is now
+  maintained by the sim and consumed by missions and settlement records —
+  including an authoritative infected-kill tally where every kill source
+  (squad fire/melee, wire bleed, tower fire, vehicle ram) funnels through the
+  zombie death transition exactly once.
+
+### Changed
+
+- **"Manufacture" objectives now measure real production.** Mission tasks like
+  "Manufacture 10 Tools" no longer check current possession — they count items
+  PRODUCED after the mission starts, via a cumulative `lifetimeStats
+  .itemsProduced` tally that only real production increments (scavenged,
+  traded or pre-existing stock never counts, and consumption can't erase
+  progress). Recipes gain alternate-unit `tallies` meters so lines whose
+  deliverable is denominated differently than their stockpile flow count for
+  objectives (the Arms Factory's Ammunition Crates line pours rounds into the
+  pool and seals 1 crate per day of line time), and acceptance anchors the
+  baseline at the tally, not the stockpile.
+- **Area box selection is perspective-correct.** Drag-selection bounds now
+  carry the projected ground-plane polygon of the drawn screen rectangle, and
+  point-in-area tests use that exact quad instead of an axis-aligned box — with
+  an oblique camera the old AABB over-covered the visible region and pulled in
+  buildings outside the drawn box.
+- **Scavenge queues resume after depositing.** A squad that returned to the
+  depot to unload loot now immediately proceeds to the next building in its
+  scavenge queue instead of standing idle at storage forever (queue clears only
+  when exhausted).
+- **Building classification overhaul.** OSM tag/name classification now uses
+  comprehensive semantic heuristics (hospitals/clinics/doctors, pharmacies,
+  schools/universities, commercial, industrial, …) and cached maps are
+  re-categorized on load; schools and commercial suites gain proper loot pools
+  (schools guarantee Scientific Materials for Research Center construction),
+  and the map fetch timeout is raised to 60s.
+
+### Fixed
+
+- **Returning to the globe from the header banner no longer black-screens.**
+  Leaving the world view while the atmospheric descent was in flight aborts the
+  descent — the overlay previously lingered over the globe and swallowed all
+  input forever.
+- **Saves no longer fill the localStorage quota.** Old versions pruned the save
+  INDEX but never deleted the payload keys, so every save ever written stayed
+  in storage (52 MB leaked in one live session) and the first dawn autosave
+  threw `QuotaExceededError`, silently failing checkpoints. Saves are now
+  pruned for real — autosaves capped at 4, quicksaves at 8, a global 20-slot
+  cap with payload deletion, orphaned payload keys swept on every save, and an
+  aggressive retry pass when a write still hits the quota.
+- **Flat roof textures no longer warp.** Flat caps now use a continuous signed
+  planar UV map instead of the pitched-roof folded mapping — the old
+  `|d|`-fold mirrored the left half of every roof, bending EPDM seams, TPO
+  welds and paver grids toward the middle. Seams now run dead-straight across
+  the whole roof.
+- **The selected squad's range circle is flat again, and the spinning
+  wireframe ring is gone.** The attack-range ring was scaled on its ring normal,
+  stretching it into a tilted ellipse; it now scales X/Z and stays a flat
+  circle on the ground. The old rotating wireframe selection ring around
+  squads was removed — squad identity comes from the badge marker.
+- **Deselecting a building no longer throws.** Clicking empty ground (or
+  replacing the inspection with a squad drag-box) now null-guards
+  `onSelectBuilding`, fixing the TypeError that crashed the selection flow.
+- **Finished adaptations refresh visually.** Completed conversions no longer
+  keep their under-construction amber marker, orange edges and blueprint tint
+  forever — the sim state is handed back in fresh references so the renderer's
+  refresh actually runs.
+- **New-game colony registry.** Starting a new game no longer writes a stale
+  colony record for the previous session's active settlement id.
+
 ## [0.2.1] – 2026-09-03
 
 ### Added

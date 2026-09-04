@@ -14,6 +14,15 @@ import { ResourceWorkOrder } from '../types/resourceGathering';
 import { ConstructionWorkOrder } from '../types/settlement';
 import { ElevationGrid } from '../types/map';
 import { PositionSmoother } from './movementSmoothing';
+import {
+  applyRigPose,
+  createHostileRig,
+  createSoldierRig,
+  createWorkerRig,
+  createZombieRig,
+  HumanoidRig,
+  RigPoseMode,
+} from './HumanoidRig';
 
 export class CombatRenderer {
   public group = new THREE.Group();
@@ -43,10 +52,6 @@ export class CombatRenderer {
   private zombieSmoothers = new Map<string, PositionSmoother>();
   private hostileHumanSmoothers = new Map<string, PositionSmoother>();
   private workerAnimState = new Map<string, 'harvesting' | 'constructing' | null>();
-  // Walk-cycle state: accumulated phase + last sampled position per worker so
-  // the stride cadence can scale with clock speed (and stop when standing still).
-  private workerWalkPhase = new Map<string, number>();
-  private workerPrevPos = new Map<string, { x: number; z: number }>();
   // Simulation clock speed (1/2/4) — worker animation cadence scales with it so
   // limbs keep up with the speed-scaled ground movement instead of slow-motion.
   private clockSpeed = 1;
@@ -64,30 +69,18 @@ export class CombatRenderer {
   // so nothing keeps sliding after the player pauses.
   private paused = false;
 
-  // Geometries
-  private leaderGeo: THREE.BufferGeometry;
-  private memberGeo: THREE.BufferGeometry;
-  private workerGeo: THREE.BufferGeometry;
-  private workerPackGeo: THREE.BufferGeometry;
-  private workerHelmetGeo: THREE.BufferGeometry;
-  private shamblerGeo: THREE.BufferGeometry;
-  private runnerGeo: THREE.BufferGeometry;
-  private bruteGeo: THREE.BufferGeometry;
-  private hostileHumanGeo: THREE.BufferGeometry;
-
-  // Materials
-  private leaderMat: THREE.MeshStandardMaterial;
-  private memberMat: THREE.MeshStandardMaterial;
-  private workerMat: THREE.MeshStandardMaterial;
-  private workerVestMat: THREE.MeshStandardMaterial;
-  private workerHelmetMat: THREE.MeshStandardMaterial;
-  private workerPackMat: THREE.MeshStandardMaterial;
-  private shamblerMat: THREE.MeshStandardMaterial;
-  private runnerMat: THREE.MeshStandardMaterial;
-  private bruteMat: THREE.MeshStandardMaterial;
-  private hostileHumanMat: THREE.MeshStandardMaterial;
+  // Character meshes are articulated HumanoidRigs (shared geometries and
+  // materials owned by HumanoidRig.ts) — nothing character-shaped lives here.
   private tracerMat: THREE.LineBasicMaterial;
-  private selectionRingMat: THREE.MeshBasicMaterial;
+  // Per-frame rig animation clocks (seconds, scaled by sim clock speed) and the
+  // last sampled ground position per entity, used to detect actual movement.
+  private animClocks = new Map<string, number>();
+  private lastSample = new Map<string, { x: number; z: number }>();
+  // Combat flags refreshed on every simulation tick so the frame loop can
+  // switch each entity between locomotion and weapon-aimed/attacking poses.
+  private squadCombatIds = new Set<string>();
+  private zombieAttacking = new Set<string>();
+  private hostileCombatIds = new Set<string>();
 
   constructor() {
     this.group.name = 'CombatRendererGroup';
@@ -99,100 +92,12 @@ export class CombatRenderer {
     this.group.add(this.droppedItemsGroup);
     this.group.add(this.uiOverlayGroup);
 
-    // 1. Geometries
-    this.leaderGeo = new THREE.CylinderGeometry(0.35, 0.45, 1.8, 8);
-    this.memberGeo = new THREE.CylinderGeometry(0.3, 0.4, 1.6, 8);
-    this.workerGeo = new THREE.CylinderGeometry(0.28, 0.38, 1.6, 8);
-    this.workerPackGeo = new THREE.BoxGeometry(0.35, 0.45, 0.25);
-    this.workerHelmetGeo = new THREE.SphereGeometry(0.32, 8, 8);
-
-    this.shamblerGeo = new THREE.CylinderGeometry(0.32, 0.42, 1.7, 8);
-    this.runnerGeo = new THREE.CylinderGeometry(0.28, 0.35, 1.65, 8);
-    this.bruteGeo = new THREE.CylinderGeometry(0.7, 0.9, 2.7, 10); // Towering bulk
-    this.hostileHumanGeo = new THREE.CylinderGeometry(0.33, 0.42, 1.75, 8);
-
-    // 2. Materials
-    this.leaderMat = new THREE.MeshStandardMaterial({
-      color: 0x3b82f6, // Blue tactical uniform
-      roughness: 0.5,
-      metalness: 0.2,
-      emissive: 0x1e40af,
-      emissiveIntensity: 0.45, // Night-readable glow
-    });
-
-    this.memberMat = new THREE.MeshStandardMaterial({
-      color: 0x64748b, // Slate tactical gear
-      roughness: 0.6,
-      metalness: 0.1,
-      emissive: 0x334155,
-      emissiveIntensity: 0.35, // Night-readable glow
-    });
-
-    this.workerMat = new THREE.MeshStandardMaterial({
-      color: 0x475569, // Civilian slate/denim work pants
-      roughness: 0.7,
-      metalness: 0.05,
-    });
-
-    this.workerVestMat = new THREE.MeshStandardMaterial({
-      color: 0xf59e0b, // Hi-vis utility amber vest
-      roughness: 0.5,
-      metalness: 0.1,
-      emissive: 0xd97706,
-      emissiveIntensity: 0.35,
-    });
-
-    this.workerHelmetMat = new THREE.MeshStandardMaterial({
-      color: 0xfacc15, // Yellow hardhat
-      roughness: 0.4,
-      metalness: 0.15,
-      emissive: 0xca8a04,
-      emissiveIntensity: 0.25,
-    });
-
-    this.workerPackMat = new THREE.MeshStandardMaterial({
-      color: 0x1e293b, // Heavy canvas rucksack / tool pouch
-      roughness: 0.85,
-    });
-
-    this.shamblerMat = new THREE.MeshStandardMaterial({
-      color: 0x4a5d48, // Decayed green-gray
-      roughness: 0.85,
-    });
-
-    this.runnerMat = new THREE.MeshStandardMaterial({
-      color: 0x782828, // Crimson-tinged aggressive infected
-      roughness: 0.6,
-      emissive: 0x3d0c0c,
-      emissiveIntensity: 0.4,
-    });
-
-    this.bruteMat = new THREE.MeshStandardMaterial({
-      color: 0x222228, // Dark charcoal mutated hide
-      roughness: 0.7,
-      metalness: 0.3,
-      emissive: 0x4c1d95, // Purple glow veins
-      emissiveIntensity: 0.5,
-    });
-
-    this.hostileHumanMat = new THREE.MeshStandardMaterial({
-      color: 0xb45309, // Rust-brown raider leathers
-      roughness: 0.55,
-      metalness: 0.25,
-      emissive: 0x7c2d12,
-      emissiveIntensity: 0.35,
-    });
+    // Character models: articulated HumanoidRigs (see HumanoidRig.ts) — shared
+    // geometries/materials live there; this renderer only holds rig instances.
 
     this.tracerMat = new THREE.LineBasicMaterial({
       color: 0xfef08a,
       linewidth: 2,
-    });
-
-    this.selectionRingMat = new THREE.MeshBasicMaterial({
-      color: 0x10b981,
-      wireframe: true,
-      transparent: true,
-      opacity: 0.85,
     });
 
     // Move waypoint indicator
@@ -298,6 +203,28 @@ export class CombatRenderer {
     this.clockSpeed = speed > 0 ? speed : 1;
   }
 
+  /** Advance one entity's animation clock (seconds) by this frame's delta. */
+  private advanceClock(key: string, delta: number, rate: number): number {
+    const next = (this.animClocks.get(key) ?? Math.random() * 3) + delta * this.clockSpeed * rate;
+    this.animClocks.set(key, next);
+    return next;
+  }
+
+  /** True when the entity actually covered ground since the last sampled frame. */
+  private trackMotion(key: string, x: number, z: number, epsilon = 0.003): boolean {
+    const prev = this.lastSample.get(key);
+    this.lastSample.set(key, { x, z });
+    return prev ? Math.hypot(x - prev.x, z - prev.z) > epsilon : false;
+  }
+
+  /** Pose every rig attached to one container (each with its own phase seed). */
+  private poseRigs(rigs: HumanoidRig[] | undefined, mode: RigPoseMode, timeSec: number) {
+    if (!rigs) return;
+    for (const rig of rigs) {
+      applyRigPose(rig, mode, timeSec + rig.anim.workPhase);
+    }
+  }
+
   public update(delta: number, nowSec: number) {
     const now = performance.now();
 
@@ -317,6 +244,15 @@ export class CombatRenderer {
       const elev = sampleElevation(this.currentElevation, p.x, p.z, this.currentExaggeration);
       container.position.set(p.x, elev, p.z);
       if (p.rot !== null) container.rotation.y = p.rot;
+
+      // Rigged members: rifle-port jog while covering ground (squads move at
+      // ~10 m/s tactical run, so a walk cadence would look like moon-walking),
+      // weapons raised in combat.
+      const moving = this.trackMotion(`squad:${id}`, p.x, p.z);
+      const combat = this.squadCombatIds.has(id);
+      const mode: RigPoseMode = combat && !moving ? 'aim' : moving ? 'run' : 'idle';
+      const t = this.advanceClock(`squad:${id}`, delta, combat && !moving ? 0.5 : moving ? 1 : 0.4);
+      this.poseRigs(container.userData?.rigs, mode, t);
     }
 
     for (const [id, mesh] of this.workerMeshes.entries()) {
@@ -326,27 +262,19 @@ export class CombatRenderer {
       const elev = sampleElevation(this.currentElevation, p.x, p.z, this.currentExaggeration);
       mesh.position.set(p.x, elev, p.z);
       const anim = this.workerAnimState.get(id);
-      // All worker animation cadence is scaled by the clock speed so limbs keep
-      // pace with the speed-scaled ground movement (no slow-motion at 2x/4x).
-      const speed = this.clockSpeed;
-      if (anim === 'harvesting') {
-        const t = ((Date.now() * speed) % 1000) / 1000;
-        mesh.position.y += Math.sin(t * Math.PI * 2) * 0.08;
-      } else if (anim === 'constructing') {
-        const t = ((Date.now() * speed) % 800) / 800;
-        mesh.position.y += Math.abs(Math.sin(t * Math.PI)) * 0.1;
-      } else {
-        // Walk-cycle: stride bob while actually covering ground, cadence scaled
-        // by clock speed (~2.2 strides/sec at 1x).
-        const prev = this.workerPrevPos.get(id);
-        const moved = prev ? Math.hypot(p.x - prev.x, p.z - prev.z) : 0;
-        if (moved > 0.005) {
-          const phase = (this.workerWalkPhase.get(id) || 0) + delta * 2.2 * speed;
-          this.workerWalkPhase.set(id, phase);
-          mesh.position.y += Math.sin(phase) * 0.05;
-        }
-        this.workerPrevPos.set(id, { x: p.x, z: p.z });
-      }
+      // Rigs animate whenever a work action is underway or the worker is on the
+      // move; idle crews breathe in place (cadence scales with clock speed so
+      // limbs keep up with speed-scaled ground movement — no slow-motion at 2x).
+      const moving = this.trackMotion(`worker:${id}`, p.x, p.z);
+      const mode: RigPoseMode = anim === 'harvesting'
+        ? 'workHarvest'
+        : anim === 'constructing'
+        ? 'workBuild'
+        : moving
+        ? 'walk'
+        : 'idle';
+      const t = this.advanceClock(`worker:${id}`, delta, anim ? 1 : moving ? 1 : 0.4);
+      this.poseRigs(mesh.userData?.rigs, mode, t);
     }
 
     for (const [id, mesh] of this.zombieMeshes.entries()) {
@@ -356,6 +284,22 @@ export class CombatRenderer {
       const elev = sampleElevation(this.currentElevation, p.x, p.z, this.currentExaggeration);
       mesh.position.set(p.x, elev, p.z);
       if (p.rot !== null) mesh.rotation.y = p.rot;
+
+      const rig: HumanoidRig | undefined = mesh.userData?.rig;
+      if (rig) {
+        const attacking = this.zombieAttacking.has(id);
+        const moving = this.trackMotion(`zombie:${id}`, p.x, p.z);
+        let mode: RigPoseMode;
+        if (rig.kind === 'brute') {
+          mode = attacking ? 'zombieAttack' : 'zombieBrute';
+        } else if (rig.kind === 'runner') {
+          mode = attacking ? 'zombieAttack' : moving ? 'zombieRun' : 'zombieIdle';
+        } else {
+          mode = attacking ? 'zombieAttack' : moving ? 'zombieShamble' : 'zombieIdle';
+        }
+        const t = this.advanceClock(`zombie:${id}`, delta, attacking ? 1.3 : moving ? 1 : 0.5);
+        applyRigPose(rig, mode, t + rig.anim.workPhase);
+      }
     }
 
     for (const [id, mesh] of this.hostileHumanMeshes.entries()) {
@@ -365,6 +309,15 @@ export class CombatRenderer {
       const elev = sampleElevation(this.currentElevation, p.x, p.z, this.currentExaggeration);
       mesh.position.set(p.x, elev, p.z);
       if (p.rot !== null) mesh.rotation.y = p.rot;
+
+      const rig: HumanoidRig | undefined = mesh.userData?.rig;
+      if (rig) {
+        const moving = this.trackMotion(`hostile:${id}`, p.x, p.z);
+        const combat = this.hostileCombatIds.has(id);
+        const mode: RigPoseMode = combat && !moving ? 'aim' : moving ? 'walk' : 'idle';
+        const t = this.advanceClock(`hostile:${id}`, delta, combat && !moving ? 0.5 : moving ? 1 : 0.4);
+        applyRigPose(rig, mode, t + rig.anim.workPhase);
+      }
     }
   }
 
@@ -425,6 +378,7 @@ export class CombatRenderer {
 
   public updateSquads(squads: TacticalSquadUnit[]) {
     this.currentSquads = squads;
+    this.squadCombatIds.clear();
     const activeIds = new Set<string>();
 
     for (const squad of squads) {
@@ -444,6 +398,9 @@ export class CombatRenderer {
       }
 
       activeIds.add(squad.squadId);
+      if (squad.state === 'combat' || Boolean(squad.targetZombieId)) {
+        this.squadCombatIds.add(squad.squadId);
+      }
 
       let squadContainer = this.squadMeshes.get(squad.squadId);
       let smoother = this.squadSmoothers.get(squad.squadId);
@@ -474,13 +431,6 @@ export class CombatRenderer {
         }
       }
 
-      // Selection ring visibility
-      const ring = squadContainer.getObjectByName('selectionRing');
-      if (ring) {
-        ring.visible = squad.squadId === this.selectedSquadId;
-        ring.rotation.z += 0.03;
-      }
-
       // Update health bar width
       const hpBar = squadContainer.getObjectByName('hpBar');
       if (hpBar) {
@@ -496,7 +446,10 @@ export class CombatRenderer {
       if (squad.squadId === this.selectedSquadId && this.rangeRadiusMesh) {
         this.rangeRadiusMesh.position.set(squad.x, elev + 0.08, squad.z);
         const radius = Math.max(8, squad.attackRange || 8);
-        this.rangeRadiusMesh.scale.set(radius, radius, 1);
+        // Ring lies flat (geometry rotateX -PI/2): scale X/Z by the radius and
+        // leave Y (the ring's normal) at 1 — scaling Y instead distorts the
+        // flat annulus into an ellipse that reads as "angled".
+        this.rangeRadiusMesh.scale.set(radius, 1, radius);
         const isCombatMode = squad.state === 'combat' || Boolean(squad.targetZombieId);
         const rangeMat = this.rangeRadiusMesh.material as THREE.MeshBasicMaterial;
         rangeMat.color.setHex(isCombatMode ? 0xef4444 : 0x10b981);
@@ -563,6 +516,9 @@ export class CombatRenderer {
         this.squadGroup.remove(container);
         this.squadMeshes.delete(id);
         this.squadSmoothers.delete(id);
+        this.squadCombatIds.delete(id);
+        this.animClocks.delete(`squad:${id}`);
+        this.lastSample.delete(`squad:${id}`);
       }
     }
   }
@@ -571,28 +527,15 @@ export class CombatRenderer {
     const group = new THREE.Group();
     group.userData = { squadId: squad.squadId, type: 'squad' };
 
-    // 1. Selection ring on ground
-    const ringGeo = new THREE.RingGeometry(1.2, 1.4, 20);
-    ringGeo.rotateX(-Math.PI / 2);
-    const ringMesh = new THREE.Mesh(ringGeo, this.selectionRingMat);
-    ringMesh.name = 'selectionRing';
-    ringMesh.position.y = 0.08;
-    ringMesh.visible = false;
-    group.add(ringMesh);
-
-    // 2. Leader Model
-    const leaderMesh = new THREE.Mesh(this.leaderGeo, this.leaderMat);
-    leaderMesh.position.set(0, 0.9, 0);
-    leaderMesh.castShadow = true;
-    leaderMesh.userData = { memberIndex: 0 };
-    group.add(leaderMesh);
-
-    // Leader weapon barrel
-    const gunGeo = new THREE.BoxGeometry(0.12, 0.12, 0.8);
-    const gunMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, metalness: 0.8 });
-    const gunMesh = new THREE.Mesh(gunGeo, gunMat);
-    gunMesh.position.set(0.3, 1.1, 0.4);
-    group.add(gunMesh);
+    // 1. Articulated fireteam: the leader plus escorts in a wedge formation.
+    // Every soldier is an independent HumanoidRig so each one walks, aims and
+    // falls alone (dead members are hidden via their memberIndex userData).
+    const rigs: HumanoidRig[] = [];
+    const leaderRig = createSoldierRig(true);
+    leaderRig.root.scale.setScalar(1.06);
+    leaderRig.root.userData.memberIndex = 0;
+    group.add(leaderRig.root);
+    rigs.push(leaderRig);
 
     // 3. Escort General Members (Wedge / fireteam formation)
     const offsets = [
@@ -603,12 +546,13 @@ export class CombatRenderer {
 
     for (let i = 0; i < squad.generalCount; i++) {
       const offset = offsets[i % offsets.length];
-      const memberMesh = new THREE.Mesh(this.memberGeo, this.memberMat);
-      memberMesh.position.set(offset.x, 0.8, offset.z);
-      memberMesh.castShadow = true;
-      memberMesh.userData = { memberIndex: 1 + i };
-      group.add(memberMesh);
+      const memberRig = createSoldierRig(false);
+      memberRig.root.position.set(offset.x, 0, offset.z);
+      memberRig.root.userData.memberIndex = 1 + i;
+      group.add(memberRig.root);
+      rigs.push(memberRig);
     }
+    group.userData.rigs = rigs;
 
     // 4. Overhead Mini Health Bar
     const bgGeo = new THREE.PlaneGeometry(1.8, 0.22);
@@ -698,8 +642,8 @@ export class CombatRenderer {
         this.workerMeshes.delete(id);
         this.workerSmoothers.delete(id);
         this.workerAnimState.delete(id);
-        this.workerWalkPhase.delete(id);
-        this.workerPrevPos.delete(id);
+        this.animClocks.delete(`worker:${id}`);
+        this.lastSample.delete(`worker:${id}`);
       }
     }
   }
@@ -708,30 +652,11 @@ export class CombatRenderer {
     const group = new THREE.Group();
     group.userData = { workerId, type: 'worker' };
 
-    // 1. Primary Worker Model
-    const bodyMesh = new THREE.Mesh(this.workerGeo, this.workerMat);
-    bodyMesh.position.set(0, 0.8, 0);
-    bodyMesh.castShadow = true;
-    group.add(bodyMesh);
+    // Primary worker: an articulated labourer with hi-vis vest, hardhat and
+    // tool rucksack; larger crews add extra rigs offset around the primary.
+    const rigs: HumanoidRig[] = [createWorkerRig()];
+    group.add(rigs[0].root);
 
-    // Hi-Vis Utility Vest torso overlay
-    const vestGeo = new THREE.CylinderGeometry(0.29, 0.35, 0.7, 8);
-    const vestMesh = new THREE.Mesh(vestGeo, this.workerVestMat);
-    vestMesh.position.set(0, 0.95, 0);
-    vestMesh.castShadow = true;
-    group.add(vestMesh);
-
-    // Hardhat / Utility Helmet
-    const helmetMesh = new THREE.Mesh(this.workerHelmetGeo, this.workerHelmetMat);
-    helmetMesh.position.set(0, 1.6, 0);
-    group.add(helmetMesh);
-
-    // Tool pouch / canvas resource pack on back
-    const packMesh = new THREE.Mesh(this.workerPackGeo, this.workerPackMat);
-    packMesh.position.set(0, 0.9, -0.22);
-    group.add(packMesh);
-
-    // 2. Extra workers for larger crews (up to workerCount)
     if (workerCount > 1) {
       const extraOffsets = [
         { x: -0.65, z: -0.5 },
@@ -741,25 +666,13 @@ export class CombatRenderer {
       const extraCount = Math.min(workerCount - 1, 3);
       for (let i = 0; i < extraCount; i++) {
         const off = extraOffsets[i % extraOffsets.length];
-        const extraGroup = new THREE.Group();
-        extraGroup.position.set(off.x, 0, off.z);
-
-        const extraBody = new THREE.Mesh(this.workerGeo, this.workerMat);
-        extraBody.position.set(0, 0.8, 0);
-        extraBody.castShadow = true;
-        extraGroup.add(extraBody);
-
-        const extraVest = new THREE.Mesh(vestGeo, this.workerVestMat);
-        extraVest.position.set(0, 0.95, 0);
-        extraGroup.add(extraVest);
-
-        const extraHelmet = new THREE.Mesh(this.workerHelmetGeo, this.workerHelmetMat);
-        extraHelmet.position.set(0, 1.6, 0);
-        extraGroup.add(extraHelmet);
-
-        group.add(extraGroup);
+        const extraRig = createWorkerRig();
+        extraRig.root.position.set(off.x, 0, off.z);
+        group.add(extraRig.root);
+        rigs.push(extraRig);
       }
     }
+    group.userData.rigs = rigs;
 
     return group;
   }
@@ -834,11 +747,15 @@ export class CombatRenderer {
   // ==========================================
 
   public updateZombies(zombies: ZombieUnit[]) {
+    this.zombieAttacking.clear();
     const activeIds = new Set<string>();
 
     for (const zombie of zombies) {
       if (zombie.state === 'dead' || zombie.currentHp <= 0) continue;
       activeIds.add(zombie.id);
+      if (zombie.state === 'attacking_unit' || zombie.state === 'attacking_building') {
+        this.zombieAttacking.add(zombie.id);
+      }
 
       let mesh = this.zombieMeshes.get(zombie.id);
       let smoother = this.zombieSmoothers.get(zombie.id);
@@ -858,26 +775,8 @@ export class CombatRenderer {
         smoother.setTarget(zombie.x, zombie.z, performance.now(), zombie.rotation);
       }
 
-      // Update HP bar
-      const hpBar = mesh.getObjectByName('hpBar');
-      if (hpBar) {
-        const pct = Math.max(0, zombie.currentHp / zombie.maxHp);
-        hpBar.scale.x = pct;
-      }
-
-      // Alert marker (Yellow ? or Red !)
-      const alertMark = mesh.getObjectByName('alertMark') as THREE.Mesh;
-      if (alertMark) {
-        if (zombie.alertLevel === 2) {
-          alertMark.visible = true;
-          (alertMark.material as THREE.MeshBasicMaterial).color.setHex(0xef4444);
-        } else if (zombie.alertLevel === 1) {
-          alertMark.visible = true;
-          (alertMark.material as THREE.MeshBasicMaterial).color.setHex(0xf59e0b);
-        } else {
-          alertMark.visible = false;
-        }
-      }
+      // IFZ deliberately shows no per-zombie health or alert overhead — group
+      // health is surfaced on the clustered skull pin's radial meter instead.
     }
 
     // Cleanup dead zombies
@@ -886,6 +785,9 @@ export class CombatRenderer {
         this.zombieGroup.remove(mesh);
         this.zombieMeshes.delete(id);
         this.zombieSmoothers.delete(id);
+        this.zombieAttacking.delete(id);
+        this.animClocks.delete(`zombie:${id}`);
+        this.lastSample.delete(`zombie:${id}`);
       }
     }
   }
@@ -894,79 +796,15 @@ export class CombatRenderer {
     const group = new THREE.Group();
     group.userData = { zombieId: zombie.id, variant: zombie.variant, type: 'zombie' };
 
-    let bodyGeo = this.shamblerGeo;
-    let bodyMat = this.shamblerMat;
-    let scale = 1.0;
-    let yOffset = 0.85;
+    // Articulated infected rig — shambler/runner/brute all share the skeleton
+    // and differ by proportions, skin and pose (assigned per frame).
+    const rig = createZombieRig(zombie.variant);
+    group.add(rig.root);
+    group.userData.rig = rig;
 
-    if (zombie.variant === 'runner') {
-      bodyGeo = this.runnerGeo;
-      bodyMat = this.runnerMat;
-      scale = 0.95;
-      yOffset = 0.8;
-    } else if (zombie.variant === 'brute') {
-      bodyGeo = this.bruteGeo;
-      bodyMat = this.bruteMat;
-      scale = 1.6;
-      yOffset = 1.35;
-    }
-
-    const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
-    bodyMesh.position.set(0, yOffset, 0);
-    bodyMesh.castShadow = true;
-
-    // Aggressive posture for runners
-    if (zombie.variant === 'runner') {
-      bodyMesh.rotation.x = 0.25; // Leaning forward in sprint
-    }
-
-    group.add(bodyMesh);
-
-    // Glowing eyes for runners / Brute bulk
-    if (zombie.variant === 'runner') {
-      const eyeGeo = new THREE.SphereGeometry(0.08, 6, 6);
-      const eyeMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-      const eye1 = new THREE.Mesh(eyeGeo, eyeMat);
-      eye1.position.set(0.12, 1.45, 0.28);
-      const eye2 = new THREE.Mesh(eyeGeo, eyeMat);
-      eye2.position.set(-0.12, 1.45, 0.28);
-      group.add(eye1, eye2);
-    } else if (zombie.variant === 'brute') {
-      // Spiked shoulder boulder
-      const shoulderGeo = new THREE.DodecahedronGeometry(0.5);
-      const shoulderMesh1 = new THREE.Mesh(shoulderGeo, bodyMat);
-      shoulderMesh1.position.set(0.7, 2.1, 0);
-      const shoulderMesh2 = new THREE.Mesh(shoulderGeo, bodyMat);
-      shoulderMesh2.position.set(-0.7, 2.1, 0);
-      group.add(shoulderMesh1, shoulderMesh2);
-    }
-
-    // Mini Health Bar
-    const barWidth = zombie.variant === 'brute' ? 2.2 : 1.2;
-    const bgGeo = new THREE.PlaneGeometry(barWidth, 0.14);
-    const bgMat = new THREE.MeshBasicMaterial({ color: 0x111827, side: THREE.DoubleSide });
-    const hpBg = new THREE.Mesh(bgGeo, bgMat);
-    hpBg.position.set(0, zombie.variant === 'brute' ? 3.4 : 2.2, 0);
-
-    const fgGeo = new THREE.PlaneGeometry(barWidth - 0.08, 0.1);
-    const fgMat = new THREE.MeshBasicMaterial({
-      color: zombie.variant === 'brute' ? 0xa855f7 : 0xef4444,
-      side: THREE.DoubleSide,
-    });
-    const hpFg = new THREE.Mesh(fgGeo, fgMat);
-    hpFg.name = 'hpBar';
-    hpFg.position.set(0, 0, 0.01);
-    hpBg.add(hpFg);
-    group.add(hpBg);
-
-    // Alert indicator
-    const alertGeo = new THREE.SphereGeometry(0.18, 6, 6);
-    const alertMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
-    const alertMesh = new THREE.Mesh(alertGeo, alertMat);
-    alertMesh.name = 'alertMark';
-    alertMesh.position.set(0, zombie.variant === 'brute' ? 3.9 : 2.6, 0);
-    alertMesh.visible = false;
-    group.add(alertMesh);
+    const isBrute = zombie.variant === 'brute';
+    // IFZ shows no overhead health/alert markers on individual zombies — only
+    // the group pin's radial health meter. (Individual HP still drives combat.)
 
     return group;
   }
@@ -976,11 +814,15 @@ export class CombatRenderer {
   // ==========================================
 
   public updateHostileHumans(humans: HostileHumanUnit[]) {
+    this.hostileCombatIds.clear();
     const activeIds = new Set<string>();
 
     for (const human of humans) {
       if (human.state === 'dead' || human.currentHp <= 0) continue;
       activeIds.add(human.id);
+      if (human.state === 'combat' || human.targetSquadId) {
+        this.hostileCombatIds.add(human.id);
+      }
 
       let mesh = this.hostileHumanMeshes.get(human.id);
       let smoother = this.hostileHumanSmoothers.get(human.id);
@@ -1012,6 +854,9 @@ export class CombatRenderer {
         this.hostileHumanGroup.remove(mesh);
         this.hostileHumanMeshes.delete(id);
         this.hostileHumanSmoothers.delete(id);
+        this.hostileCombatIds.delete(id);
+        this.animClocks.delete(`hostile:${id}`);
+        this.lastSample.delete(`hostile:${id}`);
       }
     }
   }
@@ -1020,17 +865,10 @@ export class CombatRenderer {
     const group = new THREE.Group();
     group.userData = { hostileHumanId: human.id, type: 'hostile_human' };
 
-    const bodyMesh = new THREE.Mesh(this.hostileHumanGeo, this.hostileHumanMat);
-    bodyMesh.position.set(0, 0.85, 0);
-    bodyMesh.castShadow = true;
-    group.add(bodyMesh);
-
-    // Weapon barrel to read as an armed human at a glance
-    const gunGeo = new THREE.BoxGeometry(0.1, 0.1, 0.9);
-    const gunMat = new THREE.MeshStandardMaterial({ color: 0x1f2937, metalness: 0.85 });
-    const gunMesh = new THREE.Mesh(gunGeo, gunMat);
-    gunMesh.position.set(0.28, 1.0, 0.4);
-    group.add(gunMesh);
+    // Armed raider rig — rifle rides in the right hand so it raises to aim.
+    const rig = createHostileRig();
+    group.add(rig.root);
+    group.userData.rig = rig;
 
     // Mini health bar
     const barWidth = 1.3;
@@ -1220,25 +1058,9 @@ export class CombatRenderer {
   }
 
   public dispose() {
-    this.leaderGeo.dispose();
-    this.memberGeo.dispose();
-    this.workerGeo.dispose();
-    this.workerPackGeo.dispose();
-    this.workerHelmetGeo.dispose();
-    this.shamblerGeo.dispose();
-    this.runnerGeo.dispose();
-    this.bruteGeo.dispose();
-    this.leaderMat.dispose();
-    this.memberMat.dispose();
-    this.workerMat.dispose();
-    this.workerVestMat.dispose();
-    this.workerHelmetMat.dispose();
-    this.workerPackMat.dispose();
-    this.shamblerMat.dispose();
-    this.runnerMat.dispose();
-    this.bruteMat.dispose();
+    // Character geometries/materials are shared singletons owned by
+    // HumanoidRig.ts and live for the whole app session — nothing to free here.
     this.tracerMat.dispose();
-    this.selectionRingMat.dispose();
     this.waypointLineMaterial?.dispose();
     if (this.waypointEndMesh) {
       this.waypointEndMesh.traverse((object) => {

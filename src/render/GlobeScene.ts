@@ -13,6 +13,135 @@ export interface GlobeSceneOptions {
 }
 
 /**
+ * Converts standard NASA specular map (white=ocean, black=land) into PBR roughness map (low=water, high=land)
+ */
+function createRoughnessFromSpecularImage(image: CanvasImageSource & { width?: number; height?: number }): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = image.width || 2048;
+  canvas.height = image.height || 1024;
+  const ctx = canvas.getContext('2d')!;
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = imgData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const spec = d[i]; // In NASA specular map: 255 for water, 0 for land
+    // Invert to roughness: Water -> ~32 (0.12 roughness, shiny specular), Land -> ~238 (0.93 roughness, matte)
+    const roughness = Math.round(238 - (spec / 255) * 206);
+    d[i] = roughness;
+    d[i + 1] = roughness;
+    d[i + 2] = roughness;
+    d[i + 3] = 255;
+  }
+  ctx.putImageData(imgData, 0, 0);
+
+  const roughnessTex = new THREE.CanvasTexture(canvas);
+  roughnessTex.wrapS = THREE.RepeatWrapping;
+  roughnessTex.wrapT = THREE.ClampToEdgeWrapping;
+  roughnessTex.minFilter = THREE.LinearMipmapLinearFilter;
+  roughnessTex.magFilter = THREE.LinearFilter;
+  return roughnessTex;
+}
+
+interface GlobeTextureCache {
+  satellite?: THREE.Texture;
+  normal?: THREE.Texture;
+  roughness?: THREE.CanvasTexture;
+  listeners: Array<(cache: GlobeTextureCache) => void>;
+  isLoading: boolean;
+  isLoaded: boolean;
+}
+
+export const globeTextureCache: GlobeTextureCache = {
+  listeners: [],
+  isLoading: false,
+  isLoaded: false,
+};
+
+/**
+ * Preload high-resolution real-world NASA satellite texture, normal map, and specular map
+ * as early as application boot so the 3D globe displays photographic planetary textures
+ * instantly on frame 0 without any pop-in or mid-screen loading.
+ */
+export function preloadGlobeTextures(): Promise<void> {
+  if (typeof window === 'undefined') return Promise.resolve();
+  if (globeTextureCache.isLoaded || globeTextureCache.isLoading) return Promise.resolve();
+
+  globeTextureCache.isLoading = true;
+
+  const textureLoader = new THREE.TextureLoader();
+  textureLoader.setCrossOrigin('anonymous');
+
+  const satelliteUrls = [
+    'https://unpkg.com/three-globe@2.45.2/example/img/earth-blue-marble.jpg',
+  ];
+
+  const bumpUrls = [
+    'https://threejs.org/examples/textures/planets/earth_normal_2048.jpg',
+  ];
+
+  const specUrls = [
+    'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_specular_2048.jpg',
+    'https://cdn.jsdelivr.net/gh/mrdoob/three.js@master/examples/textures/planets/earth_specular_2048.jpg',
+  ];
+
+  const loadWithFallback = (urls: string[]): Promise<THREE.Texture | null> => {
+    return new Promise((resolve) => {
+      let idx = 0;
+      const tryNext = () => {
+        if (idx >= urls.length) {
+          resolve(null);
+          return;
+        }
+        const url = urls[idx++];
+        textureLoader.load(
+          url,
+          (tex) => resolve(tex),
+          undefined,
+          () => tryNext()
+        );
+      };
+      tryNext();
+    });
+  };
+
+  return Promise.all([
+    loadWithFallback(satelliteUrls),
+    loadWithFallback(bumpUrls),
+    loadWithFallback(specUrls),
+  ]).then(([satTex, bumpTex, specTex]) => {
+    if (satTex) {
+      satTex.wrapS = THREE.RepeatWrapping;
+      satTex.wrapT = THREE.ClampToEdgeWrapping;
+      satTex.minFilter = THREE.LinearMipmapLinearFilter;
+      satTex.magFilter = THREE.LinearFilter;
+      globeTextureCache.satellite = satTex;
+    }
+    if (bumpTex) {
+      bumpTex.wrapS = THREE.RepeatWrapping;
+      bumpTex.wrapT = THREE.ClampToEdgeWrapping;
+      globeTextureCache.normal = bumpTex;
+    }
+    if (specTex && specTex.image) {
+      try {
+        const roughnessTex = createRoughnessFromSpecularImage(specTex.image as any);
+        globeTextureCache.roughness = roughnessTex;
+      } catch (e) {
+        console.warn('Using procedural roughness map:', e);
+      }
+    }
+
+    globeTextureCache.isLoaded = true;
+    globeTextureCache.isLoading = false;
+
+    const listeners = [...globeTextureCache.listeners];
+    globeTextureCache.listeners = [];
+    for (const listener of listeners) {
+      listener(globeTextureCache);
+    }
+  });
+}
+
+/**
  * Creates an initial fast transparent satellite cloud texture while high-resolution
  * NASA satellite imagery downloads in the background.
  */
@@ -208,128 +337,54 @@ export class GlobeScene {
   private initGlobe() {
     // Ultra smooth sphere geometry for high-detail planetary silhouette
     const globeGeo = new THREE.SphereGeometry(this.GLOBE_RADIUS, 256, 256);
-    const proceduralTex = createUltraHdProceduralEarthTexture();
-    const proceduralRoughnessTex = createProceduralEarthRoughnessTexture();
-
     const maxAnisotropy = this.renderer.capabilities.getMaxAnisotropy();
-    proceduralTex.anisotropy = maxAnisotropy;
-    proceduralRoughnessTex.anisotropy = maxAnisotropy;
+
+    // Use preloaded satellite & roughness textures if available; fallback to procedural canvas
+    const cached = globeTextureCache;
+    const initialMap = cached.satellite || createUltraHdProceduralEarthTexture();
+    const initialRoughness = cached.roughness || createProceduralEarthRoughnessTexture();
+
+    initialMap.anisotropy = maxAnisotropy;
+    initialRoughness.anisotropy = maxAnisotropy;
 
     const globeMat = new THREE.MeshStandardMaterial({
-      map: proceduralTex,
-      roughnessMap: proceduralRoughnessTex,
+      map: initialMap,
+      roughnessMap: initialRoughness,
       roughness: 1.0,
       metalness: 0.02,
     });
 
+    if (cached.normal) {
+      cached.normal.anisotropy = maxAnisotropy;
+      globeMat.normalMap = cached.normal;
+      globeMat.normalScale = new THREE.Vector2(0.65, 0.65);
+    }
+
     this.globeMesh = new THREE.Mesh(globeGeo, globeMat);
     this.scene.add(this.globeMesh);
 
-    // High-resolution satellite Earth texture loaders with fallback chain
-    const textureLoader = new THREE.TextureLoader();
-    const satelliteUrls = [
-      'https://unpkg.com/three-globe@2.45.2/example/img/earth-blue-marble.jpg',
-    ];
-
-    const loadSatelliteTexture = (index = 0) => {
-      if (index >= satelliteUrls.length) return;
-      textureLoader.load(
-        satelliteUrls[index],
-        (tex) => {
-          tex.wrapS = THREE.RepeatWrapping;
-          tex.wrapT = THREE.ClampToEdgeWrapping;
-          tex.anisotropy = maxAnisotropy;
-          tex.minFilter = THREE.LinearMipmapLinearFilter;
-          tex.magFilter = THREE.LinearFilter;
-          globeMat.map = tex;
-          globeMat.needsUpdate = true;
-        },
-        undefined,
-        () => {
-          loadSatelliteTexture(index + 1);
+    // If preloaded textures are already complete, no further network request needed!
+    // Otherwise, register listener and ensure preloading is underway.
+    if (!cached.isLoaded) {
+      const onTexturesReady = (updatedCache: GlobeTextureCache) => {
+        if (updatedCache.satellite) {
+          updatedCache.satellite.anisotropy = maxAnisotropy;
+          globeMat.map = updatedCache.satellite;
         }
-      );
-    };
-    loadSatelliteTexture(0);
-
-    // Load terrain normal/bump map for realistic 3D mountain relief shadows
-    const bumpUrls = [
-      'https://threejs.org/examples/textures/planets/earth_normal_2048.jpg',
-    ];
-    const loadBumpTexture = (index = 0) => {
-      if (index >= bumpUrls.length) return;
-      textureLoader.load(
-        bumpUrls[index],
-        (tex) => {
-          tex.wrapS = THREE.RepeatWrapping;
-          tex.wrapT = THREE.ClampToEdgeWrapping;
-          tex.anisotropy = maxAnisotropy;
-          globeMat.normalMap = tex;
+        if (updatedCache.normal) {
+          updatedCache.normal.anisotropy = maxAnisotropy;
+          globeMat.normalMap = updatedCache.normal;
           globeMat.normalScale = new THREE.Vector2(0.65, 0.65);
-          globeMat.needsUpdate = true;
-        },
-        undefined,
-        () => loadBumpTexture(index + 1)
-      );
-    };
-    loadBumpTexture(0);
-
-    // Converts standard NASA specular map (white=ocean, black=land) into PBR roughness map (low=water, high=land)
-    const createRoughnessFromSpecularImage = (image: HTMLImageElement): THREE.CanvasTexture => {
-      const canvas = document.createElement('canvas');
-      canvas.width = image.width || 2048;
-      canvas.height = image.height || 1024;
-      const ctx = canvas.getContext('2d')!;
-      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const d = imgData.data;
-      for (let i = 0; i < d.length; i += 4) {
-        const spec = d[i]; // In NASA specular map: 255 for water, 0 for land
-        // Invert to roughness: Water -> ~32 (0.12 roughness, shiny specular), Land -> ~238 (0.93 roughness, matte)
-        const roughness = Math.round(238 - (spec / 255) * 206);
-        d[i] = roughness;
-        d[i + 1] = roughness;
-        d[i + 2] = roughness;
-        d[i + 3] = 255;
-      }
-      ctx.putImageData(imgData, 0, 0);
-
-      const roughnessTex = new THREE.CanvasTexture(canvas);
-      roughnessTex.wrapS = THREE.RepeatWrapping;
-      roughnessTex.wrapT = THREE.ClampToEdgeWrapping;
-      roughnessTex.anisotropy = maxAnisotropy;
-      roughnessTex.minFilter = THREE.LinearMipmapLinearFilter;
-      roughnessTex.magFilter = THREE.LinearFilter;
-      return roughnessTex;
-    };
-
-    // Load specular map and invert for ocean sun glints and matte landmasses
-    const specUrls = [
-      'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_specular_2048.jpg',
-      'https://cdn.jsdelivr.net/gh/mrdoob/three.js@master/examples/textures/planets/earth_specular_2048.jpg',
-    ];
-    const loadSpecTexture = (index = 0) => {
-      if (index >= specUrls.length) return;
-      textureLoader.load(
-        specUrls[index],
-        (tex) => {
-          try {
-            if (tex.image && tex.image.width > 0) {
-              const invertedRoughnessTex = createRoughnessFromSpecularImage(tex.image);
-              globeMat.roughnessMap = invertedRoughnessTex;
-              globeMat.roughness = 1.0;
-              globeMat.metalness = 0.02;
-              globeMat.needsUpdate = true;
-            }
-          } catch (e) {
-            console.warn('Using procedural roughness map:', e);
-          }
-        },
-        undefined,
-        () => loadSpecTexture(index + 1)
-      );
-    };
-    loadSpecTexture(0);
+        }
+        if (updatedCache.roughness) {
+          updatedCache.roughness.anisotropy = maxAnisotropy;
+          globeMat.roughnessMap = updatedCache.roughness;
+        }
+        globeMat.needsUpdate = true;
+      };
+      globeTextureCache.listeners.push(onTexturesReady);
+      preloadGlobeTextures();
+    }
 
     // -------------------------------------------------------------
     // Literal NASA Satellite Atmospheric Cloud Layer
@@ -349,30 +404,6 @@ export class GlobeScene {
 
     this.cloudsMesh = new THREE.Mesh(cloudsGeo, cloudsMat);
     this.scene.add(this.cloudsMesh);
-
-    // Load authentic NASA satellite composite cloud layer texture
-    // The remote Three.js cloud asset was removed upstream; retain the
-    // procedural transparent layer instead of issuing a guaranteed 404.
-    const cloudUrls: string[] = [];
-    const loadCloudTexture = (index = 0) => {
-      if (index >= cloudUrls.length) return;
-      textureLoader.load(
-        cloudUrls[index],
-        (tex) => {
-          tex.wrapS = THREE.RepeatWrapping;
-          tex.wrapT = THREE.ClampToEdgeWrapping;
-          tex.anisotropy = maxAnisotropy;
-          tex.minFilter = THREE.LinearMipmapLinearFilter;
-          tex.magFilter = THREE.LinearFilter;
-          cloudsMat.map = tex;
-          cloudsMat.opacity = 0.65;
-          cloudsMat.needsUpdate = true;
-        },
-        undefined,
-        () => loadCloudTexture(index + 1)
-      );
-    };
-    loadCloudTexture(0);
 
     // Atmosphere Fresnel Rim Layer
     const atmosGeo = new THREE.SphereGeometry(this.GLOBE_RADIUS * 1.034, 128, 128);

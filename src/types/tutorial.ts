@@ -75,7 +75,7 @@ export const TUTORIAL_STEPS: Record<TutorialStepId, TutorialStepInfo> = {
     shortLabel: 'Survive First Night',
     goal: 'Defend against infected activity through dusk and night until Dawn of Day 2.',
     description:
-      'At 18:00 (Dusk) infected roaming accelerates, and at 21:00 (Nightfall) a coordinated horde incursion strikes. Station your squads in defensive posture near HQ and survive until 06:00 (Dawn).',
+      'At 19:00 (Dusk) infected roaming accelerates, and at 21:00 (Nightfall) a coordinated horde incursion strikes. Station your squads in defensive posture near HQ and survive until 05:00 (Dawn).',
     tacticalDirective: 'REPEL NIGHTFALL HORDE INVASION AND SAFEGUARD COLONY CITIZENS',
     hint: 'Tip: Use the 2X or 4X speed controls in the top bar to advance time when defenses are secure.',
     iconName: 'Moon',

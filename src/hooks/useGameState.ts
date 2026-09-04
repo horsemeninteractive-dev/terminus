@@ -6,6 +6,9 @@ import type { ActiveSidebarTab } from '../components/TacticalHeaderStrip';
 import type { TacticalAlert } from '../components/TacticalAlertStream';
 import type { ToastItem } from '../components/NotificationTray';
 import { getInitialRadioDirectiveState } from '../services/radioDirectiveService';
+import { getInitialMissionState } from '../services/missionService';
+import { registerAllContent } from '../services/missionRegistry';
+import type { MissionState } from '../types/mission';
 import { detectSatelliteQuality } from '../services/satelliteService';
 import type { RadioDirectiveState, RadioTransmission } from '../types/radioDirective';
 import { soundService, ToastMessage } from '../services/soundService';
@@ -18,6 +21,9 @@ import { dispatchSquadOnExpedition, recallSquadFromExpedition } from '../service
 import type { LawId } from '../types/laws';
 import { BuildingPolygon, LocationPreset, MapData, Point2D, ResourceNode, SettlementPlacement } from '../types/map';
 import type { SettlementRecord, TradeCaravan } from '../types/caravan';
+
+// Register campaign + dynamic content once per app boot (idempotent).
+registerAllContent();
 import { HiddenSurvivorGroup } from '../types/population';
 import { FunctionalBuildingTypeId, SettlementState } from '../types/settlement';
 import { getCanonicalDefenseDef } from '../data/functionalBuildings';
@@ -96,6 +102,16 @@ export function useGameState() {
     const t = setTimeout(() => setIsDescentActive(false), 700);
     return () => clearTimeout(t);
   }, [isDescentActive, isSceneRendered]);
+
+  // Leaving the world view (e.g. opening the globe from the header banner) aborts
+  // an in-flight descent: the world scene will never render now, so the descent
+  // overlay must not linger over the globe and swallow clicks forever.
+  useEffect(() => {
+    if (viewMode !== 'world' && isDescentActive) {
+      stopDescentTimer();
+      setIsDescentActive(false);
+    }
+  }, [viewMode, isDescentActive, stopDescentTimer]);
 
   // Real load progress: the map pipeline (fetch + scene build) reports actual
   // stage progress + status lines, which drive the atmospheric-descent loading
@@ -200,6 +216,10 @@ export function useGameState() {
   // Safe Zones Operations Radio Directive System State (§TERMINUS PROTOCOL)
   const [radioDirectiveState, setRadioDirectiveState] = useState<RadioDirectiveState>(() =>
     getInitialRadioDirectiveState()
+  );
+  // Campaign mission system state (Chapters I+; tutorial remains on directives).
+  const [missionState, setMissionState] = useState<MissionState>(() =>
+    getInitialMissionState()
   );
   const [isRadioModalOpen, setIsRadioModalOpen] = useState<boolean>(false);
   const [activeRadioTransmission, setActiveRadioTransmission] = useState<RadioTransmission | null>(
@@ -517,6 +537,8 @@ export function useGameState() {
     // Radio directives
     radioDirectiveState, setRadioDirectiveState, isRadioModalOpen, setIsRadioModalOpen,
     activeRadioTransmission, setActiveRadioTransmission,
+    // Campaign missions
+    missionState, setMissionState,
     isCelebrationModalOpen, setIsCelebrationModalOpen, handleClaimDawnReward,
     // Sidebar & alerts
     activeSidebarTab, setActiveSidebarTab, isQuestListOpen, setIsQuestListOpen,

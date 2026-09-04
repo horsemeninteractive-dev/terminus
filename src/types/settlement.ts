@@ -227,6 +227,15 @@ export interface ProductionRecipe {
   /** Stockpile output of the line. Absent on armory gear lines, whose product
    *  is a real item pushed to the settlement armory via `gear`. */
   outputs?: BuildingResourceFlow[];
+  /**
+   * Alternate-unit meters the line accrues into `lifetimeStats.itemsProduced`
+   * while it runs WITHOUT adding anything to the stockpile. Lets a line whose
+   * deliverable is denominated differently than its stockpile flow count for
+   * manufacture objectives — e.g. the Arms Factory "Ammunition Crates" line
+   * pours 20 rounds/day into the shared pool and tallies 1 crate/day, so a
+   * "Produce 5 Ammunition Crates" mission tracks real line time.
+   */
+  tallies?: BuildingResourceFlow[];
   cycleSeconds?: number;
   /**
    * Research node that gates THIS production line (deeper in the tree than the
@@ -566,9 +575,42 @@ export interface FogOfWarState {
   explored: number[];
 }
 
+/**
+ * Colony-wide lifetime statistics. Optional on legacy saves: every reader
+ * falls back to zeroed defaults via getLifetimeStats(). These are the
+ * authoritative counters the mission engine observes (e.g. eliminate_infected
+ * measures the real global infected-kill delta, not a fabricated tally).
+ */
+export interface SettlementLifetimeStats {
+  /** Total infected destroyed by the colony since the settlement began. */
+  infectedKills: number;
+  /** Squads mustered (createSquad successes). */
+  squadsFormed: number;
+  /** Buildings (or sections) adapted into functional facilities. */
+  buildingsAdapted: number;
+  /** Freestanding structures whose construction order was placed. */
+  buildingsConstructed: number;
+  /** Survivors recruited from hidden groups (leader + general members). */
+  survivorsRecruited: number;
+  /** Research projects completed. */
+  researchCompleted: number;
+  /**
+   * Cumulative units EVER manufactured into existence by colony production
+   * lines (recipe stockpile outputs, gear items, alternate-unit line meters),
+   * keyed by the produced resource/item. This is the authoritative counter the
+   * mission engine reads for manufacture_item objectives: it only grows when
+   * a facility actually produces, so scavenged/traded/reward stock and plain
+   * possession can never satisfy a "Manufacture N" task, and consumption can
+   * never erase progress. Absent on legacy saves (reads fall back to 0).
+   */
+  itemsProduced?: Record<string, number>;
+}
+
 export interface SettlementState {
   name?: string;
   isInitialized: boolean;
+  /** Colony-wide lifetime statistics (see SettlementLifetimeStats). */
+  lifetimeStats?: SettlementLifetimeStats;
   /** Command centers established in this settlement. This array is the
    *  authoritative HQ collection — the primary (command) HQ is the entry
    *  whose buildingId matches `primaryHQId` (or the first entry on saves

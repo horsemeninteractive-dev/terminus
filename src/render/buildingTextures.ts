@@ -1279,3 +1279,519 @@ export const BUILDING_TEXTURE_VARIANTS = 3;
 export function buildingVariantForId(id: string | number): number {
   return hashString(`bldg:${String(id)}`) % BUILDING_TEXTURE_VARIANTS;
 }
+
+// ---------------------------------------------------------------------------
+// FLAT ROOF SYSTEM (A–E membrane families)
+//
+// Pitched/gabled roofs wear the pitched tile/slate textures above; BLOCKY,
+// flat-roofed buildings get their own procedural family so a flat slab never
+// reuses a gabled-roof texture. Each family is a 4m tile (same UV convention
+// as `remapRoofUvs`), with a matching relief bump map and a roughness map that
+// carries the rainwater puddle masks (smooth = low value). Weathering — corner
+// grime, edge moss, puddle stains, edge wear — is baked into the shared albedo
+// so the LOD merge (grouped by material) stays intact; per-building UV
+// rotation/offset (see applyFlatRoofUvVariation in BuildingRenderer) breaks
+// the tiling repetition city-wide.
+//
+// Exposed tuning knobs (FlatRoofParams):
+//   roughness         base material roughness (also the roughness-map floor),
+//                     lower = glossier membrane (TPO), higher = matte (felt)
+//   seamSpacingMeters spacing of seams / felt courses / paver joints in metres
+//   dirtIntensity     0..1 strength of the baked weathering overlay (grime /
+//                     moss / puddle / edge wear)
+// ---------------------------------------------------------------------------
+
+export type FlatRoofType = 'gravel' | 'epdm' | 'felt' | 'tpo' | 'paved';
+
+export interface FlatRoofParams {
+  roughness: number;
+  seamSpacingMeters: number;
+  dirtIntensity: number;
+}
+
+export interface FlatRoofLook {
+  type: FlatRoofType;
+  shade: number;
+  params: FlatRoofParams;
+  albedo: THREE.CanvasTexture;
+  bump: THREE.CanvasTexture;
+  roughness: THREE.CanvasTexture;
+}
+
+/** Per-type tile: albedo palette (one entry per shade) + relief params. */
+const FLAT_ROOF_PALETTES: Record<FlatRoofType, { shades: string[]; dark: string; light: string; params: FlatRoofParams }> = {
+  // A — Gravel ballast: light-mid grey aggregate, harsh speckle, high roughness.
+  gravel: {
+    shades: ['#9aa0a6', '#a4a9ae', '#8f959c'],
+    dark: '#60666d',
+    light: '#d3d7db',
+    params: { roughness: 0.96, seamSpacingMeters: 4, dirtIntensity: 0.55 },
+  },
+  // B — EPDM rubber: dark charcoal matte membrane, wide clean seams.
+  epdm: {
+    shades: ['#2c3034', '#373c41'],
+    dark: '#1b1e21',
+    light: '#545a60',
+    params: { roughness: 0.85, seamSpacingMeters: 2.5, dirtIntensity: 0.45 },
+  },
+  // C — Mineral felt / bitumen: dark torch-on felt, overlapping courses, flecks.
+  felt: {
+    shades: ['#4e5155', '#5a5d60'],
+    dark: '#33363a',
+    light: '#72767b',
+    params: { roughness: 0.92, seamSpacingMeters: 1.25, dirtIntensity: 0.62 },
+  },
+  // D — TPO / reflective: bright single-ply membrane, thin thermal welds.
+  tpo: {
+    shades: ['#e9e7e0', '#dedbd2'],
+    dark: '#b8b5ac',
+    light: '#f7f5ef',
+    params: { roughness: 0.62, seamSpacingMeters: 3, dirtIntensity: 0.3 },
+  },
+  // E — Paved / terrace: concrete pavers (player-access & residential flats).
+  paved: {
+    shades: ['#a9a59a', '#b6b2a6'],
+    dark: '#8a8679',
+    light: '#cfcbc0',
+    params: { roughness: 0.88, seamSpacingMeters: 1, dirtIntensity: 0.5 },
+  },
+};
+
+/** A 4m roof tile is 512px → 128px per metre. */
+const PX_PER_M = 512 / 4;
+
+function shadeColor(hex: string, t: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  const r = Math.min(255, Math.max(0, ((n >> 16) & 255) + t));
+  const g = Math.min(255, Math.max(0, ((n >> 8) & 255) + t));
+  const b = Math.min(255, Math.max(0, (n & 255) + t));
+  return `rgb(${r},${g},${b})`;
+}
+
+function randEllipse(ctx: CanvasRenderingContext2D, x: number, y: number, rx: number, ry: number, rot: number, fill: string) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rot);
+  ctx.scale(rx, ry);
+  ctx.fillStyle = fill;
+  ctx.beginPath();
+  ctx.arc(0, 0, 1, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+/** Irregular puddle stains, shared by the albedo (dark) and roughness (smooth) layers. */
+function makePuddleBlobs(rng: () => number, count: number): { x: number; y: number; rx: number; ry: number; rot: number; a: number }[] {
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    out.push({
+      x: rng() * 512,
+      y: rng() * 512,
+      rx: 28 + rng() * 70,
+      ry: 18 + rng() * 50,
+      rot: rng() * Math.PI,
+      a: 0.12 + rng() * 0.16,
+    });
+  }
+  return out;
+}
+
+/** Shared weathering overlay baked into the albedo tile (corner dirt + moss +
+ *  puddle stains + edge wear). Strength follows params.dirtIntensity. */
+function paintWeathering(
+  ctx: CanvasRenderingContext2D,
+  type: FlatRoofType,
+  params: FlatRoofParams,
+  rng: () => number,
+  puddles: { x: number; y: number; rx: number; ry: number; rot: number; a: number }[]
+) {
+  const S = 512;
+  const dirt = params.dirtIntensity;
+  const isLight = type === 'tpo';
+
+  // Corner / edge grime — dark irregular wedges bleeding in from each corner.
+  const corners: [number, number][] = [[-0.1, -0.1], [1.1, -0.1], [-0.1, 1.1], [1.1, 1.1]];
+  for (const [cx, cy] of corners) {
+    const g = ctx.createRadialGradient(S * cx, S * cy, 8, S * cx, S * cy, S * (0.32 + rng() * 0.2));
+    g.addColorStop(0, `rgba(${isLight ? '58,56,48' : '24,22,18'},${0.30 * dirt})`);
+    g.addColorStop(0.55, `rgba(${isLight ? '58,56,48' : '24,22,18'},${0.10 * dirt})`);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, S, S);
+  }
+
+  // Moss / algae streaks along the edges (green-grey), heavier on damp types.
+  const mossAlpha = (type === 'felt' || type === 'gravel' ? 0.16 : 0.10) * dirt;
+  const mossColour = type === 'tpo' || type === 'epdm' ? '78,84,58' : '74,88,50';
+  for (let i = 0; i < 7; i++) {
+    const edge = Math.floor(rng() * 4);
+    const pos = rng() * S;
+    const len = 40 + rng() * 130;
+    const thick = 6 + rng() * 14;
+    ctx.save();
+    ctx.translate(edge <= 1 ? pos : edge === 2 ? 0 : S, edge >= 2 ? pos : 0);
+    ctx.rotate(edge % 2 === 0 ? 0 : Math.PI / 2);
+    ctx.fillStyle = `rgba(${mossColour},${mossAlpha})`;
+    ctx.fillRect(-2, 0, len, thick);
+    // mottled: punch transparency holes along the streak
+    for (let k = 0; k < 5; k++) ctx.clearRect(rng() * len, rng() * thick, 5 + rng() * 12, 2 + rng() * 6);
+    ctx.restore();
+  }
+
+  // Rainwater puddles — darker, slightly blue-grey stains.
+  for (const p of puddles) {
+    randEllipse(ctx, p.x, p.y, p.rx, p.ry, p.rot, `rgba(14,18,24,${p.a})`);
+    randEllipse(ctx, p.x + p.rx * 0.25, p.y + p.ry * 0.3, p.rx * 0.45, p.ry * 0.4, p.rot, `rgba(10,12,18,${p.a * 0.7})`);
+  }
+
+  // Edge wear — lighter chipped flecks + a few dark scratchy short lines along
+  // the tile borders, so parapet edges read as worn.
+  for (let i = 0; i < 20; i++) {
+    const edge = Math.floor(rng() * 4);
+    const pos = rng() * S;
+    const x = edge <= 1 ? pos : edge === 2 ? rng() * 26 : S - rng() * 26;
+    const y = edge >= 2 ? pos : edge === 0 ? rng() * 26 : S - rng() * 26;
+    ctx.fillStyle = rng() > 0.5
+      ? `rgba(255,255,255,${0.05 * dirt})`
+      : `rgba(0,0,0,${0.12 * dirt})`;
+    ctx.fillRect(x, y, 2 + rng() * 5, 1 + rng() * 2);
+  }
+}
+
+function drawFlatRoof(
+  ctx: CanvasRenderingContext2D,
+  type: FlatRoofType,
+  shade: number,
+  params: FlatRoofParams,
+  rng: () => number
+) {
+  const S = 512;
+  const pal = FLAT_ROOF_PALETTES[type];
+  const base = pal.shades[shade % pal.shades.length];
+  ctx.fillStyle = base;
+  ctx.fillRect(0, 0, S, S);
+
+  if (type === 'gravel') {
+    // Aggregate stone: layered stone chips + fine speckle, well above the base.
+    for (let i = 0; i < 2600; i++) {
+      const v = rng();
+      ctx.fillStyle = v < 0.3 ? `rgba(255,255,255,${0.10 + rng() * 0.14})`
+        : v < 0.7 ? `rgba(0,0,0,${0.08 + rng() * 0.12})`
+        : shadeColor(base, rng() > 0.5 ? 18 : -14);
+      ctx.fillRect(rng() * S, rng() * S, 2 + rng() * 2.6, 1.6 + rng() * 2.2);
+    }
+    // a few larger ballast stones for scale
+    for (let i = 0; i < 26; i++) {
+      ctx.fillStyle = rng() > 0.5 ? `rgba(255,255,255,${0.06 + rng() * 0.1})` : `rgba(0,0,0,${0.10 + rng() * 0.1})`;
+      ctx.fillRect(rng() * S, rng() * S, 5 + rng() * 8, 4 + rng() * 6);
+    }
+  } else if (type === 'epdm') {
+    // Matte rubber membrane: soft mottling + wide, cleanly spaced felt seams.
+    for (let i = 0; i < 220; i++) {
+      ctx.fillStyle = rng() > 0.5 ? `rgba(255,255,255,${0.015 + rng() * 0.02})` : `rgba(0,0,0,${0.02 + rng() * 0.03})`;
+      ctx.fillRect(rng() * S, rng() * S, 20 + rng() * 60, 4 + rng() * 22);
+    }
+    const spacing = PX_PER_M * params.seamSpacingMeters;
+    for (let x = spacing / 2; x < S; x += spacing) {
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.fillRect(x - 1.5, 0, 3, S);
+      ctx.fillStyle = 'rgba(255,255,255,0.07)';
+      ctx.fillRect(x + 1.5, 0, 1.5, S);
+    }
+  } else if (type === 'felt') {
+    // Torch-on mineral felt: patchy mottling, overlapping lap courses with
+    // mineral flecks and scattered bright grains.
+    for (let i = 0; i < 260; i++) {
+      ctx.fillStyle = rng() > 0.5 ? `rgba(0,0,0,${0.03 + rng() * 0.05})` : `rgba(255,255,255,${0.02 + rng() * 0.04})`;
+      ctx.fillRect(rng() * S, rng() * S, 16 + rng() * 48, 8 + rng() * 30);
+    }
+    const courseH = PX_PER_M * params.seamSpacingMeters;
+    for (let y = 0; y < S + courseH; y += courseH) {
+      ctx.fillStyle = 'rgba(0,0,0,0.28)';
+      ctx.fillRect(0, y + 1, S, Math.max(3, courseH * 0.16)); // underlap shadow
+      ctx.fillStyle = 'rgba(255,255,255,0.10)';
+      ctx.fillRect(0, y + 1, S, 1.5); // lit lip of the course above
+      ctx.fillStyle = 'rgba(0,0,0,0.18)';
+      ctx.fillRect(0, y + Math.max(4, courseH * 0.2), S, 2);
+      // mineral flecks along the lap
+      for (let i = 0; i < 26; i++) {
+        ctx.fillStyle = rng() > 0.5 ? `rgba(255,255,255,${0.05 + rng() * 0.08})` : `rgba(0,0,0,${0.06 + rng() * 0.08})`;
+        ctx.fillRect(rng() * S, y + 2 + rng() * 6, 1.4 + rng() * 2, 1 + rng() * 1.6);
+      }
+    }
+    // fine surface grain
+    for (let i = 0; i < 900; i++) {
+      ctx.fillStyle = rng() > 0.5 ? `rgba(255,255,255,${0.02 + rng() * 0.03})` : `rgba(0,0,0,${0.02 + rng() * 0.03})`;
+      ctx.fillRect(rng() * S, rng() * S, 1.5, 1);
+    }
+  } else if (type === 'tpo') {
+    // Bright single-ply: near-flat sheen + thin thermal weld seams.
+    for (let i = 0; i < 120; i++) {
+      ctx.fillStyle = rng() > 0.5 ? `rgba(255,255,255,${0.02 + rng() * 0.03})` : `rgba(0,0,0,${0.015 + rng() * 0.025})`;
+      ctx.fillRect(rng() * S, rng() * S, 30 + rng() * 80, 3 + rng() * 14);
+    }
+    const spacing = PX_PER_M * params.seamSpacingMeters;
+    for (let x = spacing / 2; x < S; x += spacing) {
+      ctx.fillStyle = 'rgba(120,118,110,0.55)';
+      ctx.fillRect(x - 0.8, 0, 1.6, S);
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.fillRect(x - 0.8 + 1.6, 0, 0.8, S);
+    }
+    // soft directional sheen
+    const g = ctx.createLinearGradient(0, 0, S, S);
+    g.addColorStop(0, 'rgba(255,255,255,0.05)');
+    g.addColorStop(1, 'rgba(120,120,120,0.05)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, S, S);
+  } else {
+    // Paved terrace: square concrete pavers on a running-bond grid with
+    // per-paver tone variance and a few chipped joints.
+    const paver = PX_PER_M * params.seamSpacingMeters; // 1m pavers
+    const rows = Math.ceil(S / paver);
+    for (let r = 0; r < rows; r++) {
+      const off = (r % 2) * (paver / 2);
+      for (let x = -paver + off; x < S + paver; x += paver) {
+        const y = r * paver;
+        const t = (rng() - 0.5) * 22;
+        ctx.fillStyle = shadeColor(base, Math.round(t));
+        ctx.fillRect(x + 1.5, y + 1.5, paver - 3.5, paver - 3.5);
+        // joint shadow on top + left edges
+        ctx.fillStyle = 'rgba(0,0,0,0.28)';
+        ctx.fillRect(x + 1.5, y + 1.5, paver - 3.5, 1.5);
+        ctx.fillRect(x + 1.5, y + 1.5, 1.5, paver - 3.5);
+        // occasional chipped corner
+        if (rng() < 0.12) {
+          ctx.fillStyle = 'rgba(255,255,255,0.10)';
+          ctx.fillRect(x + 3, y + 3, 4 + rng() * 6, 3 + rng() * 5);
+        }
+      }
+    }
+  }
+}
+
+/** Relief (bump) map for a flat roof family — mirrors the albedo feature placement. */
+function drawFlatRoofBump(ctx: CanvasRenderingContext2D, type: FlatRoofType, params: FlatRoofParams, rng: () => number) {
+  const S = 512;
+  heightFill(ctx, 0, 0, S, S, 126);
+
+  if (type === 'gravel') {
+    for (let i = 0; i < 3200; i++) {
+      heightFill(ctx, rng() * S, rng() * S, 2 + rng() * 2.4, 1.6 + rng() * 2, rng() > 0.5 ? 154 + rng() * 24 : 92 + rng() * 20);
+    }
+  } else if (type === 'epdm') {
+    heightFill(ctx, 0, 0, S, S, 120);
+    const spacing = PX_PER_M * params.seamSpacingMeters;
+    for (let x = spacing / 2; x < S; x += spacing) {
+      heightFill(ctx, x - 1.5, 0, 3, S, 96); // seam recess
+      heightFill(ctx, x + 1.5, 0, 1.5, S, 134); // raised lip
+    }
+    // fine rubber grain
+    for (let i = 0; i < 2600; i++) heightFill(ctx, rng() * S, rng() * S, 1.3, 1 + rng(), rng() > 0.5 ? 134 : 116);
+  } else if (type === 'felt') {
+    heightFill(ctx, 0, 0, S, S, 118);
+    const courseH = PX_PER_M * params.seamSpacingMeters;
+    for (let y = 0; y < S + courseH; y += courseH) {
+      heightFill(ctx, 0, y + 1, S, 2, 96); // lap recess
+      heightFill(ctx, 0, y + 1 + Math.max(3, courseH * 0.16), S, 3, 150); // lit lip
+      for (let i = 0; i < 30; i++) heightFill(ctx, rng() * S, y + 2 + rng() * 7, 1.6 + rng() * 2, 1.2 + rng() * 1.5, 140 + rng() * 16);
+    }
+  } else if (type === 'tpo') {
+    const spacing = PX_PER_M * params.seamSpacingMeters;
+    for (let x = spacing / 2; x < S; x += spacing) {
+      heightFill(ctx, x - 0.8, 0, 1.6, S, 112); // weld recess
+      heightFill(ctx, x - 1.8, 0, 1, S, 130);
+      heightFill(ctx, x + 0.8, 0, 1, S, 130);
+    }
+  } else {
+    // paved
+    heightFill(ctx, 0, 0, S, S, 130);
+    const paver = PX_PER_M * params.seamSpacingMeters;
+    const rows = Math.ceil(S / paver);
+    for (let r = 0; r < rows; r++) {
+      const off = (r % 2) * (paver / 2);
+      for (let x = -paver + off; x < S + paver; x += paver) {
+        const y = r * paver;
+        heightFill(ctx, x + 1.5, y + 1.5, paver - 3.5, 1.5, 100); // joint groove
+        heightFill(ctx, x + 1.5, y + 1.5, 1.5, paver - 3.5, 100);
+        heightFill(ctx, x + 3, y + 2.5, paver - 7, 1.2, 148); // lit top bevel
+        heightFill(ctx, x + 2.5, y + 3, 1.2, paver - 7, 148); // lit left bevel
+      }
+    }
+  }
+}
+
+/** Roughness map: base = params.roughness·255, puddle blobs much lower (smooth/wet). */
+function drawFlatRoofRoughness(
+  ctx: CanvasRenderingContext2D,
+  type: FlatRoofType,
+  params: FlatRoofParams,
+  rng: () => number,
+  puddles: { x: number; y: number; rx: number; ry: number; rot: number; a: number }[]
+) {
+  const S = 512;
+  const baseV = Math.round(params.roughness * 255);
+  heightFill(ctx, 0, 0, S, S, baseV);
+
+  if (type === 'gravel') {
+    for (let i = 0; i < 2200; i++) heightFill(ctx, rng() * S, rng() * S, 1.6, 1.2, rng() > 0.5 ? baseV + 12 : baseV - 10);
+  } else if (type === 'epdm') {
+    for (let i = 0; i < 1500; i++) heightFill(ctx, rng() * S, rng() * S, 1.4, 1.2, baseV - 6 + Math.round(rng() * 12));
+  } else if (type === 'felt') {
+    for (let i = 0; i < 2000; i++) heightFill(ctx, rng() * S, rng() * S, 1.6, 1.3, baseV - 8 + Math.round(rng() * 14));
+  } else if (type === 'tpo') {
+    for (let i = 0; i < 700; i++) heightFill(ctx, rng() * S, rng() * S, 1.4, 1.2, baseV + 4 + Math.round(rng() * 8));
+  }
+
+  // Puddle masks: smooth (dark) wet patches — matches the albedo stain shapes.
+  for (const p of puddles) {
+    randEllipse(ctx, p.x, p.y, p.rx, p.ry, p.rot, `rgba(0,0,0,${Math.min(1, p.a * 3.2)})`);
+    randEllipse(ctx, p.x + p.rx * 0.25, p.y + p.ry * 0.3, p.rx * 0.45, p.ry * 0.4, p.rot, `rgba(0,0,0,${Math.min(1, p.a * 2.2)})`);
+  }
+}
+
+const FlatRoofCache = new Map<string, FlatRoofLook>();
+
+/**
+ * Shared (LOD-merge-friendly) flat roof material textures for one type+shade.
+ * Bump and roughness maps are per-type; the albedo is per-shade. All texture
+ * repeat 1/4 (4m tiles, matching the caps' dominant-axis UV remap).
+ */
+export function getFlatRoofSet(type: FlatRoofType, shade: number): FlatRoofLook {
+  const key = `${type}_${shade}`;
+  const cached = FlatRoofCache.get(key);
+  if (cached) return cached;
+
+  const pal = FLAT_ROOF_PALETTES[type];
+  const params = pal.params;
+  const rng = mulberry32(hashString('flatroof:' + key));
+  const puddles = makePuddleBlobs(mulberry32(hashString('puddles:' + key)), 3);
+
+  const [albedoCanvas, albedoCtx] = makeCanvas(512, 512);
+  drawFlatRoof(albedoCtx, type, shade, params, rng);
+  paintWeathering(albedoCtx, type, params, mulberry32(hashString('weather:' + key)), puddles);
+
+  const [bumpCanvas, bumpCtx] = makeCanvas(512, 512);
+  drawFlatRoofBump(bumpCtx, type, params, mulberry32(hashString('flatbump:' + type)));
+
+  const [roughCanvas, roughCtx] = makeCanvas(512, 512);
+  drawFlatRoofRoughness(roughCtx, type, params, mulberry32(hashString('flatrough:' + key)), puddles);
+
+  const albedo = new THREE.CanvasTexture(albedoCanvas);
+  albedo.wrapS = THREE.RepeatWrapping;
+  albedo.wrapT = THREE.RepeatWrapping;
+  albedo.colorSpace = THREE.SRGBColorSpace;
+  albedo.repeat.set(1 / 4, 1 / 4);
+  albedo.anisotropy = 4;
+  albedo.needsUpdate = true;
+
+  const bump = new THREE.CanvasTexture(bumpCanvas);
+  bump.wrapS = THREE.RepeatWrapping;
+  bump.wrapT = THREE.RepeatWrapping;
+  bump.repeat.set(1 / 4, 1 / 4);
+  bump.anisotropy = 4;
+  bump.needsUpdate = true;
+
+  const roughness = new THREE.CanvasTexture(roughCanvas);
+  roughness.wrapS = THREE.RepeatWrapping;
+  roughness.wrapT = THREE.RepeatWrapping;
+  roughness.repeat.set(1 / 4, 1 / 4);
+  roughness.anisotropy = 4;
+  roughness.needsUpdate = true;
+
+  const look: FlatRoofLook = { type, shade, params, albedo, bump, roughness };
+  FlatRoofCache.set(key, look);
+  return look;
+}
+
+/**
+ * Archetype weighting — picks a flat roof family (and shade) deterministically
+ * from the building's id seed, so reloads are stable and neighbouring blocks
+ * mix families instead of repeating one texture.
+ *   - commercial / industrial → heavy EPDM, TPO, gravel
+ *   - residential / outbuildings → heavy mineral felt, gravel
+ *   - player-access rooftops (HQ / adapted) → paved terrace
+ */
+const FLAT_ROOF_WEIGHTS: [FlatRoofType, number][] = [
+  ['epdm', 0.26],
+  ['gravel', 0.26],
+  ['felt', 0.22],
+  ['tpo', 0.18],
+  ['paved', 0.08],
+];
+
+const COMMERCIAL_WEIGHTS: [FlatRoofType, number][] = [
+  ['epdm', 0.32],
+  ['tpo', 0.30],
+  ['gravel', 0.20],
+  ['felt', 0.12],
+  ['paved', 0.06],
+];
+
+const INDUSTRIAL_WEIGHTS: [FlatRoofType, number][] = [
+  ['epdm', 0.30],
+  ['gravel', 0.30],
+  ['tpo', 0.26],
+  ['felt', 0.10],
+  ['paved', 0.04],
+];
+
+const RESIDENTIAL_WEIGHTS: [FlatRoofType, number][] = [
+  ['felt', 0.38],
+  ['gravel', 0.26],
+  ['paved', 0.18],
+  ['epdm', 0.12],
+  ['tpo', 0.06],
+];
+
+const ACCESSIBLE_WEIGHTS: [FlatRoofType, number][] = [
+  ['paved', 0.70],
+  ['gravel', 0.16],
+  ['tpo', 0.10],
+  ['epdm', 0.04],
+  ['felt', 0.0],
+];
+
+const COMMERCIAL_CATS = new Set<BuildingCategory>(['commercial', 'supermarket', 'restaurant', 'pharmacy', 'hospital', 'police', 'school', 'civic', 'gas_station']);
+const INDUSTRIAL_CATS = new Set<BuildingCategory>(['industrial', 'warehouse']);
+
+/** Deterministic flat-roof family selection for one building seed. */
+export function selectFlatRoof(seed: number, category: BuildingCategory, accessible: boolean): { type: FlatRoofType; shade: number } {
+  const rng = mulberry32(seed ^ 0x51ab3f);
+  const table = accessible
+    ? ACCESSIBLE_WEIGHTS
+    : COMMERCIAL_CATS.has(category)
+      ? COMMERCIAL_WEIGHTS
+      : INDUSTRIAL_CATS.has(category)
+        ? INDUSTRIAL_WEIGHTS
+        : category === 'residential'
+          ? RESIDENTIAL_WEIGHTS
+          : FLAT_ROOF_WEIGHTS;
+  let roll = rng();
+  let type: FlatRoofType = 'gravel';
+  for (const [t, w] of table) {
+    roll -= w;
+    if (roll <= 0) {
+      type = t;
+      break;
+    }
+  }
+  const shades = FLAT_ROOF_PALETTES[type].shades.length;
+  const shade = Math.floor(rng() * shades);
+  return { type, shade };
+}
+
+/** Human-readable label for debug/UI. */
+export function flatRoofLabel(type: FlatRoofType): string {
+  switch (type) {
+    case 'gravel': return 'Gravel ballast';
+    case 'epdm': return 'EPDM rubber';
+    case 'felt': return 'Mineral felt';
+    case 'tpo': return 'TPO membrane';
+    case 'paved': return 'Paved terrace';
+  }
+}
+
+/** Expose the per-type tuning params (roughness / seam spacing / dirt). */
+export function flatRoofParamsFor(type: FlatRoofType): FlatRoofParams {
+  return { ...FLAT_ROOF_PALETTES[type].params };
+}

@@ -1,16 +1,18 @@
 import { GeoPoint } from '../types/map';
 
 const OVERPASS_ENDPOINTS = [
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
   'https://overpass-api.de/api/interpreter',
   'https://lz4.overpass-api.de/api/interpreter',
   'https://z.overpass-api.de/api/interpreter',
-  'https://overpass.private.coffee/api/interpreter',
   'https://overpass.openstreetmap.ru/api/interpreter',
 ];
 
 export interface RawOsmResponse {
   version: number;
   generator: string;
+  remark?: string;
   elements: Array<{
     type: 'node' | 'way' | 'relation';
     id: number;
@@ -40,7 +42,11 @@ export function buildOverpassBBoxQuery(lat: number, lon: number, halfSideMeters:
   const west = (lon - dLon).toFixed(6);
   const east = (lon + dLon).toFixed(6);
 
-  return `[out:json][timeout:30][bbox:${south},${west},${north},${east}];
+  // [timeout:60] and [maxsize:1073741824] (1GB) ensure large dense cities
+  // do not run out of memory or abort mid-stream.
+  // Using 'out body qt;' streams results ordered by quad-tile, which is significantly
+  // faster on Overpass servers and avoids database-level ID sorting overhead.
+  return `[out:json][timeout:60][maxsize:1073741824][bbox:${south},${west},${north},${east}];
 (
   way["building"];
   way["highway"];
@@ -50,6 +56,8 @@ export function buildOverpassBBoxQuery(lat: number, lon: number, halfSideMeters:
   way["waterway"];
   way["water"];
   way["amenity"];
+  way["shop"];
+  relation["building"];
   relation["natural"="water"];
   relation["waterway"];
   relation["water"];
@@ -59,8 +67,10 @@ export function buildOverpassBBoxQuery(lat: number, lon: number, halfSideMeters:
   node["natural"="tree"];
   node["highway"="street_lamp"];
   node["amenity"];
+  node["shop"];
+  node["healthcare"];
 );
-out body;
+out body qt;
 >;
 out skel qt;`;
 }
@@ -105,7 +115,7 @@ export async function fetchFromOverpass(
     try {
       timeoutId = setTimeout(() => {
         controller.abort('timeout');
-      }, 10000); // 10s timeout per mirror
+      }, 25000); // 25s timeout per mirror for dense city queries
 
       if (signal) {
         onParentAbort = () => controller.abort('user_abort');
@@ -129,6 +139,19 @@ export async function fetchFromOverpass(
       const data = (await response.json()) as RawOsmResponse;
       if (!data || !Array.isArray(data.elements)) {
         throw new Error(`Malformed response from ${endpoint}`);
+      }
+
+      // Detect if the mirror ran out of memory or timed out mid-stream
+      if (
+        data.remark &&
+        (data.remark.includes('timed out') ||
+          data.remark.includes('out of memory') ||
+          data.remark.includes('runtime error'))
+      ) {
+        console.warn(`Overpass mirror ${endpoint} reported remark error:`, data.remark);
+        if (data.elements.length < 500) {
+          throw new Error(`Overpass data truncated: ${data.remark}`);
+        }
       }
 
       return data;

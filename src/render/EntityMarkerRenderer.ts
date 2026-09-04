@@ -516,6 +516,29 @@ function drawCircularZombieCanvas(marker: EntityMarker): HTMLCanvasElement {
   // Skull silhouette in center
   drawTacticalSkull(ctx, cx, cy - 2, colors.accent, 1.15);
 
+  // Radial group-health gauge around the badge: a dark track ring with a filled
+  // arc sweeping 2π × the cluster's combined damageRatio. IFZ never surfaces
+  // per-zombie HP — this group meter is the only health readout for the pin.
+  const ratio = marker.damageRatio !== undefined
+    ? Math.max(0, Math.min(1, marker.damageRatio))
+    : 1;
+  const gaugeR = radius + 7; // just outside the red badge border
+  ctx.save();
+  // Dark track
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.95)';
+  ctx.beginPath();
+  ctx.arc(cx, cy, gaugeR, 0, Math.PI * 2);
+  ctx.stroke();
+  // Filled health arc from 12 o'clock, clockwise
+  ctx.lineWidth = 4;
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = ratio < 0.34 ? '#f59e0b' : colors.accent; // amber once badly depleted
+  ctx.beginPath();
+  ctx.arc(cx, cy, gaugeR, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * ratio);
+  ctx.stroke();
+  ctx.restore();
+
   return canvas;
 }
 
@@ -1085,7 +1108,16 @@ function getMarkerTexture(marker: EntityMarker): THREE.CanvasTexture {
     return getOrCreateSharedTexture(cacheKey, () => drawNoPathCanvas(marker));
   }
 
-  if (marker.kind === 'zombie' || marker.kind === 'lair') {
+  if (marker.kind === 'zombie') {
+    // One texture per quantized health band (33 levels), so every cluster's pin
+    // shows its own combined group health instead of a shared static skull disc.
+    const d = marker.damageRatio !== undefined ? Math.max(0, Math.min(1, marker.damageRatio)) : 1;
+    const band = (Math.round(d * 32) / 32).toFixed(5);
+    const cacheKey = `zombie_${marker.faction}_${band}`;
+    return getOrCreateSharedTexture(cacheKey, () => drawCircularZombieCanvas(marker));
+  }
+
+  if (marker.kind === 'lair') {
     const cacheKey = `zombie_${marker.faction}`;
     return getOrCreateSharedTexture(cacheKey, () => drawCircularZombieCanvas(marker));
   }

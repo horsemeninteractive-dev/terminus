@@ -147,7 +147,6 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
     overflowLootUnits = 0,
     totalLivingCapacity,
     totalDefenseRating,
-    hq,
     namedSurvivors = [],
     generalPopulation,
     squads = [],
@@ -169,6 +168,9 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
   const researchProgressPct = activeResearchNode
     ? Math.min(100, Math.max(0, ((settlement.research?.activeProgressSec || 0) / activeResearchNode.baseTimeSec) * 100))
     : 0;
+
+  // Scientific Materials stockpile — displayed on the Research button when idle.
+  const sciMat = Math.floor(stockpile?.materials?.scientific_materials ?? 0);
 
   // Resource totals & per-item breakdowns — all read from the real stockpile.
   // Amounts accumulate continuously (production rates × dt), so every meter is
@@ -668,7 +670,7 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
               onClick={onOpenTechTree || (() => onToggleSidebar('research'))}
               title={activeResearchNode
                 ? `Researching: ${activeResearchNode.name} (${Math.round(researchProgressPct)}%)`
-                : 'Research Tree & Technology Development'}
+                : `Research Tree — ${sciMat} Scientific Material${sciMat !== 1 ? 's' : ''} available`}
               className="relative w-8 sm:w-9 h-full flex flex-col items-center justify-center border-r border-[#1E293B] hover:bg-[#151D28] text-slate-300 hover:text-white transition-colors overflow-hidden"
             >
               {/* Blue bottom-to-top fill revealing research progress */}
@@ -678,10 +680,10 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
                   style={{ height: `${researchProgressPct}%` }}
                 />
               )}
-              <span className={`relative z-10 text-[9px] sm:text-[10px] font-mono font-bold leading-none ${activeResearchNode ? 'text-[#7dd3fc]' : ''}`}>
-                {activeResearchNode ? `${Math.round(researchProgressPct)}%` : idleWorkers}
+              <span className={`relative z-10 text-[9px] sm:text-[10px] font-mono font-bold leading-none ${activeResearchNode ? 'text-[#7dd3fc]' : sciMat > 0 ? 'text-[#a78bfa]' : 'text-[#64748B]'}`}>
+                {activeResearchNode ? `${Math.round(researchProgressPct)}%` : sciMat}
               </span>
-              <FlaskConical className={`relative z-10 w-3.5 h-3.5 mt-0.5 ${activeResearchNode ? 'text-[#38bdf8]' : 'text-[#CBD5E1]'}`} />
+              <FlaskConical className={`relative z-10 w-3.5 h-3.5 mt-0.5 ${activeResearchNode ? 'text-[#38bdf8]' : sciMat > 0 ? 'text-[#a78bfa]' : 'text-[#CBD5E1]'}`} />
             </button>
 
             {/* 3. Laws & Policy (§IFZ Major Update #5) — Gathering Place forum */}

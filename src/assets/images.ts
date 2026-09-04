@@ -24,3 +24,45 @@ export const IFZ_IMAGES = {
   loadingTruck,
   eveshamCity,
 };
+
+/**
+ * Preload an image asset and optionally trigger GPU decoding so it paints
+ * instantly with zero scanline / draw-in lag when rendered.
+ */
+export const preloadImage = (src: string): Promise<void> => {
+  if (typeof window === 'undefined') return Promise.resolve();
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.src = src;
+    if (img.complete) {
+      if ('decode' in img && typeof img.decode === 'function') {
+        img.decode().then(resolve).catch(() => resolve());
+      } else {
+        resolve();
+      }
+      return;
+    }
+    img.onload = () => {
+      if ('decode' in img && typeof img.decode === 'function') {
+        img.decode().then(resolve).catch(() => resolve());
+      } else {
+        resolve();
+      }
+    };
+    img.onerror = () => resolve();
+  });
+};
+
+/**
+ * Preload high-priority visual assets on application startup so loading screens
+ * and menu transitions are instantaneous and never draw in progressively.
+ */
+export const preloadCriticalGameImages = (): void => {
+  if (typeof window === 'undefined') return;
+  // Preload heavy loading screen artwork and menu cycle backgrounds
+  preloadImage(IFZ_IMAGES.loadingTruck);
+  preloadImage(IFZ_IMAGES.menuBgDay);
+  preloadImage(IFZ_IMAGES.menuBgNight);
+  preloadImage(IFZ_IMAGES.menuBgDusk);
+  preloadImage(IFZ_IMAGES.menuBgDawn);
+};

@@ -12,8 +12,10 @@ import type { AppViewMode } from '../App';
 import type { GameClockState } from '../types/combat';
 import type { LocationPreset, MapData, SettlementPlacement } from '../types/map';
 import type { SettlementState } from '../types/settlement';
+import type { MissionState } from '../types/mission';
 import type { RadioDirectiveState, RadioTransmission } from '../types/radioDirective';
 import type { SettlementRecord, TradeCaravan } from '../types/caravan';
+import type { GameScenarioSettings } from '../types/saveGame';
 
 // localStorage key recording that the first-launch cinematic credits roll
 // (IntroSequence) has already played for this user.
@@ -43,7 +45,11 @@ export interface MenuFlowScreensProps {
   descentAltitudeKm: number;
   descentProgress: number;
   gameClock: GameClockState;
-  handleBeginDescent: () => void;
+  handleBeginDescent: (
+    placement: SettlementPlacement,
+    preloadedMapData?: MapData | null,
+    scenarioSettings?: Partial<GameScenarioSettings>
+  ) => void;
   handleClaimDawnReward: () => void;
   handleConfirmSettlementPlacement: (placement: SettlementPlacement) => void;
   handleContinueGame: () => void;
@@ -56,6 +62,7 @@ export interface MenuFlowScreensProps {
   isQuestListOpen: boolean;
   isRadioModalOpen: boolean;
   loadingMessage: string | null;
+  missionState: MissionState;
   radioDirectiveState: RadioDirectiveState | null;
   setActivePlacement: React.Dispatch<React.SetStateAction<SettlementPlacement | null>>;
   setActiveRadioTransmission: React.Dispatch<React.SetStateAction<RadioTransmission | null>>;
@@ -97,6 +104,7 @@ export const MenuFlowScreens: React.FC<MenuFlowScreensProps> = (props) => {
     isQuestListOpen,
     isRadioModalOpen,
     loadingMessage,
+    missionState,
     radioDirectiveState,
     setActivePlacement,
     setActiveRadioTransmission,
@@ -215,6 +223,7 @@ export const MenuFlowScreens: React.FC<MenuFlowScreensProps> = (props) => {
             <TacticalQuestTracker
               settlement={settlement}
               radioState={radioDirectiveState}
+              missionState={missionState}
               onActionClick={handleDirectiveAction}
             />
           )}

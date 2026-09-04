@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Crosshair } from 'lucide-react';
 import { IFZ_IMAGES } from '../assets/images';
 
@@ -35,6 +35,20 @@ export const AtmosphericDescent: React.FC<AtmosphericDescentProps> = ({
   status,
 }) => {
   const [tipIndex, setTipIndex] = useState(0);
+  const [imageLoaded, setImageLoaded] = useState(false);
+
+  useEffect(() => {
+    const img = new Image();
+    img.src = IFZ_IMAGES.loadingTruck;
+    if (img.complete) {
+      const raf = requestAnimationFrame(() => {
+        setImageLoaded(true);
+      });
+      return () => cancelAnimationFrame(raf);
+    } else {
+      img.onload = () => setImageLoaded(true);
+    }
+  }, []);
 
   const pct = Math.round(progress * 100);
   const phaseLabel =
@@ -52,7 +66,10 @@ export const AtmosphericDescent: React.FC<AtmosphericDescentProps> = ({
         <img
           src={IFZ_IMAGES.loadingTruck}
           alt="Loading"
-          className="w-full h-full object-cover opacity-90 scale-105"
+          onLoad={() => setImageLoaded(true)}
+          className={`w-full h-full object-cover scale-105 transition-opacity duration-700 ease-out ${
+            imageLoaded ? 'opacity-90' : 'opacity-0'
+          }`}
         />
         <div className="absolute inset-0 bg-gradient-to-t from-[#0A0A0A] via-[#0A0A0A]/45 to-[#0A0A0A]/70" />
       </div>

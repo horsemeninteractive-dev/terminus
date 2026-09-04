@@ -4,7 +4,12 @@ import {
   TransmissionClassification,
   RadioDirectiveState,
 } from '../types/radioDirective';
-import { CLASSIFICATION_COLORS } from '../services/radioDirectiveService';
+import {
+  CLASSIFICATION_COLORS,
+  filterTransmissionLog,
+  getTransmissionCategory,
+  isTransmissionDeclined,
+} from '../services/radioDirectiveService';
 import {
   Radio,
   Volume2,
@@ -39,6 +44,8 @@ interface RadioTransmissionModalProps {
   onActionTrigger?: (actionType: string) => void;
   onAcknowledge?: (transmissionId: string, action?: string) => void;
   onSelectTransmission?: (transmission: RadioTransmission) => void;
+  /** Mission ids the player declined — lets the archive flag declined briefings. */
+  declinedMissionIds?: string[];
 }
 
 export const RadioTransmissionModal: React.FC<RadioTransmissionModalProps> = ({
@@ -56,6 +63,7 @@ export const RadioTransmissionModal: React.FC<RadioTransmissionModalProps> = ({
   onActionTrigger,
   onAcknowledge,
   onSelectTransmission,
+  declinedMissionIds = [],
 }) => {
   const log = radioState?.transmissionLog || transmissionHistory || [];
   const unreadCount = radioState?.unreadCount ?? log.filter((t) => !t.isRead).length;
@@ -65,9 +73,15 @@ export const RadioTransmissionModal: React.FC<RadioTransmissionModalProps> = ({
     return currentTx ? 'incoming' : 'alarm';
   });
   const [filterClass, setFilterClass] = useState<TransmissionClassification | 'ALL'>('ALL');
+  const [filterRead, setFilterRead] = useState<'ALL' | 'UNREAD' | 'READ'>('ALL');
+  const [filterCategory, setFilterCategory] = useState<'ALL' | 'mission' | 'directive' | 'informational'>('ALL');
+  const [filterDeclined, setFilterDeclined] = useState(false);
   const [isAudioMuted, setIsAudioMuted] = useState(false);
   const [displayedText, setDisplayedText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  // True when the incoming view is showing a REPLAYED archived transmission
+  // (already read) rather than a live incoming one.
+  const [isReplaying, setIsReplaying] = useState(false);
 
   const typingTimerRef = useRef<number | null>(null);
   const skippedTxIdsRef = useRef<Set<string>>(new Set());
@@ -101,9 +115,15 @@ export const RadioTransmissionModal: React.FC<RadioTransmissionModalProps> = ({
   };
 
   const handleSelectTx = (tx: RadioTransmission) => {
+    setIsReplaying(true);
     if (onSelectTransmission) {
       onSelectTransmission(tx);
     }
+  };
+
+  const handleOpenIncoming = () => {
+    setIsReplaying(false);
+    setActiveTab('incoming');
   };
 
   // Vance speaks only after the player opens the radio console, never when the
@@ -135,7 +155,9 @@ export const RadioTransmissionModal: React.FC<RadioTransmissionModalProps> = ({
 
     const hasBeenSkipped = skippedTxIdsRef.current.has(currentTx.id);
 
-    if (activeTab === 'incoming' && !currentTx.isRead && !hasBeenSkipped) {
+    // Replays from the archive always show instantly: selecting a record marks
+    // it read, so a replayed unread briefing must not re-run the typewriter.
+    if (activeTab === 'incoming' && !currentTx.isRead && !hasBeenSkipped && !isReplaying) {
       setIsTyping(true);
       setDisplayedText('');
       let currentLen = 0;
@@ -179,10 +201,17 @@ export const RadioTransmissionModal: React.FC<RadioTransmissionModalProps> = ({
     ? CLASSIFICATION_COLORS[currentTx.classification]
     : CLASSIFICATION_COLORS.SITREP;
 
-  const filteredLog = log.filter((tx) => {
-    if (filterClass === 'ALL') return true;
-    return tx.classification === filterClass;
-  });
+  const filteredLog = filterTransmissionLog(
+    log,
+    {
+      classification: filterClass,
+      read: filterRead,
+      category: filterCategory,
+      declinedOnly: filterDeclined,
+    },
+    declinedMissionIds
+  );
+  const declinedSet = new Set(declinedMissionIds);
 
   return (
     <div
@@ -239,7 +268,10 @@ export const RadioTransmissionModal: React.FC<RadioTransmissionModalProps> = ({
         <div className="flex border-b border-[#262f3d] bg-[#080b10] px-3 pt-2">
           <button
             id="radio-tab-incoming"
-            onClick={() => setActiveTab('incoming')}
+            onClick={() => {
+              setIsReplaying(false);
+              setActiveTab('incoming');
+            }}
             className={`px-4 py-2 text-xs font-bold font-display uppercase tracking-wider flex items-center gap-2 border-b-2 transition-all ${
               activeTab === 'incoming'
                 ? 'border-[#10b981] text-[#10b981] bg-[#10b981]/10'
@@ -448,6 +480,26 @@ export const RadioTransmissionModal: React.FC<RadioTransmissionModalProps> = ({
               </h2>
             </div>
 
+            {/* Replay banner — this is an archived record, not a live signal */}
+            {isReplaying && (
+              <div className="p-3 bg-[#0a1520]/90 border border-[#38bdf8]/40 rounded flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-[11px] font-mono text-sky-300">
+                  <Terminal className="w-4 h-4 text-sky-400 shrink-0" />
+                  <span>
+                    ARCHIVE REPLAY — READ RECORD ·{' '}
+                    {currentTx.missionId ? 'MISSION BRIEFING' : currentTx.directiveId ? 'DIRECTIVE' : 'TRANSMISSION'}
+                    {isTransmissionDeclined(currentTx, declinedMissionIds) && ' · DECLINED'}
+                  </span>
+                </div>
+                <button
+                  onClick={() => setActiveTab('log')}
+                  className="px-3 py-1.5 text-[10px] font-display font-black uppercase tracking-wider text-sky-300 bg-sky-950/50 border border-sky-500/40 rounded hover:bg-sky-900/50 transition-colors"
+                >
+                  ← ARCHIVE
+                </button>
+              </div>
+            )}
+
             {/* Audio Oscilloscope / Frequency Bar Visualizer */}
             <div className="h-4 w-full bg-slate-950 border border-slate-800 rounded flex items-center px-2 gap-1 overflow-hidden">
               <span className="text-[9px] font-mono text-emerald-500 font-black mr-1">SIGNAL:</span>
@@ -483,7 +535,31 @@ export const RadioTransmissionModal: React.FC<RadioTransmissionModalProps> = ({
               </p>
             </div>
 
-            {/* Associated Directive Info (if attached) */}
+            {/* Incoming queue status — several transmissions may be pending */}
+            {(unreadCount > 1 || (radioState?.incomingQueue?.length || 0) > 1) && (
+              <div className="p-2 bg-slate-900/80 border border-slate-700 rounded flex items-center gap-2">
+                <Activity className="w-4 h-4 text-cyan-400 shrink-0" />
+                <span className="text-[11px] font-mono text-cyan-300">
+                  {unreadCount - (currentTx && !currentTx.isRead ? 1 : 0)} FURTHER TRANSMISSION
+                  {unreadCount - (currentTx && !currentTx.isRead ? 1 : 0) === 1 ? '' : 'S'} QUEUED
+                </span>
+              </div>
+            )}
+
+            {/* Associated Directive / Mission Info (if attached) */}
+            {currentTx.missionId && !currentTx.directiveId && (
+              <div className="p-3 bg-slate-900/90 border border-amber-700 rounded flex items-start gap-3">
+                <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <div className="text-xs font-bold text-amber-400 uppercase tracking-wider font-display">
+                    OPERATIONAL BRIEFING — RESPONSE REQUIRED
+                  </div>
+                  <div className="text-xs text-slate-300">
+                    Your response determines the mission that is opened in the Operations tracker.
+                  </div>
+                </div>
+              </div>
+            )}
             {currentTx.directiveId && (
               <div className="p-3 bg-slate-900/90 border border-slate-700 rounded flex items-start gap-3">
                 <Shield className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
@@ -498,9 +574,23 @@ export const RadioTransmissionModal: React.FC<RadioTransmissionModalProps> = ({
               </div>
             )}
 
-            {/* Operator Tactical Response Actions */}
-            <div className="pt-3 border-t border-[#1f2937] flex flex-wrap gap-3 justify-end">
-              {currentTx.responseOptions && currentTx.responseOptions.length > 0 ? (
+            {/* Replay footer — no response actions on a historical record */}
+            {isReplaying ? (
+              <div className="pt-3 border-t border-[#1f2937] flex flex-wrap gap-3 justify-end items-center">
+                <div className="text-[11px] font-mono text-slate-400 mr-auto">
+                  {getTransmissionCategory(currentTx) === 'mission' && declinedSet.has(currentTx.missionId || '')
+                    ? 'BRIEFING DECLINED — NO MISSION OPENED.'
+                    : 'ARCHIVE RECORD — RESPONSE ALREADY LOGGED.'}
+                </div>
+                <button
+                  onClick={() => setActiveTab('log')}
+                  className="px-5 py-2.5 bg-[#0e7490] hover:bg-[#155e75] text-white font-display font-black text-xs uppercase tracking-widest rounded clip-tactical-bracket surface-bevel flex items-center gap-2"
+                >
+                  <Terminal className="w-4 h-4" />
+                  <span>BACK TO ARCHIVE</span>
+                </button>
+              </div>
+            ) : currentTx.responseOptions && currentTx.responseOptions.length > 0 ? (
                 currentTx.responseOptions.map((opt, idx) => (
                   <button
                     key={idx}
@@ -528,48 +618,130 @@ export const RadioTransmissionModal: React.FC<RadioTransmissionModalProps> = ({
                   <span>ACKNOWLEDGE SITREP</span>
                 </button>
               )}
-            </div>
           </div>
         ) : activeTab === 'log' ? (
           <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-            {/* Filter classification sidebar */}
-            <div className="w-full md:w-48 bg-[#0a0d13] border-b md:border-b-0 md:border-r border-[#1f2937] p-3 space-y-1 overflow-x-auto md:overflow-y-auto">
-              <div className="text-[10px] font-mono text-slate-400 font-bold uppercase tracking-wider px-2 py-1 flex items-center gap-1">
-                <ListFilter className="w-3 h-3" />
-                <span>FILTER CLASSIFICATION</span>
-              </div>
-              {(['ALL', 'SITREP', 'WARNING', 'DIRECTIVE', 'EMERGENCY', 'INTEL', 'MILESTONE'] as const).map(
-                (cls) => (
+            {/* Archive filter sidebar */}
+            <div className="w-full md:w-52 bg-[#0a0d13] border-b md:border-b-0 md:border-r border-[#1f2937] p-3 space-y-4 overflow-x-auto md:overflow-y-auto">
+              <div className="space-y-1.5">
+                <div className="text-[10px] font-mono text-slate-400 font-bold uppercase tracking-wider px-2 py-1 flex items-center gap-1">
+                  <ListFilter className="w-3 h-3" />
+                  <span>READ STATUS</span>
+                </div>
+                {(['ALL', 'UNREAD', 'READ'] as const).map((r) => (
                   <button
-                    key={cls}
-                    onClick={() => setFilterClass(cls)}
+                    key={r}
+                    onClick={() => setFilterRead(r)}
                     className={`w-full text-left px-2.5 py-1.5 rounded text-xs font-mono transition-colors flex items-center justify-between ${
-                      filterClass === cls
-                        ? 'bg-[#10b981]/20 text-[#10b981] font-bold border border-[#10b981]/40'
+                      filterRead === r
+                        ? 'bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/40'
                         : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
                     }`}
                   >
-                    <span>{cls}</span>
+                    <span className="flex items-center gap-1.5">
+                      {r === 'UNREAD' && <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />}
+                      {r === 'READ' && <CheckCircle2 className="w-3 h-3 text-emerald-500" />}
+                      {r}
+                    </span>
                     <span className="text-[10px] opacity-70">
-                      {cls === 'ALL'
+                      {r === 'ALL'
                         ? log.length
-                        : log.filter((t) => t.classification === cls).length}
+                        : log.filter((t) => (r === 'UNREAD' ? !t.isRead : t.isRead)).length}
                     </span>
                   </button>
-                )
-              )}
+                ))}
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="text-[10px] font-mono text-slate-400 font-bold uppercase tracking-wider px-2 py-1 flex items-center gap-1">
+                  <Activity className="w-3 h-3" />
+                  <span>CATEGORY</span>
+                </div>
+                {([
+                  ['ALL', 'ALL'],
+                  ['mission', 'MISSIONS'],
+                  ['directive', 'DIRECTIVES'],
+                  ['informational', 'INFO'],
+                ] as const).map(([val, label]) => (
+                  <button
+                    key={val}
+                    onClick={() => setFilterCategory(val)}
+                    className={`w-full text-left px-2.5 py-1.5 rounded text-xs font-mono transition-colors flex items-center justify-between ${
+                      filterCategory === val
+                        ? 'bg-sky-500/20 text-sky-300 font-bold border border-sky-500/40'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                    }`}
+                  >
+                    <span>{label}</span>
+                    <span className="text-[10px] opacity-70">
+                      {val === 'ALL'
+                        ? log.length
+                        : log.filter((t) => getTransmissionCategory(t) === val).length}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="text-[10px] font-mono text-slate-400 font-bold uppercase tracking-wider px-2 py-1 flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3" />
+                  <span>OUTCOME</span>
+                </div>
+                <button
+                  onClick={() => setFilterDeclined((v) => !v)}
+                  className={`w-full text-left px-2.5 py-1.5 rounded text-xs font-mono transition-colors flex items-center justify-between ${
+                    filterDeclined
+                      ? 'bg-red-500/20 text-red-300 font-bold border border-red-500/40'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                  }`}
+                >
+                  <span className="flex items-center gap-1.5">DECLINED</span>
+                  <span className="text-[10px] opacity-70">
+                    {log.filter((t) => isTransmissionDeclined(t, declinedMissionIds)).length}
+                  </span>
+                </button>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="text-[10px] font-mono text-slate-400 font-bold uppercase tracking-wider px-2 py-1 flex items-center gap-1">
+                  <Radio className="w-3 h-3" />
+                  <span>CLASSIFICATION</span>
+                </div>
+                {(['ALL', 'SITREP', 'WARNING', 'DIRECTIVE', 'EMERGENCY', 'INTEL', 'UPDATE', 'MILESTONE'] as const).map(
+                  (cls) => (
+                    <button
+                      key={cls}
+                      onClick={() => setFilterClass(cls)}
+                      className={`w-full text-left px-2.5 py-1.5 rounded text-xs font-mono transition-colors flex items-center justify-between ${
+                        filterClass === cls
+                          ? 'bg-[#10b981]/20 text-[#10b981] font-bold border border-[#10b981]/40'
+                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                      }`}
+                    >
+                      <span>{cls}</span>
+                      <span className="text-[10px] opacity-70">
+                        {cls === 'ALL'
+                          ? log.length
+                          : log.filter((t) => t.classification === cls).length}
+                      </span>
+                    </button>
+                  )
+                )}
+              </div>
             </div>
 
             {/* Transmissions Log List */}
             <div className="flex-1 p-3 overflow-y-auto space-y-2">
               {filteredLog.length === 0 ? (
                 <div className="p-8 text-center text-slate-500 font-mono text-xs">
-                  NO TRANSMISSION RECORDS LOGGED UNDER THIS CLASSIFICATION.
+                  NO TRANSMISSION RECORDS MATCH THE ACTIVE FILTERS.
                 </div>
               ) : (
                 filteredLog.map((tx) => {
                   const cfg = CLASSIFICATION_COLORS[tx.classification];
                   const isCurrentSelected = currentTx?.id === tx.id;
+                  const txDeclined = isTransmissionDeclined(tx, declinedMissionIds);
+                  const txCategory = getTransmissionCategory(tx);
                   return (
                     <div
                       key={tx.id}
@@ -583,11 +755,31 @@ export const RadioTransmissionModal: React.FC<RadioTransmissionModalProps> = ({
                           : 'border-slate-800 bg-[#07090e] hover:border-slate-700'
                       }`}
                     >
-                      <div className="flex items-center justify-between text-xs font-mono mb-1">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${cfg.badge}`}>
-                          [{tx.classification}]
-                        </span>
-                        <span className="text-slate-500">{tx.timestamp}</span>
+                      <div className="flex items-center justify-between gap-2 text-xs font-mono mb-1">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${cfg.badge}`}>
+                            [{tx.classification}]
+                          </span>
+                          {!tx.isRead && (
+                            <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse shrink-0" />
+                          )}
+                          {txCategory === 'mission' && (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-bold border border-amber-500/50 bg-amber-950/40 text-amber-300 uppercase">
+                              MISSION
+                            </span>
+                          )}
+                          {txCategory === 'directive' && (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-bold border border-sky-500/50 bg-sky-950/40 text-sky-300 uppercase">
+                              DIRECTIVE
+                            </span>
+                          )}
+                          {txDeclined && (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-bold border border-red-500/50 bg-red-950/40 text-red-300 uppercase">
+                              DECLINED
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-slate-500 shrink-0">{tx.timestamp}</span>
                       </div>
                       <div className="font-display font-bold text-xs sm:text-sm text-slate-200 mb-1">
                         {tx.title}

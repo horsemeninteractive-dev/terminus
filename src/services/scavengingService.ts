@@ -1,4 +1,4 @@
-import { BuildingCategory, BuildingPolygon, Point2D } from '../types/map';
+import { BuildingCategory, BuildingPolygon, Point2D, WorldAreaBounds } from '../types/map';
 import { SettlementState, SettlementStockpile } from '../types/settlement';
 import { getStockpileUnits } from './settlementService';
 import { SquadInventory, SquadLootItem } from '../types/population';
@@ -138,8 +138,21 @@ export function generateLootForBuilding(
       if (Math.random() < 0.3) items.push(q('logs', r(3, 8), 1.2));
       break;
     case 'school':
-      items.push(q('canned_goods', r(2, 6), 1.2), q('bottled_water', r(2, 6), 1.0), q('sterile_bandages', r(1, 4), 0.4));
-      if (Math.random() < 0.3) items.push(q('tools', r(1, 3), 1.8));
+      // Guaranteed 1-3 scientific materials for Research Center construction & ongoing science
+      items.push(
+        q('scientific_materials', r(1, 3), 0.8),
+        q('canned_goods', r(2, 6), 1.2),
+        q('bottled_water', r(2, 6), 1.0),
+        q('sterile_bandages', r(1, 4), 0.4)
+      );
+      if (Math.random() < 0.45) items.push(q('first_aid_kits', r(1, 3), 1.5));
+      if (Math.random() < 0.35) items.push(q('tools', r(1, 3), 1.8));
+      break;
+    case 'commercial':
+      items.push(q('canned_goods', r(2, 5), 1.2), q('bottled_water', r(2, 4), 1.0));
+      if (Math.random() < 0.45) items.push(q('tools', r(1, 3), 1.8));
+      if (Math.random() < 0.4) items.push(q('scrap', r(3, 8), 0.9));
+      if (Math.random() < 0.25) items.push(q('first_aid_kits', r(1, 2), 1.5));
       break;
     default:
       items.push(q('canned_goods', r(1, 4), 1.2), q('bottled_water', r(1, 3), 1.0));
@@ -182,9 +195,28 @@ export function ensureBuildingSearchStates(
     const existing = m.get(b.id);
     if (!existing) {
       m.set(b.id, createBuildingSearchState(b.id, b, resourceMultiplier));
-    } else if (existing.totalDurationSec !== freshDuration) {
-      // Keep search progress/loot state but refresh the duration so size changes take effect
-      m.set(b.id, { ...existing, totalDurationSec: freshDuration });
+    } else {
+      // If an existing unsearched building is a school whose loot doesn't yet contain scientific_materials,
+      // refresh its loot pool so active games immediately gain scientific materials to scavenge.
+      const needsLootRefresh =
+        !existing.searched &&
+        existing.searchProgress === 0 &&
+        (!existing.lootedItems || existing.lootedItems.length === 0) &&
+        b.type === 'school' &&
+        !existing.loot.some((l) => l.label === 'scientific_materials');
+
+      if (needsLootRefresh) {
+        const freshLoot = generateLootForBuilding(b, resourceMultiplier);
+        m.set(b.id, {
+          ...existing,
+          totalDurationSec: freshDuration,
+          loot: freshLoot,
+          unlootedItems: [...freshLoot],
+        });
+      } else if (existing.totalDurationSec !== freshDuration) {
+        // Keep search progress/loot state but refresh the duration so size changes take effect
+        m.set(b.id, { ...existing, totalDurationSec: freshDuration });
+      }
     }
   }
   return { ...state, buildingSearches: m };
@@ -202,6 +234,19 @@ export function isPointInsidePolygon(pt: Point2D, poly?: Point2D[]): boolean {
     if (intersect) inside = !inside;
   }
   return inside;
+}
+
+/**
+ * True when a ground point lies inside a drag-box area. Prefers the exact
+ * perspective-correct quad (`bounds.polygon`) — matching what the player sees
+ * under the drawn box — and falls back to the axis-aligned box when no polygon
+ * was provided.
+ */
+export function isPointInArea(pt: Point2D, bounds: WorldAreaBounds): boolean {
+  if (bounds.polygon && bounds.polygon.length >= 3) {
+    return isPointInsidePolygon(pt, bounds.polygon);
+  }
+  return pt.x >= bounds.minX && pt.x <= bounds.maxX && pt.z >= bounds.minZ && pt.z <= bounds.maxZ;
 }
 
 export function isSquadInsideBuilding(pos: Point2D, b: BuildingPolygon): boolean {
@@ -674,6 +719,9 @@ function addLootToStockpile(stock: any, l: SquadLootItem): void {
     case 'scrap':
       stock.materials.scrap = (stock.materials.scrap || 0) + l.quantity;
       break;
+    case 'scientific_materials':
+      stock.materials.scientific_materials = (stock.materials.scientific_materials || 0) + l.quantity;
+      break;
   }
 }
 
@@ -703,6 +751,7 @@ const STOCKPILE_LOOT_LABELS = new Set([
   'tools',
   'logs',
   'scrap',
+  'scientific_materials',
 ]);
 
 /** Stockpile units an item consumes (0 for weapons/armor, which go to the armory). */

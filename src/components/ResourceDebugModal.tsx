@@ -107,6 +107,7 @@ export const ResourceDebugModal: React.FC<ResourceDebugModalProps> = ({
  onUpdateStockpile({
  ...stockpile,
  materials: {
+ ...stockpile.materials,
  wood: stockpile.materials.wood + 500,
  metal: stockpile.materials.metal + 500,
  bricks: stockpile.materials.bricks + 500,

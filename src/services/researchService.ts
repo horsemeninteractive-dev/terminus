@@ -219,10 +219,19 @@ export function tickResearchSimulation(
           activeResearchId: null,
           activeProgressSec: 0,
         };
+        const stats = settlement.lifetimeStats ?? {
+          infectedKills: 0,
+          squadsFormed: 0,
+          buildingsAdapted: 0,
+          buildingsConstructed: 0,
+          survivorsRecruited: 0,
+          researchCompleted: 0,
+        };
         return {
           ...settlement,
           stockpile: { ...settlement.stockpile, materials },
           research,
+          lifetimeStats: { ...stats, researchCompleted: stats.researchCompleted + 1 },
         };
       }
       research = { ...research, activeProgressSec: nextProgress };

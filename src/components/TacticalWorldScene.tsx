@@ -13,7 +13,7 @@ import { VehicleTacticalDrawer } from './VehicleTacticalDrawer';
 import { AreaGatherOverlay } from './AreaGatherOverlay';
 import { NotificationTray } from './NotificationTray';
 import { TacticalActionBar } from './TacticalActionBar';
-import { TacticalMinimapWidget } from './TacticalMinimapWidget';
+import { TacticalMinimapWidget, ScavengeLootFilter } from './TacticalMinimapWidget';
 import { HQSelectionCard } from './HQSelectionCard';
 import { RecruitmentEncounterModal } from './RecruitmentEncounterModal';
 import { RansomEventModal } from './RansomEventModal';
@@ -38,7 +38,7 @@ import { reorderConstructionQueue, updateWorkerJobLimit, updateWorkerJobPriority
 import type { WorldScene, FreestandingPlacementPoint } from '../render/WorldScene';
 import type { GameClockState, NoiseEvent, TacticalSquadUnit, ZombieUnit, WeaponItemId, ArmorItemId } from '../types/combat';
 import type { LawId } from '../types/laws';
-import type { BuildingPolygon, MapData, Point2D, ResourceNode } from '../types/map';
+import type { BuildingPolygon, MapData, Point2D, ResourceNode, WorldAreaBounds } from '../types/map';
 import type { SettlementState, FunctionalBuildingTypeId } from '../types/settlement';
 import type { HiddenSurvivorGroup } from '../types/population';
 import type { RadioDirectiveState, RadioTransmission } from '../types/radioDirective';
@@ -83,9 +83,9 @@ export interface TacticalWorldSceneProps {
   handleBuildFreestandingRun: (typeId: FunctionalBuildingTypeId, placements: WorldScenePlacement[]) => void;
   handleChangeSquadStance: (squadId: string, stance: 'aggressive' | 'defensive' | 'hold_fire') => void;
   handleConfirmHQ: (bldg: BuildingPolygon) => void;
-  handleCreateSquad: (name: string, leaderId: string, memberCount: number) => void;
-  handleDesignateGatherArea: (type: GatherResourceType, bounds: { minX: number; maxX: number; minZ: number; maxZ: number }) => void;
-  handleDesignateSquadScavenge: (bounds: { minX: number; maxX: number; minZ: number; maxZ: number }) => void;
+  handleCreateSquad: (name: string, leaderId: string, memberCount: number, weaponLoadout?: import('../types/population').SquadWeaponLoadout) => void;
+  handleDesignateGatherArea: (type: GatherResourceType, bounds: WorldAreaBounds) => void;
+  handleDesignateSquadScavenge: (bounds: WorldAreaBounds) => void;
   handleDisbandSquad: (squadId: string) => void;
   handleDismissAlert: (id: string) => void;
   handleDismountVehicle: (vehicleId: string) => void;
@@ -130,7 +130,7 @@ export interface TacticalWorldSceneProps {
   pendingAdaptType: FunctionalBuildingTypeId | null;
   pendingFreestandingType: FunctionalBuildingTypeId | null;
   radioDirectiveState: RadioDirectiveState | null;
-  scavengeFilterType: string | null;
+  scavengeFilterType: ScavengeLootFilter;
   sceneRef: React.MutableRefObject<WorldScene | null>;
   selectedBuilding: BuildingPolygon | null;
   selectedSquadId: string | null;
@@ -169,7 +169,7 @@ export interface TacticalWorldSceneProps {
   setOverrunSettlement: React.Dispatch<React.SetStateAction<SettlementRecord | null>>;
   setPendingAdaptType: React.Dispatch<React.SetStateAction<FunctionalBuildingTypeId | null>>;
   setPendingFreestandingType: React.Dispatch<React.SetStateAction<FunctionalBuildingTypeId | null>>;
-  setScavengeFilterType: React.Dispatch<React.SetStateAction<string | null>>;
+  setScavengeFilterType: React.Dispatch<React.SetStateAction<ScavengeLootFilter>>;
   setSelectedBuilding: React.Dispatch<React.SetStateAction<BuildingPolygon | null>>;
   setSelectedResourceNode: React.Dispatch<React.SetStateAction<ResourceNode | null>>;
   setSettlements: React.Dispatch<React.SetStateAction<Record<string, SettlementRecord>>>;
@@ -434,6 +434,17 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                       null;
                     setActiveRadioTransmission(unread);
                     setIsRadioModalOpen(true);
+                    return;
+                  }
+    
+                  // WorldScene calls onSelectBuilding(null) whenever nothing is
+                  // selected by a click: empty ground (deselect), a squad
+                  // drag-box that replaces the building inspection, or a
+                  // resource node hit (a parallel onSelectResourceNode carries
+                  // that selection). A null building must only clear the
+                  // building inspection — dereferencing it below would throw.
+                  if (!bldg) {
+                    setSelectedBuilding(null);
                     return;
                   }
     
@@ -851,7 +862,11 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                       sceneRef.current?.setGatherHighlight(null, null);
                     }}
                     onDragBoundsChange={(bounds) => {
-                      sceneRef.current?.setGatherHighlight(activeGatherType, bounds);
+                      if (activeGatherType && activeGatherType !== 'scavenge') {
+                        sceneRef.current?.setGatherHighlight(activeGatherType, bounds);
+                      } else {
+                        sceneRef.current?.setGatherHighlight(null, null);
+                      }
                     }}
                     onDesignateArea={(type, bounds) => {
                       sceneRef.current?.setGatherHighlight(null, null);
@@ -915,16 +930,24 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                     }}
                     activeGatherType={activeGatherType}
                     onUpdateWorkerJobPriority={(jobId, priority) => {
-                      setSettlement((prev) => updateWorkerJobPriority(prev, jobId, priority));
+                      const next = updateWorkerJobPriority(settlementRef.current || settlement, jobId, priority);
+                      settlementRef.current = next;
+                      setSettlement(next);
                     }}
                     onUpdateWorkerJobLimit={(jobId, limit) => {
-                      setSettlement((prev) => updateWorkerJobLimit(prev, jobId, limit));
+                      const next = updateWorkerJobLimit(settlementRef.current || settlement, jobId, limit);
+                      settlementRef.current = next;
+                      setSettlement(next);
                     }}
                     onSetWorkerJobToZero={(jobId) => {
-                      setSettlement((prev) => setWorkerJobToZero(prev, jobId));
+                      const next = setWorkerJobToZero(settlementRef.current || settlement, jobId);
+                      settlementRef.current = next;
+                      setSettlement(next);
                     }}
                     onSetWorkerJobToMax={(jobId) => {
-                      setSettlement((prev) => setWorkerJobToMax(prev, jobId));
+                      const next = setWorkerJobToMax(settlementRef.current || settlement, jobId);
+                      settlementRef.current = next;
+                      setSettlement(next);
                     }}
                     onOpenPopulationRoster={() => setIsPopulationModalOpen(true)}
                     idleLaborCount={settlement.generalPopulation?.unassigned || 0}
@@ -1151,6 +1174,7 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
               <GameOverExtinctModal
                 isOpen={isExtinct}
                 stats={calculateGlobalNetworkStats(settlements, caravans)}
+                totalZombiesKilled={settlement.lifetimeStats?.infectedKills ?? 0}
                 onRestartGame={handleRestartGame}
               />
     

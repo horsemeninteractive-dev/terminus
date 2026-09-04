@@ -128,6 +128,12 @@ export class VehicleRenderer {
     this.hoveredVehicleId = id;
   }
 
+  /** Immediately update the cached elevation so the per-frame update() uses the right ground height. */
+  public setElevation(elevation: ElevationGrid | null, exaggeration: number) {
+    this.currentElevation = elevation;
+    this.currentExaggeration = exaggeration;
+  }
+
   public updateVehicles(
     vehicles: WorldVehicle[],
     elevation?: ElevationGrid | null,

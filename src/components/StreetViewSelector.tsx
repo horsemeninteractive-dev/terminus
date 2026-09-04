@@ -555,14 +555,18 @@ export const StreetViewSelector: React.FC<StreetViewSelectorProps> = ({
 
   const handleConfirmPlacement = () => {
     const halfDimMeters = (dim * TILE_METERS) / 2;
-    const gridBounds = {
-      minX: gridOffsetMeters.x - halfDimMeters,
-      maxX: gridOffsetMeters.x + halfDimMeters,
-      minZ: gridOffsetMeters.z - halfDimMeters,
-      maxZ: gridOffsetMeters.z + halfDimMeters,
+    // Retain the full expedition survey perimeter (e.g. 15x15 or 21x21 tiles, 4.5km - 6.3km)
+    // rather than discarding all outer buildings beyond the immediate starting colony core.
+    // This ensures roads outside the central tile retain all their real buildings for expeditions.
+    const expeditionHalfMeters = Math.max((expeditionDim * TILE_METERS) / 2, 2250);
+    const expeditionBounds = {
+      minX: gridOffsetMeters.x - expeditionHalfMeters,
+      maxX: gridOffsetMeters.x + expeditionHalfMeters,
+      minZ: gridOffsetMeters.z - expeditionHalfMeters,
+      maxZ: gridOffsetMeters.z + expeditionHalfMeters,
     };
 
-    const croppedMap = loadedMapData ? cropMapDataToGrid(loadedMapData, gridBounds) : null;
+    const preservedMap = loadedMapData ? cropMapDataToGrid(loadedMapData, expeditionBounds) : null;
 
     const finalPlacement: SettlementPlacement = {
       center: selectedLocation,
@@ -572,9 +576,9 @@ export const StreetViewSelector: React.FC<StreetViewSelectorProps> = ({
       rotationDeg: 0,
       sectorName: cityName,
       country: countryName,
-      locationDetails: `Starting Sector at ${cityName} with ${croppedMap?.buildings.length ?? telemetry.allBuildings} buildings`,
+      locationDetails: `Starting Sector at ${cityName} with ${preservedMap?.buildings.length ?? telemetry.allBuildings} buildings`,
     };
-    onContinue(finalPlacement, croppedMap);
+    onContinue(finalPlacement, preservedMap);
   };
 
   return (

@@ -30,6 +30,20 @@ export const GlobeLoadingOverlay: React.FC<GlobeLoadingOverlayProps> = ({
   const [internalProgress, setInternalProgress] = useState(0.12);
   const [tipIndex, setTipIndex] = useState(0);
   const [statusMessage, setStatusMessage] = useState('INITIALIZING ORBITAL SATELLITE RECONNAISSANCE...');
+  const [imageLoaded, setImageLoaded] = useState(false);
+
+  useEffect(() => {
+    const img = new Image();
+    img.src = IFZ_IMAGES.loadingTruck;
+    if (img.complete) {
+      const raf = requestAnimationFrame(() => {
+        setImageLoaded(true);
+      });
+      return () => cancelAnimationFrame(raf);
+    } else {
+      img.onload = () => setImageLoaded(true);
+    }
+  }, []);
 
   useEffect(() => {
     if (externalProgress !== undefined) {
@@ -78,7 +92,10 @@ export const GlobeLoadingOverlay: React.FC<GlobeLoadingOverlayProps> = ({
         <img
           src={IFZ_IMAGES.loadingTruck}
           alt="Orbital Satellite Recon"
-          className="w-full h-full object-cover opacity-80 scale-105"
+          onLoad={() => setImageLoaded(true)}
+          className={`w-full h-full object-cover scale-105 transition-opacity duration-700 ease-out ${
+            imageLoaded ? 'opacity-80' : 'opacity-0'
+          }`}
         />
         <div className="absolute inset-0 bg-gradient-to-t from-[#06080C] via-[#06080C]/60 to-[#06080C]/80" />
       </div>

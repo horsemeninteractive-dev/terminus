@@ -32,6 +32,7 @@ import {
 import { BuildingOutbreakState, SurvivorInfection } from '../types/infection';
 import { SettlementState, SettlementStockpile } from '../types/settlement';
 import { SettlementRecord } from '../types/caravan';
+import { getPrimaryHQ } from '../services/buildingOperational';
 
 interface ResourceStockpileBarProps {
  settlement: SettlementState;
@@ -77,7 +78,6 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  totalStorageCapacity,
  totalLivingCapacity,
  totalDefenseRating,
- hq,
  namedSurvivors,
  generalPopulation,
  squads,
@@ -155,9 +155,9 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  </button>
  )}
  </div>
- <div className="text-[12px] font-black text-white truncate max-w-[150px]">
- {hasHQ ? hq?.buildingName : 'No HQ Established'}
- </div>
+  <div className="text-[12px] font-black text-white truncate max-w-[150px]">
+    {hasHQ ? (getPrimaryHQ(settlement)?.buildingName || 'Headquarters') : 'No HQ Established'}
+  </div>
  </div>
 
  {/* Quick Colony Switcher Dropdown */}

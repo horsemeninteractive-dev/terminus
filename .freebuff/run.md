@@ -23,4 +23,12 @@
   ```
   powershell -NoProfile -Command "(Start-Process -FilePath 'node.exe' -ArgumentList 'node_modules/vite/bin/vite.js','--port=3001','--host=127.0.0.1' -RedirectStandardOutput '<log>' -RedirectStandardError '<log>.err' -WindowStyle Hidden -PassThru).Id"
   ```
-  Then confirm it survived and wait until `http://127.0.0.1:3001/` answers HTTP.
+  Notes:
+  - The PowerShell wrapper command itself may HANG until its timeout even though
+    the detached server starts fine — that is normal. Wait for the timeout, then
+    confirm the server independently: `netstat -ano | findstr :3001` for the pid,
+    and `curl http://127.0.0.1:3001/` for HTTP 200.
+  - stdout and stderr MUST go to different files; PowerShell fails if both point
+    at one path.
+  - Prefer the default port 3000 when it is free; only fall back to 3001 when
+    taken.

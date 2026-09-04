@@ -4,6 +4,7 @@ import { TacticalSquadUnit, ZombieUnit, HostileHumanUnit, NoiseEvent, DroppedIte
 import { PathGrid } from './pathfindingService';
 import { RoadNetworkGraph } from './roadPathfinder';
 import { tickSettlementSimulation } from './populationService';
+import { bumpLifetimeStat } from './settlementService';
 import { tickResearchSimulation } from './researchService';
 import { createInitialWeatherState, tickWeatherSimulation } from './weatherService';
 import { tickMoraleAndGrowthSimulation } from './moraleService';
@@ -200,6 +201,9 @@ export function runSimulationPipeline(args: {
     // population (fallenHeroes + namedSurvivors/generalPopulation). Spreading
     // `gathering` here silently dropped epidemic turn-deaths every tick.
     ...infection.newState,
+    // Colony-wide infected-kill tally: the combat stage counted fresh deaths
+    // this tick (every source funnels through the zombie 'dead' transition).
+    lifetimeStats: bumpLifetimeStat(infection.newState, 'infectedKills', combat.zombiesKilled).lifetimeStats,
     vehicles: vehicles.updatedVehicles,
     zombieLairs: lairs.updatedLairs,
     rivalHideouts: hideouts.updatedHideouts,

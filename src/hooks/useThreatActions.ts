@@ -19,6 +19,7 @@ import { payRansomForCaptive } from '../services/rivalFactionService';
 import { assignResourceGatherers } from '../services/resourceGatheringService';
 import {
   getBuildingSearchDurationSec,
+  isPointInArea,
   isPointInsidePolygon,
   isSquadInsideBuilding,
   startBuildingSearch,
@@ -28,7 +29,7 @@ import { getPrimaryHQ, isHQBuilding } from '../services/buildingOperational';
 import { calculateSettlementMorale } from '../services/moraleService';
 import { addWaterToStockpile } from '../services/waterService';
 import { soundService, ToastMessage } from '../services/soundService';
-import type { BuildingPolygon, MapData, Point2D } from '../types/map';
+import type { BuildingPolygon, MapData, Point2D, WorldAreaBounds } from '../types/map';
 import type { BuildingSearchState } from '../types/scavenging';
 import type { AdaptedBuilding, FunctionalBuildingTypeId, SettlementState } from '../types/settlement';
 import type {
@@ -390,13 +391,16 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
     setToastMessage({ title: 'SCAVENGE AREA DESIGNATION', desc: 'Drag a box over buildings to queue them for this squad.', type: 'info' });
   };
 
-  const handleDesignateSquadScavenge = (bounds: { minX: number; maxX: number; minZ: number; maxZ: number }) => {
+  const handleDesignateSquadScavenge = (bounds: WorldAreaBounds) => {
     if (!mapData || !selectedSquadId) return;
 
     // A building is only queued if its footprint actually intersects the dragged
-    // box (any vertex inside, the box nested inside the footprint, or the box
-    // corner landing inside a large building). Already-searched, fully-empty
-    // buildings are never queued so the squad isn't sent to cleared structures.
+    // area (any vertex inside, the box nested inside the footprint, or an area
+    // corner landing inside a large building). Point tests use the exact
+    // perspective-correct ground quad (`bounds.polygon`) when available so the
+    // selection matches the drawn rectangle instead of over-covering it with an
+    // axis-aligned box. Already-searched, fully-empty buildings are never
+    // queued so the squad isn't sent to cleared structures.
     const searches: Map<string | number, BuildingSearchState> =
       settlement.buildingSearches || new Map<string | number, BuildingSearchState>();
     const exhausted = new Set<string>();
@@ -408,22 +412,26 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
       if (empty) exhausted.add(String(id));
     }
 
+    const areaCorners: Point2D[] =
+      bounds.polygon && bounds.polygon.length >= 4
+        ? bounds.polygon
+        : [
+            { x: bounds.minX, z: bounds.minZ },
+            { x: bounds.maxX, z: bounds.minZ },
+            { x: bounds.maxX, z: bounds.maxZ },
+            { x: bounds.minX, z: bounds.maxZ },
+          ];
+
     const buildingIntersectsBox = (b: BuildingPolygon): boolean => {
       const pts = b.polygon && b.polygon.length >= 3 ? b.polygon : null;
       if (pts) {
         for (const p of pts) {
-          if (p.x >= bounds.minX && p.x <= bounds.maxX && p.z >= bounds.minZ && p.z <= bounds.maxZ) return true;
+          if (isPointInArea(p, bounds)) return true;
         }
       }
-      if (b.center && b.center.x >= bounds.minX && b.center.x <= bounds.maxX && b.center.z >= bounds.minZ && b.center.z <= bounds.maxZ) return true;
+      if (b.center && isPointInArea(b.center, bounds)) return true;
       if (pts) {
-        const corners: Point2D[] = [
-          { x: bounds.minX, z: bounds.minZ },
-          { x: bounds.maxX, z: bounds.minZ },
-          { x: bounds.maxX, z: bounds.maxZ },
-          { x: bounds.minX, z: bounds.maxZ },
-        ];
-        for (const c of corners) {
+        for (const c of areaCorners) {
           if (isPointInsidePolygon(c, pts)) return true;
         }
       }
@@ -1065,8 +1073,41 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
         setActiveRadioTransmission(unread);
         setIsRadioModalOpen(true);
         break;
+      case 'focus_lair': {
+        const lair = (settlement.zombieLairs instanceof Map
+          ? Array.from(settlement.zombieLairs.values())
+          : Object.values(settlement.zombieLairs || {})) as any[];
+        const target = lair.find((l) => l && l.isDiscovered) || lair[0];
+        if (target && mapData) {
+          const b = mapData.buildings.find((x) => String(x.id) === String(target.buildingId));
+          if (b) {
+            setSelectedBuilding(b);
+            setActiveSidebarTab('inspector');
+            sceneRef.current?.cameraController.focusOn(b.center, 90);
+          }
+        }
+        break;
+      }
+      case 'open_build_menu':
+        setActiveSidebarTab('build');
+        break;
+      default:
+        // focus_building:<id> — used by mission LOCATE actions to jump the
+        // camera to a mission-bound target on the map.
+        if (actionType.startsWith('focus_building:')) {
+          const id = actionType.slice('focus_building:'.length);
+          if (mapData) {
+            const b = mapData.buildings.find((x) => String(x.id) === id);
+            if (b) {
+              setSelectedBuilding(b);
+              setActiveSidebarTab('inspector');
+              sceneRef.current?.cameraController.focusOn(b.center, 90);
+            }
+          }
+        }
+        break;
     }
-  }, [mapData, settlement.squads, settlement.adaptedBuildings, handleSetClockSpeed, radioDirectiveState?.transmissionLog]);
+  }, [mapData, settlement.squads, settlement.adaptedBuildings, settlement.zombieLairs, handleSetClockSpeed, radioDirectiveState?.transmissionLog]);
 
   return {
     handleAssaultThreat,

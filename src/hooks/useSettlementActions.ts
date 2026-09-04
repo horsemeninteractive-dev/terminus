@@ -17,14 +17,14 @@ import {
   splitBuilding,
 } from '../services/settlementService';
 import { getFreestandingCollisionPolygon, getFreestandingDimensions } from '../services/freestandingFootprint';
-import { isPointInsidePolygon } from '../services/scavengingService';
+import { isPointInArea, isPointInsidePolygon } from '../services/scavengingService';
 import { assignResourceGatherers } from '../services/resourceGatheringService';
 import { startSquadTraining, stopSquadTraining } from '../services/trainingService';
 import { updateRadioDirectiveSystem } from '../services/radioDirectiveService';
 import { FUNCTIONAL_BUILDING_DEFINITIONS } from '../data/functionalBuildings';
 import { getPrimaryHQ } from '../services/buildingOperational';
 import { soundService, ToastMessage } from '../services/soundService';
-import type { BuildingPolygon, MapData, Point2D } from '../types/map';
+import type { BuildingPolygon, MapData, Point2D, WorldAreaBounds } from '../types/map';
 import type { FunctionalBuildingTypeId, SettlementState } from '../types/settlement';
 import type { GatherResourceType } from '../components/AreaGatherOverlay';
 import type { GameClockState, ZombieUnit } from '../types/combat';
@@ -189,38 +189,31 @@ export function useSettlementActions(runtime: SettlementActionsRuntime) {
     adaptation: number | Point2D[] = 100,
     options: AdaptBuildingOptions = {}
   ) => {
-    try {
-      let success = false;
-      let errorMsg = '';
-      setSettlement((prev) => {
-        const res = adaptBuilding(prev, bldg, typeId, adaptation, options);
-        if (!res.success) {
-          errorMsg = res.error || 'Failed adapting building.';
-          return prev;
-        }
-        success = true;
-        settlementRef.current = res.newState;
-        return res.newState;
-      });
-
-      if (!success) {
-        throw new Error(errorMsg || 'Failed adapting building.');
-      }
-
-      setSelectedBuilding(bldg);
-      soundService.playBuildingPlaced();
+    // Compute the result synchronously from the CURRENT state, mirroring the
+    // other settlement actions (handleConfirmHQ/handleSplitBuilding). Capturing
+    // the result through a React functional updater is a race: the updater runs
+    // during the render flush, so the closure's `success` flag would still be
+    // false when read — every adaptation would toast a failure while the
+    // construction order still committed. `settlement` is the live state at
+    // render time, so it is safe to evaluate against directly.
+    const res = adaptBuilding(settlement, bldg, typeId, adaptation, options);
+    if (!res.success) {
       setToastMessage({
-        title: 'CONSTRUCTION DISPATCHED',
-        desc: `Building crew en route to adapt structure. Resources will be progressively consumed as work advances.`,
-        type: 'info',
-      });
-    } catch (e: any) {
-      setToastMessage({
-        title: 'Adaptation Error',
-        desc: e.message || 'Failed adapting structure.',
+        title: 'ADAPTATION BLOCKED',
+        desc: res.error || 'Failed adapting building.',
         type: 'warn',
       });
+      return;
     }
+    settlementRef.current = res.newState;
+    setSettlement(res.newState);
+    setSelectedBuilding(bldg);
+    soundService.playBuildingPlaced();
+    setToastMessage({
+      title: 'CONSTRUCTION DISPATCHED',
+      desc: `Building crew en route to adapt structure. Resources will be progressively consumed as work advances.`,
+      type: 'info',
+    });
   };
 
   /** IFZ §7.1 split: divide a large real building into independently adaptable
@@ -418,15 +411,14 @@ export function useSettlementActions(runtime: SettlementActionsRuntime) {
 
   const handleDesignateGatherArea = (
     type: GatherResourceType,
-    bounds: { minX: number; maxX: number; minZ: number; maxZ: number }
+    bounds: WorldAreaBounds
   ) => {
     setActiveGatherType(null);
     if (!mapData) return;
 
     if (type === 'demolish') {
       const bldg = mapData.buildings.find(b =>
-        b.center.x >= bounds.minX && b.center.x <= bounds.maxX &&
-        b.center.z >= bounds.minZ && b.center.z <= bounds.maxZ &&
+        isPointInArea(b.center, bounds) &&
         String(b.id) !== String(getPrimaryHQ(settlement)?.buildingId)
       );
       if (bldg) handleOrderDeconstruction(bldg.id);
@@ -435,9 +427,7 @@ export function useSettlementActions(runtime: SettlementActionsRuntime) {
     }
 
     const nodes = mapData.resourceNodes.filter(n =>
-      n.type === type && n.amount > 0 &&
-      n.position.x >= bounds.minX && n.position.x <= bounds.maxX &&
-      n.position.z >= bounds.minZ && n.position.z <= bounds.maxZ
+      n.type === type && n.amount > 0 && isPointInArea(n.position, bounds)
     );
     if (!nodes.length) {
       setToastMessage({ title: 'NO RESOURCE NODES', desc: `No available ${type} nodes were found in the designated area.`, type: 'info' });

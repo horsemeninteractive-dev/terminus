@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { CombatVisualFx, DroppedItem, HostileHumanUnit, TacticalSquadUnit, ZombieLair, ZombieUnit, getWeaponDefinition } from '../types/combat';
 import { findPileAt, getStrandedLootOrderId } from '../services/strandedLootService';
-import { BuildingPolygon, MapData, Point2D, ResourceNode, RoadSegment } from '../types/map';
+import { BuildingPolygon, MapData, Point2D, ResourceNode, RoadSegment, WorldAreaBounds } from '../types/map';
+import { isPointInArea } from '../services/scavengingService';
 import { ResourceWorkOrder } from '../types/resourceGathering';
 import { HiddenSurvivorGroup } from '../types/population';
 import { RivalHideout } from '../types/rivalFaction';
@@ -90,7 +91,8 @@ export function getBuildingLootCategory(bldg: BuildingPolygon): 'food' | 'medica
     type === 'industrial' ||
     type === 'warehouse' ||
     type === 'commercial' ||
-    /industrial|warehouse|factory|hardware|timber|diy|works|depot|plant|storage|builder/i.test(name)
+    type === 'school' ||
+    /industrial|warehouse|factory|hardware|timber|diy|works|depot|plant|storage|builder|school|university|college|academy|laboratory|research/i.test(name)
   ) {
     return 'materials';
   }
@@ -859,6 +861,7 @@ export class WorldScene {
     this.disableElevation = disable;
     const activeElevation = disable ? null : this.currentMapData.elevation;
     this.combatRenderer.setElevation(activeElevation, this.currentExaggeration);
+    this.vehicleRenderer.setElevation(activeElevation, this.currentExaggeration);
     this.loadMapData(
       this.currentMapData,
       this.showBuildingEdges,
@@ -2176,13 +2179,20 @@ export class WorldScene {
   /**
    * Translates a 2D viewport screen drag box into exact 3D world ground bounding coordinates
    * taking into account perspective camera angle, pitch, and zoom.
+   *
+   * The AABB of the four unprojected corners OVER-COVERS the visible region
+   * whenever the camera is pitched (the screen rectangle projects to a
+   * trapezoid on the ground, and its axis-aligned bounds swallow the space
+   * outside the trapezoid's sides near the far edge). To make box selection
+   * match the drawn rectangle exactly, the ground-plane corners are also
+   * returned in `polygon`; callers test points against that quad.
    */
   public screenRectToWorldBounds(
     x1: number,
     y1: number,
     x2: number,
     y2: number
-  ): { minX: number; maxX: number; minZ: number; maxZ: number } {
+  ): WorldAreaBounds {
     const rect = this.container.getBoundingClientRect();
     const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     const corners = [
@@ -2220,7 +2230,13 @@ export class WorldScene {
       if (p.z > maxZ) maxZ = p.z;
     }
 
-    return { minX, maxX, minZ, maxZ };
+    // Perspective-correct quad: the projected corners in screen order. Only
+    // attach when at least 3 corners resolved (a corner ray parallel to the
+    // ground would drop one — 3 points still bound the visible region well).
+    const polygon =
+      worldPoints.length >= 3 ? worldPoints.map((p) => ({ x: p.x, z: p.z })) : undefined;
+
+    return { minX, maxX, minZ, maxZ, polygon };
   }
 
   public updateResourceAmounts(nodes: ResourceNode[]) {
@@ -2232,7 +2248,7 @@ export class WorldScene {
 
   public setGatherHighlight(
     gatherType: 'wood' | 'metal' | 'bricks' | 'demolish' | null,
-    bounds: { minX: number; maxX: number; minZ: number; maxZ: number } | null
+    bounds: WorldAreaBounds | null
   ) {
     if (!gatherType || !bounds || !this.currentMapData) {
       this.resourceRenderer.setHighlightedNodes([]);
@@ -2247,10 +2263,7 @@ export class WorldScene {
       const candidateIds = new Set<string | number>();
       for (const b of this.currentMapData.buildings) {
         if (
-          b.center.x >= bounds.minX &&
-          b.center.x <= bounds.maxX &&
-          b.center.z >= bounds.minZ &&
-          b.center.z <= bounds.maxZ &&
+          isPointInArea(b.center, bounds) &&
           String(b.id) !== String(this.hqBuildingId)
         ) {
           candidateIds.add(b.id);
@@ -2261,13 +2274,7 @@ export class WorldScene {
     } else {
       this.buildingRenderer.setDemolishCandidates(null);
       const selectedNodes = this.currentMapData.resourceNodes.filter(
-        (n) =>
-          n.type === gatherType &&
-          n.amount > 0 &&
-          n.position.x >= bounds.minX &&
-          n.position.x <= bounds.maxX &&
-          n.position.z >= bounds.minZ &&
-          n.position.z <= bounds.maxZ
+        (n) => n.type === gatherType && n.amount > 0 && isPointInArea(n.position, bounds)
       );
       this.resourceRenderer.setHighlightedNodes(selectedNodes, activeElevation, exaggeration);
     }
@@ -2364,9 +2371,10 @@ export class WorldScene {
     this.selectedVehicleId = selectedVehicleId;
     this.gateTriggerVehicles = vehicles.map((v) => ({ x: v.position.x, z: v.position.z }));
     this.vehicleRenderer.setSelectedVehicle(selectedVehicleId);
+    const activeElevation = this.disableElevation ? null : this.currentMapData?.elevation;
     this.vehicleRenderer.updateVehicles(
       vehicles,
-      this.currentMapData?.elevation,
+      activeElevation,
       this.currentExaggeration
     );
   }
