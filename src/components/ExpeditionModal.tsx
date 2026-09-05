@@ -126,7 +126,7 @@ export const ExpeditionModal: React.FC<ExpeditionModalProps> = ({
                       </span>
                     </div>
                     {site.assignedSquadId && (
-                      <span className="text-[9px] font-mono font-bold text-[#38BDF8] uppercase shrink-0">
+                      <span className="text-[9px] font-mono font-bold text-[#6EE7B7] uppercase shrink-0">
                         {expeditionPhaseLabel(site.phase)} · {assigned?.name || 'Squad'}
                       </span>
                     )}
@@ -166,7 +166,7 @@ export const ExpeditionModal: React.FC<ExpeditionModalProps> = ({
                         onClick={() => selectedSquad && onDispatch(site.id, selectedSquad.squadId)}
                         disabled={!dispatchable}
                         title={!selectedSquad ? 'Select a squad first' : selectedSquad.onExpedition ? 'Selected squad is away' : ''}
-                        className="px-3 py-1 bg-[#1E3A8A] hover:bg-[#1D4ED8] disabled:bg-[#1A2230] disabled:text-[#475569] disabled:cursor-not-allowed border border-[#3B82F6]/50 disabled:border-[#243349] rounded text-[9px] font-heading font-bold text-[#BFDBFE] uppercase transition-colors"
+                        className="px-3 py-1 bg-[#065F46] hover:bg-[#047857] disabled:bg-[#1A2230] disabled:text-[#475569] disabled:cursor-not-allowed border border-[#10B981]/50 disabled:border-[#243349] rounded text-[9px] font-heading font-bold text-[#A7F3D0] uppercase transition-colors"
                       >
                         DISPATCH {selectedSquad ? selectedSquad.name.toUpperCase() : ''}
                       </button>

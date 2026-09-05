@@ -34,6 +34,7 @@ import {
  Send,
  Shield,
  ShieldAlert,
+ ShieldCheck,
  Skull,
  Sliders,
  Snowflake,
@@ -60,8 +61,8 @@ import {
  LaborAllocation,
  SettlementState,
 } from '../types/settlement';
-import { NamedSurvivor, HiddenSurvivorGroup, StatTier } from '../types/population';
-import { CombatStance, TacticalSquadUnit, WeaponLoadoutId, ZombieLair } from '../types/combat';
+import { NamedSurvivor, HiddenSurvivorGroup, StatTier, SquadArmorLoadout } from '../types/population';
+import { CombatStance, TacticalSquadUnit, WeaponLoadoutId, ZombieLair, ArmorItemId, WeaponItemId, getWeaponDefinition, getArmorDefinition } from '../types/combat';
 import { RivalHideout } from '../types/rivalFaction';
 import { BuildingOccupation } from '../types/occupation';
 import { WorldVehicle } from '../types/vehicle';
@@ -120,7 +121,7 @@ interface TacticalEdgeSidebarProps {
  onAssaultThreat?: (buildingId: string | number) => void;
  onBuildFreestanding?: (typeId: FunctionalBuildingTypeId, pos: Point2D) => void;
  onUpdateLabor?: (allocation: LaborAllocation) => void;
- onCreateSquad?: (name: string, leaderId: string, generalCount: number, weaponLoadout?: import('../types/population').SquadWeaponLoadout) => void;
+ onCreateSquad?: (name: string, leaderId: string, generalCount: number, weaponLoadout?: import('../types/population').SquadWeaponLoadout, armorLoadout?: import('../types/population').SquadArmorLoadout) => void;
  onDisbandSquad?: (squadId: string) => void;
  onChangeSquadStance?: (squadId: string, stance: CombatStance) => void;
  onSelectSquad?: (squadId: string | null) => void;
@@ -182,6 +183,13 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  const [newSquadGeneralCount, setNewSquadGeneralCount] = useState(1);
  const [squadFormError, setSquadFormError] = useState<string | null>(null);
  const [newSquadWeaponLoadout, setNewSquadWeaponLoadout] = useState<'knife' | 'pistol' | 'shotgun' | 'assault_rifle'>('knife');
+ const [newSquadArmorLoadout, setNewSquadArmorLoadout] = useState<SquadArmorLoadout>('none');
+
+ // Colony armory stock — surfaces what gear is on hand while forming a squad.
+ const armoryWeapons: Partial<Record<WeaponItemId, number>> = {};
+ for (const w of settlement.armory?.weapons || []) armoryWeapons[w] = (armoryWeapons[w] || 0) + 1;
+ const armoryArmor: Partial<Record<ArmorItemId, number>> = {};
+ for (const a of settlement.armory?.armor || []) armoryArmor[a] = (armoryArmor[a] || 0) + 1;
 
  if (!activeTab) return null;
 
@@ -424,18 +432,19 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  `NOT ENOUGH FREE CIVILIANS (${freeGeneralWorkers} AVAILABLE).`
  );
  return;
- }
- onCreateSquad?.(
- newSquadName.trim() || `TACTICAL SQUAD ${squads.length + 1}`,
- newSquadLeaderId,
- newSquadGeneralCount,
- newSquadWeaponLoadout
+ } onCreateSquad?.(
+  newSquadName.trim() || `TACTICAL SQUAD ${squads.length + 1}`,
+  newSquadLeaderId,
+  newSquadGeneralCount,
+  newSquadWeaponLoadout,
+  newSquadArmorLoadout
  );
  setIsFormingSquad(false);
  setNewSquadName('');
  setNewSquadLeaderId('');
  setNewSquadGeneralCount(1);
  setNewSquadWeaponLoadout('knife');
+ setNewSquadArmorLoadout('none');
  }}
  className="flex flex-col gap-2"
  >
@@ -536,16 +545,67 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  +
  </button>
  </div>
- </div>
+ </div>  <div className="grid grid-cols-2 gap-2">
+   <div className="flex flex-col gap-1">
+    <label className="text-[9px] font-heading font-bold text-[#718096] uppercase">
+     Starting Weapons
+    </label>
+    <select
+     value={newSquadWeaponLoadout}
+     onChange={(e) => setNewSquadWeaponLoadout(e.target.value as typeof newSquadWeaponLoadout)}
+     className="w-full px-2 py-1 text-[10px] font-mono bg-[#0E1014] border border-[#262C36] text-[#E8E8E8] focus:outline-none focus:border-[#CBD5E1]"
+    >
+     <option value="knife">COMBAT KNIVES (FREE)</option>
+     <option value="pistol">PISTOLS ({armoryWeapons.pistol || 0})</option>
+     <option value="shotgun">SHOTGUNS ({armoryWeapons.shotgun || 0})</option>
+     <option value="assault_rifle">ASSAULT RIFLES ({armoryWeapons.assault_rifle || 0})</option>
+    </select>
+   </div>
+   <div className="flex flex-col gap-1">
+    <label className="text-[9px] font-heading font-bold text-[#718096] uppercase">
+     Starting Armor
+    </label>
+    <select
+     value={newSquadArmorLoadout}
+     onChange={(e) => setNewSquadArmorLoadout(e.target.value as SquadArmorLoadout)}
+     className="w-full px-2 py-1 text-[10px] font-mono bg-[#0E1014] border border-[#262C36] text-[#E8E8E8] focus:outline-none focus:border-[#CBD5E1]"
+    >
+     <option value="none">NO ARMOR</option>
+     <option value="padded_jacket">PADDED JACKETS ({armoryArmor.padded_jacket || 0})</option>
+     <option value="riot_vest">RIOT VESTS ({armoryArmor.riot_vest || 0})</option>
+     <option value="tactical_gear">TACTICAL GEAR ({armoryArmor.tactical_gear || 0})</option>
+    </select>
+   </div>
+  </div>
 
- <button
- type="submit"
- className="w-full py-1.5 bg-[#17202B] hover:bg-[#202C3C] border border-[#CBD5E1]/70 hover:border-[#CBD5E1] text-[10px] font-heading font-bold text-[#E8E8E8] uppercase transition-colors"
- >
- CONFIRM & MUSTER SQUAD
- </button>
- </form>
- )}
+  {/* Available Armory — gear on hand to issue while this panel covers the header. */}
+  <div className="p-1.5 bg-[#0E1014] border border-[#1E242E]">
+   <div className="text-[9px] font-heading font-bold text-[#94A3B8] uppercase mb-1 flex items-center gap-1">
+    <ShieldCheck className="w-3 h-3 text-[#34d399]" /> COLONY ARMORY STOCK
+   </div>
+   <div className="flex flex-wrap gap-1 text-[9px] font-mono">
+    {(['knife','pistol','shotgun','assault_rifle'] as WeaponItemId[]).map((id) => (
+     <span key={id} className={`px-1 py-0.5 border ${newSquadWeaponLoadout === id ? 'border-[#34d399] text-emerald-300 bg-emerald-950/30' : 'border-[#262C36] text-[#A0AEC0]'}`}>
+      {getWeaponDefinition(id).name}: {id === 'knife' ? '∞' : armoryWeapons[id] || 0}
+     </span>
+    ))}
+    <span className="px-1 py-0.5 text-[#4B5563]">•</span>
+    {(['padded_jacket','riot_vest','tactical_gear'] as ArmorItemId[]).map((id) => (
+     <span key={id} className={`px-1 py-0.5 border ${newSquadArmorLoadout === id ? 'border-[#34d399] text-emerald-300 bg-emerald-950/30' : 'border-[#262C36] text-[#A0AEC0]'}`}>
+      {getArmorDefinition(id).name}: {armoryArmor[id] || 0}
+     </span>
+    ))}
+   </div>
+  </div>
+
+  <button
+   type="submit"
+   className="w-full py-1.5 bg-[#17202B] hover:bg-[#202C3C] border border-[#CBD5E1]/70 hover:border-[#CBD5E1] text-[10px] font-heading font-bold text-[#E8E8E8] uppercase transition-colors"
+  >
+   CONFIRM & MUSTER SQUAD
+  </button>
+  </form>
+  )}
  </div>
 
  {/* Squad List */}

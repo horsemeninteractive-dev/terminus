@@ -238,7 +238,7 @@ export const ResearchTreeModal: React.FC<ResearchTreeModalProps> = ({ settlement
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2 text-[11px] text-[#AEBEC0]">
               <span className="uppercase tracking-wider">Researchers</span>
-              <strong className={researcherCount > 0 ? (isNight ? 'text-sky-300' : 'text-[#37F59A]') : 'text-amber-400'}>
+              <strong className={researcherCount > 0 ? (isNight ? 'text-slate-400' : 'text-[#37F59A]') : 'text-amber-400'}>
                 {researcherCount} {isNight ? '(Resting: Night)' : ''}
               </strong>
             </div>
@@ -314,7 +314,7 @@ export const ResearchTreeModal: React.FC<ResearchTreeModalProps> = ({ settlement
                     </div>
                     <span className={`mt-1 block min-h-6 px-1.5 py-0.5 text-[8px] font-heading font-bold uppercase leading-tight border ${done ? 'bg-[#173129] border-[#35D895] text-[#5DF0AC]' : active ? 'bg-[#12303D] border-[#38BDF8] text-[#A8D9EE]' : 'bg-[#293538] border-[#3B4045] text-[#9AA6A8]'}`}>
                       {node.name}
-                      {active && <span className="mt-0.5 block h-1 w-full bg-[#1C262A]"><span className="block h-full bg-[#38BDF8]" style={{ width: `${progress}%` }} /></span>}
+                      {active && <span className="mt-0.5 block h-1 w-full bg-[#1C262A]"><span className="block h-full bg-[#10B981]" style={{ width: `${progress}%` }} /></span>}
                     </span>
                   </button>
                 );
@@ -373,15 +373,15 @@ export const ResearchTreeModal: React.FC<ResearchTreeModalProps> = ({ settlement
                           {isNight ? 'PAUSED (NIGHT REST)' : fmtTime(getEstimatedResearchSeconds(settlement, selected, research.activeProgressSec))}
                         </strong>
                       </div>
-                      <div className="mt-1 flex items-center justify-between text-[11px]"><span className="text-[#87999B]">PROGRESS</span><strong className="text-[#38BDF8]">{selectedProgress.toFixed(1)}%</strong></div>
-                      <div className="mt-2 h-2 w-full bg-[#1C262A] overflow-hidden"><div className="h-full bg-[#38BDF8]" style={{ width: `${selectedProgress}%` }} /></div>
+                      <div className="mt-1 flex items-center justify-between text-[11px]"><span className="text-[#87999B]">PROGRESS</span><strong className="text-[#4BEFA8]">{selectedProgress.toFixed(1)}%</strong></div>
+                      <div className="mt-2 h-2 w-full bg-[#1C262A] overflow-hidden"><div className="h-full bg-[#10B981]" style={{ width: `${selectedProgress}%` }} /></div>
                       {researcherCount === 0 && (
                         <div className="mt-2 p-1.5 bg-amber-950/40 border border-amber-500/50 text-[10px] text-amber-300">
                           ⚠️ No scientists assigned to completed Research Centers. Assign scientists in Citizens (bottom-left) to advance this project.
                         </div>
                       )}
                       {isNight && researcherCount > 0 && (
-                        <div className="mt-2 p-1.5 bg-sky-950/40 border border-sky-500/50 text-[10px] text-sky-300">
+                        <div className="mt-2 p-1.5 bg-[#0B0F15]/70 border border-[#1E293B] text-[10px] text-slate-300">
                           🌙 Night Shift: Researchers shelter overnight. Research will resume at dawn.
                         </div>
                       )}

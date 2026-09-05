@@ -543,6 +543,11 @@ export class BuildingRenderer {
   public lodGroup = new THREE.Group();
 
   public buildingMeshes = new Map<string | number, THREE.Mesh>();
+  /** Pitched roof meshes are added to `group` as SIBLINGS of the building body
+   *  (not children of the body mesh), so they must be tracked separately to be
+   *  hidden when the structure is deconstructed — otherwise the roof keeps
+   *  floating over the rubble and stays raycastable/clickable. */
+  private roofMeshes = new Map<string | number, THREE.Mesh>();
   private buildingData = new Map<string | number, BuildingPolygon>();
   public freestandingMeshes = new Map<string | number, THREE.Mesh>();
   // Edge <LineSegments> owned by each freestanding structure (tower wireframes),
@@ -1413,6 +1418,7 @@ export class BuildingRenderer {
           roofMesh.position.y = baseY;
           roofMesh.userData = { buildingId: bldg.id, type: 'roof', baseElevation: avgTerrainY, isHQ, isAdapted: !!adapted };
           this.group.add(roofMesh);
+          this.roofMeshes.set(bldg.id, roofMesh);
         }
 
         const wallMatKey = materials.map((m) => m.uuid).join('|');
@@ -3278,13 +3284,35 @@ export class BuildingRenderer {
       }
     }
 
-    // 4. Update demolished buildings visibility
+    // 4. Demolished buildings are REMOVED from the scene entirely — body,
+    // pitched-roof sibling and adapted edge silhouette. Hiding alone is not
+    // enough: three.js raycasting ignores `visible`, so a hidden body/roof
+    // would still be hit by clicks. Disposing the per-building geometry frees
+    // the GPU memory; shared materials stay cached (per material key).
+    // Rebuild paths (rebuildBuildings / rebuildCell / buildOneBuilding) skip
+    // demolished ids anyway, so removal cannot resurrect the structure.
     for (const [demolishedId] of demolishedBuildingIds) {
       const mesh = this.buildingMeshes.get(demolishedId);
       if (mesh) {
-        mesh.visible = false;
+        this.group.remove(mesh);
+        if (mesh.geometry) mesh.geometry.dispose();
+        this.buildingMeshes.delete(demolishedId);
+      }
+      const roof = this.roofMeshes.get(demolishedId);
+      if (roof) {
+        this.group.remove(roof);
+        if (roof.geometry) roof.geometry.dispose();
+        this.roofMeshes.delete(demolishedId);
+      }
+      const edge = this.buildingEdgeObjs.get(demolishedId);
+      if (edge) {
+        this.edgeGroup.remove(edge);
+        if (edge.geometry) edge.geometry.dispose();
+        this.buildingEdgeObjs.delete(demolishedId);
       }
       this.gateAnimations.delete(demolishedId);
+      this.buildingData.delete(demolishedId);
+      this.demolishCandidateIds.delete(demolishedId);
     }
 
     // 5. Rebuild only overlays (HQ beacon & badges)
@@ -3540,6 +3568,7 @@ export class BuildingRenderer {
     this.selectedBuildingId = null;
     this.demolishCandidateIds.clear();
     this.buildingMeshes.clear();
+    this.roofMeshes.clear();
     this.buildingData.clear();
     this.freestandingMeshes.clear();
     this.freestandingEdges.clear();

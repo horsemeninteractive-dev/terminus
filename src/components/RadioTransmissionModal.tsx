@@ -309,7 +309,7 @@ export const RadioTransmissionModal: React.FC<RadioTransmissionModalProps> = ({
             onClick={() => setActiveTab('log')}
             className={`px-4 py-2 text-xs font-bold font-display uppercase tracking-wider flex items-center gap-2 border-b-2 transition-all ${
               activeTab === 'log'
-                ? 'border-[#38bdf8] text-[#38bdf8] bg-[#38bdf8]/10'
+                ? 'border-[#10B981] text-[#10B981] bg-[#10B981]/10'
                 : 'border-transparent text-slate-400 hover:text-slate-200'
             }`}
           >
@@ -482,9 +482,9 @@ export const RadioTransmissionModal: React.FC<RadioTransmissionModalProps> = ({
 
             {/* Replay banner — this is an archived record, not a live signal */}
             {isReplaying && (
-              <div className="p-3 bg-[#0a1520]/90 border border-[#38bdf8]/40 rounded flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2 text-[11px] font-mono text-sky-300">
-                  <Terminal className="w-4 h-4 text-sky-400 shrink-0" />
+              <div className="p-3 bg-[#0B1511]/90 border border-[#10B981]/40 rounded flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-[11px] font-mono text-emerald-300">
+                  <Terminal className="w-4 h-4 text-emerald-400 shrink-0" />
                   <span>
                     ARCHIVE REPLAY — READ RECORD ·{' '}
                     {currentTx.missionId ? 'MISSION BRIEFING' : currentTx.directiveId ? 'DIRECTIVE' : 'TRANSMISSION'}
@@ -493,7 +493,7 @@ export const RadioTransmissionModal: React.FC<RadioTransmissionModalProps> = ({
                 </div>
                 <button
                   onClick={() => setActiveTab('log')}
-                  className="px-3 py-1.5 text-[10px] font-display font-black uppercase tracking-wider text-sky-300 bg-sky-950/50 border border-sky-500/40 rounded hover:bg-sky-900/50 transition-colors"
+                  className="px-3 py-1.5 text-[10px] font-display font-black uppercase tracking-wider text-emerald-300 bg-emerald-950/50 border border-emerald-500/40 rounded hover:bg-emerald-900/50 transition-colors"
                 >
                   ← ARCHIVE
                 </button>
@@ -584,7 +584,7 @@ export const RadioTransmissionModal: React.FC<RadioTransmissionModalProps> = ({
                 </div>
                 <button
                   onClick={() => setActiveTab('log')}
-                  className="px-5 py-2.5 bg-[#0e7490] hover:bg-[#155e75] text-white font-display font-black text-xs uppercase tracking-widest rounded clip-tactical-bracket surface-bevel flex items-center gap-2"
+                  className="px-5 py-2.5 bg-[#047857] hover:bg-[#065F46] text-white font-display font-black text-xs uppercase tracking-widest rounded clip-tactical-bracket surface-bevel flex items-center gap-2"
                 >
                   <Terminal className="w-4 h-4" />
                   <span>BACK TO ARCHIVE</span>
@@ -668,7 +668,7 @@ export const RadioTransmissionModal: React.FC<RadioTransmissionModalProps> = ({
                     onClick={() => setFilterCategory(val)}
                     className={`w-full text-left px-2.5 py-1.5 rounded text-xs font-mono transition-colors flex items-center justify-between ${
                       filterCategory === val
-                        ? 'bg-sky-500/20 text-sky-300 font-bold border border-sky-500/40'
+                        ? 'bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/40'
                         : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
                     }`}
                   >

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layers } from 'lucide-react';
+import { Layers, Footprints, Building2, Car } from 'lucide-react';
 import { GameCanvas } from './GameCanvas';
 import { TacticalHeaderStrip } from './TacticalHeaderStrip';
 import { AudioSettingsModal } from './AudioSettingsModal';
@@ -35,6 +35,8 @@ import { getLawsUnlockInfo } from '../services/lawService';
 import { isAntennaOperational } from '../services/expeditionService';
 import { getPrimaryHQ, isHQOperational, getPrimaryAdaptedEntry, getAdaptedEntriesForBuilding } from '../services/buildingOperational';
 import { reorderConstructionQueue, updateWorkerJobLimit, updateWorkerJobPriority, setWorkerJobToZero, setWorkerJobToMax } from '../services/populationService';
+import { CATEGORY_COLORS } from '../render/BuildingRenderer';
+import { humanLocationLabel, resolveBuildingLocation } from '../services/osmLocationResolver';
 import type { WorldScene, FreestandingPlacementPoint } from '../render/WorldScene';
 import type { GameClockState, NoiseEvent, TacticalSquadUnit, ZombieUnit, WeaponItemId, ArmorItemId } from '../types/combat';
 import type { LawId } from '../types/laws';
@@ -83,7 +85,7 @@ export interface TacticalWorldSceneProps {
   handleBuildFreestandingRun: (typeId: FunctionalBuildingTypeId, placements: WorldScenePlacement[]) => void;
   handleChangeSquadStance: (squadId: string, stance: 'aggressive' | 'defensive' | 'hold_fire') => void;
   handleConfirmHQ: (bldg: BuildingPolygon) => void;
-  handleCreateSquad: (name: string, leaderId: string, memberCount: number, weaponLoadout?: import('../types/population').SquadWeaponLoadout) => void;
+  handleCreateSquad: (name: string, leaderId: string, memberCount: number, weaponLoadout?: import('../types/population').SquadWeaponLoadout, armorLoadout?: import('../types/population').SquadArmorLoadout) => void;
   handleDesignateGatherArea: (type: GatherResourceType, bounds: WorldAreaBounds) => void;
   handleDesignateSquadScavenge: (bounds: WorldAreaBounds) => void;
   handleDisbandSquad: (squadId: string) => void;
@@ -356,6 +358,25 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
     viewMode,
     zombies,
   } = props;
+
+  // Selection dock tab (squad / building / vehicle). Only one info panel is
+  // shown at a time; a tab strip appears when several entities are selected.
+  // The active tab follows the MOST RECENT selection, so clicking a squad then
+  // a building surfaces the building panel while the squad stays one tab away.
+  const [dockActiveTab, setDockActiveTab] = React.useState<'squad' | 'building' | 'vehicle'>('squad');
+  const prevDockSelRef = React.useRef<{ s: string | null; b: string | number | null; v: string | null }>({
+    s: null,
+    b: null,
+    v: null,
+  });
+  React.useEffect(() => {
+    const prev = prevDockSelRef.current;
+    const bId = selectedBuilding ? selectedBuilding.id : null;
+    if (selectedSquadId && selectedSquadId !== prev.s) setDockActiveTab('squad');
+    else if (selectedBuilding && bId !== prev.b) setDockActiveTab('building');
+    else if (selectedVehicleId && selectedVehicleId !== prev.v) setDockActiveTab('vehicle');
+    prevDockSelRef.current = { s: selectedSquadId, b: bId, v: selectedVehicleId };
+  }, [selectedSquadId, selectedBuilding, selectedVehicleId]);
 
   // Reorder a queued construction site: promote/demote within the build queue
   // so the player controls which structure completes first.
@@ -657,9 +678,9 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                     onRecall={handleRecallExpedition}
                   />
     
-                  {/* Selection Info Dock — squad / building / vehicle info panels share one
-                      slot with the same size & position as the squad panel, and stack
-                      vertically (each scrollable) when several selections are open. */}
+                  {/* Selection Info Dock — squad / building / vehicle panels share one
+                      slot; only one panel is shown at a time, and a tab strip
+                      switches between whichever entities are currently selected. */}
                   {(selectedSquadId || selectedBuilding || selectedVehicleId) && (() => {
                     const selectedSquadObj = combatSquads.find((s) => s.squadId === selectedSquadId) || null;
                     const selectedMountedVehicle = (() => {
@@ -669,11 +690,81 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                       const mid = selectedSquadObj?.mountedVehicleId;
                       return mid ? settlement.vehicles?.find((v) => v.id === mid) || null : null;
                     })();
+                    const selectedDockVehicle = selectedVehicleId
+                      ? settlement.vehicles?.find((v) => v.id === selectedVehicleId) || null
+                      : null;
+                    const selectedBuildingAdapt = selectedBuilding
+                      ? settlement.freestandingBuildings?.find(
+                          (f) => String(f.buildingId) === String(selectedBuilding.id)
+                        ) ||
+                        getPrimaryAdaptedEntry(settlement.adaptedBuildings, selectedBuilding.id) ||
+                        null
+                      : null;
+                    // Rebuild the strip from the CURRENT selections every render so
+                    // closing one panel never leaves a dead tab behind.
+                    const dockTabs: {
+                      kind: 'squad' | 'building' | 'vehicle';
+                      label: string;
+                      icon: React.ElementType;
+                    }[] = [];
+                    if (selectedSquadObj) {
+                      dockTabs.push({ kind: 'squad', label: selectedSquadObj.name || 'Squad', icon: Footprints });
+                    }
+                    if (selectedBuilding) {
+                      dockTabs.push({
+                        kind: 'building',
+                        label:
+                          selectedBuildingAdapt?.name ||
+                          selectedBuilding.name ||
+                          humanLocationLabel(resolveBuildingLocation(selectedBuilding)) ||
+                          'Structure',
+                        icon: Building2,
+                      });
+                    }
+                    if (selectedDockVehicle) {
+                      dockTabs.push({ kind: 'vehicle', label: selectedDockVehicle.name || 'Vehicle', icon: Car });
+                    }
+                    if (dockTabs.length === 0) return null;
+                    const activeDockTab = dockTabs.some((t) => t.kind === dockActiveTab)
+                      ? dockActiveTab
+                      : dockTabs[0].kind;
                     return (
                     <div
                       id="selection-info-dock"
                       className="fixed bottom-14 left-2 right-2 md:top-12 md:left-auto md:right-16 md:bottom-auto z-40 flex flex-col gap-2 pointer-events-none max-h-[calc(100vh-72px)] overflow-y-auto no-scrollbar"
                     >
+                      {dockTabs.length > 1 && (
+                        <div className="w-full md:w-[min(94vw,340px)] shrink-0 flex items-stretch gap-1 pointer-events-auto select-none">
+                          {dockTabs.map((tab) => {
+                            const TabIcon = tab.icon;
+                            const isActiveTab = tab.kind === activeDockTab;
+                            return (
+                              <button
+                                key={tab.kind}
+                                type="button"
+                                onClick={() => {
+                                  setDockActiveTab(tab.kind);
+                                  soundService.playClick();
+                                }}
+                                title={tab.label}
+                                aria-pressed={isActiveTab}
+                                className={`flex-1 min-w-0 flex items-center justify-center gap-1.5 px-2 py-1.5 border text-[10px] font-heading font-black uppercase tracking-wider transition-colors clip-tactical-bracket ${
+                                  isActiveTab
+                                    ? 'bg-[#064E3B]/90 border-[#10B981] text-white'
+                                    : 'bg-[#0B0F15]/95 border-[#1E293B] text-[#94A3B8] hover:text-white hover:border-[#334155]'
+                                }`}
+                              >
+                                <TabIcon
+                                  className={`w-3.5 h-3.5 shrink-0 ${isActiveTab ? 'text-[#10B981]' : 'text-[#475569]'}`}
+                                />
+                                <span className="truncate">{tab.label}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {activeDockTab === 'squad' && (
                       <TacticalSquadHUD
                         squad={selectedSquadObj}
                         mountedVehicle={selectedMountedVehicle}
@@ -695,8 +786,9 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                         onSelectSquad={handleSelectSquad}
                         onDisbandSquad={handleDisbandSquad}
                       />
+                      )}
     
-                      {selectedBuilding && (
+                      {activeDockTab === 'building' && selectedBuilding && (
                         <BuildingAdaptationDrawer
                           building={selectedBuilding}
                           adaptedInfo={
@@ -837,7 +929,7 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                         />
                       )}
     
-                      {selectedVehicleId && (
+                      {activeDockTab === 'vehicle' && selectedVehicleId && (
                         <VehicleTacticalDrawer
                           vehicle={settlement.vehicles?.find((v) => v.id === selectedVehicleId) || null}
                           onClose={() => setSelectedVehicleId(null)}
@@ -954,10 +1046,9 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                     totalLaborCount={settlement.namedSurvivors.length + (settlement.generalPopulation?.total || 0)}
                   />
     
-                  {/* Bottom-Right Unified Building Info Mini-Panel & Radar Minimap */}
+                  {/* Bottom-Right Radar Minimap */}
                   <TacticalMinimapWidget
                     selectedBuilding={selectedBuilding}
-                    adaptedBuildingInfo={selectedBuilding ? getPrimaryAdaptedEntry(settlement.adaptedBuildings, selectedBuilding.id) || null : null}
                     buildings={mapData?.buildings || []}
                     landuse={mapData?.landuse || []}
                     squads={combatSquads}
@@ -1064,17 +1155,6 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                         setIsExpeditionViewActive(isExp);
                       }
                     }}
-                    onScavengeSelected={(bldg) => {
-                      const sq = combatSquads.find((s) => s.squadId === selectedSquadId) || combatSquads[0];
-                      if (sq) {
-                        handleOrderSquadMove(sq.squadId, bldg.center, bldg.id, bldg.name);
-                      }
-                    }}
-                    onAdaptSelected={(bldg) => {
-                      setSelectedBuilding(bldg);
-                      setActiveSidebarTab('build');
-                    }}
-                    onDemolishSelected={(bldg) => handleOrderDeconstruction(bldg.id)}
                     onOpenRadio={() => {
                       const unread =
                         radioDirectiveState?.currentIncomingTransmission ||

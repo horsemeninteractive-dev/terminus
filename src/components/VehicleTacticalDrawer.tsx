@@ -119,7 +119,7 @@ export const VehicleTacticalDrawer: React.FC<VehicleTacticalDrawerProps> = ({
 
  if (isMinimized) {
     return (
-      <div className="relative z-40 w-full md:w-[min(94vw,340px)] shrink-0 bg-[#13161c]/95 border border-[#38bdf8] backdrop-blur-md clip-tactical-bracket surface-bevel p-3 text-slate-200 shadow-2xl flex items-center justify-between pointer-events-auto animate-in fade-in duration-150">
+      <div className="relative z-40 w-full md:w-[min(94vw,340px)] shrink-0 bg-[#07090C]/95 border-2 border-[#10B981] backdrop-blur-md clip-tactical-bracket surface-bevel p-3 text-slate-200 shadow-2xl flex items-center justify-between pointer-events-auto animate-in fade-in duration-150">
         <div className="flex items-center gap-2.5 min-w-0">
           <div className="p-1.5 bg-[#334155]/20 border border-[#475569]/40 shrink-0">
             {isArmed ? (
@@ -143,7 +143,7 @@ export const VehicleTacticalDrawer: React.FC<VehicleTacticalDrawerProps> = ({
           <button
             onClick={() => setIsMinimized(false)}
             title="Expand Vehicle Panel"
-            className="p-1 text-[#38bdf8] hover:text-white bg-[#0369a1]/40 hover:bg-[#0369a1] border border-[#38bdf8] transition-colors"
+            className="p-1 text-[#10B981] hover:text-white bg-[#064E3B]/40 hover:bg-[#064E3B] border border-[#10B981] transition-colors"
           >
             <ChevronUp className="w-3.5 h-3.5" />
           </button>
@@ -160,7 +160,7 @@ export const VehicleTacticalDrawer: React.FC<VehicleTacticalDrawerProps> = ({
  }
 
  return (
- <div className="relative z-40 w-full md:w-[min(94vw,340px)] shrink-0 max-h-[70vh] overflow-y-auto bg-[#13161c]/95 border border-[#2b3340] backdrop-blur-md clip-tactical-bracket surface-bevel p-4 text-slate-200 pointer-events-auto animate-in slide-in-from-bottom-4">
+ <div className="relative z-40 w-full md:w-[min(94vw,340px)] shrink-0 max-h-[70vh] overflow-y-auto bg-[#07090C]/95 border-2 border-[#1E293B] backdrop-blur-md clip-tactical-bracket surface-bevel p-4 text-slate-200 pointer-events-auto animate-in slide-in-from-bottom-4">
  {/* Header */}
  <div className="flex items-center justify-between border-b border-[#222833] pb-3 mb-3">
  <div className="flex items-center gap-2.5">
@@ -414,7 +414,7 @@ export const VehicleTacticalDrawer: React.FC<VehicleTacticalDrawerProps> = ({
  <div className="py-1 space-y-1.5">
  <span className="text-[11px] italic text-slate-500">No squad currently mounted</span>
  <div className="text-[10px] text-slate-400 border border-dashed border-[#2D3B4E] bg-[#10141C] px-2 py-1.5 leading-relaxed">
- Select a squad (left-click), then <span className="text-[#38bdf8] font-bold">right-click this vehicle</span> to
+ Select a squad (left-click), then <span className="text-[#4BEFA8] font-bold">right-click this vehicle</span> to
  mount it. The squad will path to the vehicle and board on contact.
  </div>
  </div>

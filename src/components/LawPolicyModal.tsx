@@ -95,10 +95,10 @@ export const LawPolicyModal: React.FC<LawPolicyModalProps> = ({
           </div>
 
           {/* One-change-per-day status */}
-          <div className="flex items-center justify-between px-2.5 py-1.5 bg-[#101A2E] border border-[#243349] rounded">
+          <div className="flex items-center justify-between px-2.5 py-1.5 bg-[#0B0F15] border border-[#1E293B] rounded">
             <span className="flex items-center gap-1.5 text-[10px] font-mono text-[#94A3B8]">
-              <Hourglass className="w-3 h-3 text-[#38BDF8]" />
-              Changes per day: <span className="text-[#38BDF8] font-bold">1</span>
+              <Hourglass className="w-3 h-3 text-[#6EE7B7]" />
+              Changes per day: <span className="text-[#4BEFA8] font-bold">1</span>
             </span>
             <span className={`text-[10px] font-mono font-bold ${alreadyChangedToday ? 'text-[#F87171]' : 'text-[#4ADE80]'}`}>
               {alreadyChangedToday ? 'LIMIT REACHED — RETURNS TOMORROW' : 'CHANGE AVAILABLE'}
@@ -148,7 +148,7 @@ export const LawPolicyModal: React.FC<LawPolicyModalProps> = ({
                     <button
                       disabled={!unlock.unlocked || alreadyChangedToday}
                       onClick={() => onEnactLaw(law.id)}
-                      className="self-end mt-0.5 px-3 py-1 bg-[#1E3A8A] hover:bg-[#1D4ED8] disabled:bg-[#1A2230] disabled:text-[#475569] disabled:cursor-not-allowed border border-[#3B82F6]/50 disabled:border-[#243349] rounded text-[9px] font-heading font-bold text-[#BFDBFE] uppercase transition-colors"
+                      className="self-end mt-0.5 px-3 py-1 bg-[#065F46] hover:bg-[#047857] disabled:bg-[#1A2230] disabled:text-[#475569] disabled:cursor-not-allowed border border-[#10B981]/50 disabled:border-[#243349] rounded text-[9px] font-heading font-bold text-[#A7F3D0] uppercase transition-colors"
                     >
                       {!unlock.unlocked ? 'LOCKED' : alreadyChangedToday ? 'TODAY USED' : 'ENACT'}
                     </button>

@@ -311,7 +311,7 @@ export const TacticalActionBar: React.FC<TacticalActionBarProps> = ({
                   scales with the structure's real size (volume × share), so
                   rates below are shown per 1,000 m³ of converted shell. */}
               <div className="flex items-center gap-1.5 px-0.5 pb-0.5 -mt-0.5">
-                <MousePointer2 className="w-3 h-3 text-[#38bdf8] shrink-0" />
+                <MousePointer2 className="w-3 h-3 text-[#10B981] shrink-0" />
                 <span className="text-[9px] font-mono text-[#64748B] uppercase tracking-wider">
                   Press a building & drag to paint the conversion · price scales with size
                 </span>
@@ -615,7 +615,7 @@ export const TacticalActionBar: React.FC<TacticalActionBarProps> = ({
                   </span>
                 </div>
                 <div className="flex items-center gap-2 p-1.5 bg-[#070A0F] border border-[#1E293B] rounded-sm">
-                  <Shield className="w-3.5 h-3.5 text-[#3B82F6] shrink-0" />
+                  <Shield className="w-3.5 h-3.5 text-[#10B981] shrink-0" />
                   <span className="text-[#94A3B8] text-[10px] sm:text-xs">SQUAD MEMBERS</span>
                   <span className="font-bold text-white ml-auto">{citizenStats.squadMembers}</span>
                 </div>

@@ -191,7 +191,7 @@ export const CaravanTradeModal: React.FC<CaravanTradeModalProps> = ({
  >
  <span>Active Convoys</span>
  {activeCaravanList.length > 0 && (
- <span className="px-1.5 py-0.2 bg-[#38bdf8] text-black text-[10px] font-black">
+ <span className="px-1.5 py-0.2 bg-[#10B981] text-black text-[10px] font-black">
  {activeCaravanList.length}
  </span>
  )}
@@ -210,7 +210,7 @@ export const CaravanTradeModal: React.FC<CaravanTradeModalProps> = ({
  <div className="p-4 overflow-y-auto space-y-4 flex-1">
  {Object.keys(settlements).length < 2 ? (
  <div className="bg-[#181c22] border border-[#3b4252] p-6 text-center space-y-3">
- <Compass className="w-10 h-10 text-[#38bdf8] mx-auto animate-spin" />
+ <Compass className="w-10 h-10 text-[#10B981] mx-auto animate-spin" />
  <h3 className="text-white font-bold text-sm uppercase tracking-wider">
  Single Settlement Active
  </h3>
@@ -284,7 +284,7 @@ export const CaravanTradeModal: React.FC<CaravanTradeModalProps> = ({
  <div className="bg-[#13161b] border border-[#242933] p-3 text-xs space-y-2">
  <div className="flex justify-between items-center text-[11px]">
  <span className="text-[#9ca3af]">Geographic Distance:</span>
- <span className="text-[#38bdf8] font-bold">{distanceKm} km</span>
+ <span className="text-[#10B981] font-bold">{distanceKm} km</span>
  </div>
  <div className="flex justify-between items-center text-[11px]">
  <span className="text-[#9ca3af]">Convoy Cruising Speed:</span>
@@ -328,7 +328,7 @@ export const CaravanTradeModal: React.FC<CaravanTradeModalProps> = ({
  {/* Column 2: Vehicle & Escort Squad */}
  <div className="space-y-3">
  <div className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5 pb-1 border-b border-[#252a34]">
- <Shield className="w-3.5 h-3.5 text-[#38bdf8]" />
+ <Shield className="w-3.5 h-3.5 text-[#10B981]" />
  <span>2. Vehicle & Escort Squad</span>
  </div>
 
@@ -347,13 +347,13 @@ export const CaravanTradeModal: React.FC<CaravanTradeModalProps> = ({
  onClick={() => setSelectedVehicleId(v.id)}
  className={`w-full text-left p-2 border text-xs transition-colors ${
  selectedVehicleId === v.id
- ? 'bg-[#1b222c] border-[#38bdf8] text-white'
+ ? 'bg-[#1b222c] border-[#10B981] text-white'
  : 'bg-[#111418] border-[#222731] text-[#9ca3af] hover:text-white'
  }`}
  >
  <div className="flex justify-between items-center font-bold">
  <span>{v.name}</span>
- <span className="text-[10px] text-[#38bdf8]">
+ <span className="text-[10px] text-[#10B981]">
  {v.type === 'armed_truck' ? '🔫 .50 Cal Turret' : v.type === 'cargo_van' ? '📦 High Payload' : '⚡ Swift Cruiser'}
  </span>
  </div>
@@ -535,7 +535,7 @@ export const CaravanTradeModal: React.FC<CaravanTradeModalProps> = ({
  <div>
  <div className="flex items-center gap-2">
  <span className="text-xs font-black text-white">{c.name}</span>
- <span className="px-1.5 py-0.5 bg-[#38bdf8]/20 text-[#38bdf8] border border-[#38bdf8]/40 text-[9px] font-bold uppercase">
+ <span className="px-1.5 py-0.5 bg-[#10B981]/20 text-[#10B981] border border-[#10B981]/40 text-[9px] font-bold uppercase">
  {c.vehicle.type.replace('_', ' ')}
  </span>
  <span className={`px-1.5 py-0.5 text-[9px] font-bold uppercase border ${
@@ -590,7 +590,7 @@ export const CaravanTradeModal: React.FC<CaravanTradeModalProps> = ({
  </span>
  )}
  {c.cargo.ammo.sharedPool > 0 && (
- <span className="px-2 py-0.5 bg-[#181c22] border border-[#2b313d] text-[#38bdf8]">
+ <span className="px-2 py-0.5 bg-[#181c22] border border-[#2b313d] text-[#10B981]">
  🎯 {c.cargo.ammo.sharedPool} Ammo
  </span>
  )}

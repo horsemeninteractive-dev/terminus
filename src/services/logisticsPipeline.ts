@@ -1,7 +1,7 @@
 import { SettlementState } from '../types/settlement';
 import { MapData, Point2D } from '../types/map';
 import { TacticalSquadUnit } from '../types/combat';
-import { findNearestStorageDropoff, unloadSquadAtDropoff, unloadVehicleAtDropoff, isSquadInsideBuilding } from './scavengingService';
+import { findNearestStorageDropoff, unloadSquadAtDropoff, unloadVehicleAtDropoff, isSquadInsideBuilding, isSquadAtBuilding } from './scavengingService';
 import { deliverCarriedFuel } from './vehicleService';
 import type { ToastMessage } from './soundService';
 
@@ -58,9 +58,14 @@ export function runLogisticsStage(state: SettlementState, map: MapData, squads: 
     if (!inventory?.items?.length && !vehicle?.inventory?.length) continue;
     const dropoff = findNearestStorageDropoff(nextState, { x: squad.x, z: squad.z }, map.buildings);
     const building = map.buildings.find((b) => String(b.id) === String(dropoff.buildingId));
+    // "Arrived" means inside the dropoff footprint OR immediately at it (within
+    // the building's own radius plus a few metres). Strictly-inside-only left
+    // squads parked beside large warehouses / the HQ forever when the auto
+    // return or a manual move stopped just short of the centre point.
+    const squadPos = { x: squad.x, z: squad.z };
     const atDropoff = building
-      ? isSquadInsideBuilding({ x: squad.x, z: squad.z }, building)
-      : Math.hypot(squad.x - dropoff.x, squad.z - dropoff.z) <= 4;
+      ? isSquadInsideBuilding(squadPos, building) || isSquadAtBuilding(squadPos, building, 5)
+      : Math.hypot(squad.x - dropoff.x, squad.z - dropoff.z) <= 8;
     if (!atDropoff) continue;
     if (inventory?.items?.length) {
       const result = unloadSquadAtDropoff(nextState, squad.squadId, { x: squad.x, z: squad.z }, dropoff, 10);

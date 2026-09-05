@@ -9,9 +9,6 @@ import {
   EyeOff,
   Filter,
   Check,
-  Search,
-  Home,
-  Trash2,
   Minimize2,
   Apple,
   Cross,
@@ -25,36 +22,14 @@ import {
 import { BuildingPolygon, LanduseArea, Point2D } from '../types/map';
 import { TacticalSquadUnit, ZombieUnit } from '../types/combat';
 import { WorldVehicle } from '../types/vehicle';
-import { AdaptedBuilding } from '../types/settlement';
-import {
-  FUNCTIONAL_BUILDING_DEFINITIONS,
-  getBuildingWorkerSlots,
-} from '../data/functionalBuildings';
 import { soundEngine } from '../services/soundService';
 import { estimateSatelliteVram } from '../services/satelliteService';
 import { PushToTalkButton } from './PushToTalkButton';
 
 export type ScavengeLootFilter = 'all' | 'food' | 'medical' | 'weapons' | 'fuel' | 'materials' | 'assorted';
 
-const RESOURCE_LABELS: Record<string, string> = {
-  grain: 'Grain',
-  fresh_harvest: 'Harvest',
-  raw_meat: 'Meat',
-  mre_rations: 'Rations',
-  canned_goods: 'Canned',
-  fertilizer: 'Fertilizer',
-  wood: 'Wood',
-  metal: 'Metal',
-  bricks: 'Bricks',
-  tools: 'Tools',
-  fuel: 'Fuel',
-  ammo: 'Ammo',
-  beer: 'Beer',
-};
-
 interface TacticalMinimapWidgetProps {
   selectedBuilding: BuildingPolygon | null;
-  adaptedBuildingInfo?: AdaptedBuilding | null;
   buildings: BuildingPolygon[];
   landuse?: LanduseArea[];
   squads: TacticalSquadUnit[];
@@ -93,11 +68,6 @@ interface TacticalMinimapWidgetProps {
   isExpeditionViewActive?: boolean;
   onToggleExpeditionView?: () => void;
 
-  // Quick Action Buttons
-  onScavengeSelected?: (building: BuildingPolygon) => void;
-  onAdaptSelected?: (building: BuildingPolygon) => void;
-  onDemolishSelected?: (building: BuildingPolygon) => void;
-
   // Radio / PTT
   onOpenRadio?: () => void;
   unreadRadioCount?: number;
@@ -108,7 +78,6 @@ interface TacticalMinimapWidgetProps {
 
 export const TacticalMinimapWidget: React.FC<TacticalMinimapWidgetProps> = ({
   selectedBuilding,
-  adaptedBuildingInfo,
   buildings = [],
   landuse = [],
   squads = [],
@@ -140,35 +109,14 @@ export const TacticalMinimapWidget: React.FC<TacticalMinimapWidgetProps> = ({
   onToggleHideUi,
   isExpeditionViewActive = false,
   onToggleExpeditionView,
-  onScavengeSelected,
-  onAdaptSelected,
-  onDemolishSelected,
   onOpenRadio,
   unreadRadioCount = 0,
   hasIncomingRadio = false,
   isInitialPendingRadio = false,
   mapRadius = 4000,
 }) => {
-  // Staffing + production readout for the selected adapted facility: assigned
-  // workers vs size-based slots, and the current daily output rate (scaled by
-  // how fully the building is staffed, so it reflects what production will
-  // actually deliver).
-  const buildingDef = adaptedBuildingInfo
-    ? FUNCTIONAL_BUILDING_DEFINITIONS[adaptedBuildingInfo.typeId]
-    : null;
-  const staffSlots = adaptedBuildingInfo ? getBuildingWorkerSlots(adaptedBuildingInfo) : 0;
-  const staffCount = adaptedBuildingInfo
-    ? Math.min(adaptedBuildingInfo.assignedWorkers ?? 0, staffSlots)
-    : 0;
-  const staffRatio = staffSlots > 0 ? staffCount / staffSlots : 0;
-  const outputLines = (buildingDef?.outputs || []).map((o) => {
-    const rate = o.amountPerDay * staffRatio;
-    const label = RESOURCE_LABELS[o.resource] || o.resource;
-    return `+${rate >= 10 ? rate.toFixed(0) : rate.toFixed(1)} ${label}/day`;
-  });
-
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [isMinimized, setIsMinimized] = useState(false);
+  const [isMinimized, setIsMinimized] = useState(true);
   const [isFilterMenuOpen, setIsFilterMenuOpen] = useState(false);
   const [isLayersMenuOpen, setIsLayersMenuOpen] = useState(false);
 
@@ -443,9 +391,6 @@ export const TacticalMinimapWidget: React.FC<TacticalMinimapWidgetProps> = ({
     }, 450);
   };
 
-  const isHQ = selectedBuilding && hqBuildingId !== null && String(selectedBuilding.id) === String(hqBuildingId);
-  const lat = 52.094;
-
   // Satellite canvas footprint follows the terrain mesh extent (radius * 2.2,
   // min 5000) — same formula GroundRenderer uses for currentTerrainSize.
   const satelliteTerrainMeters = Math.max(5000, Math.round((mapRadius || 4000) * 2.2));
@@ -467,9 +412,11 @@ export const TacticalMinimapWidget: React.FC<TacticalMinimapWidgetProps> = ({
   return (
     <div
       id="tactical-minimap-widget"
-      className="fixed bottom-3 sm:bottom-4 right-3 sm:right-4 z-[44] flex flex-col items-end gap-1.5 select-none pointer-events-auto"
+      className={`fixed bottom-3 sm:bottom-4 right-3 sm:right-4 z-[44] flex items-end gap-1.5 select-none pointer-events-auto ${
+        isMinimized ? 'flex-row' : 'flex-col'
+      }`}
     >
-      {/* ---------------- PUSH TO TALK BUTTON (Directly Above Minimap Panel) ---------------- */}
+      {/* ---------------- PUSH TO TALK (left of the radar pill when minimized) ---------------- */}
       {onOpenRadio && (
         <PushToTalkButton
           unreadCount={unreadRadioCount}
@@ -478,89 +425,6 @@ export const TacticalMinimapWidget: React.FC<TacticalMinimapWidgetProps> = ({
           onClick={onOpenRadio}
           className="shadow-2xl mb-0.5"
         />
-      )}
-
-      {/* ---------------- TOP: BUILDING INFO MINIPANEL (When building is selected) ---------------- */}
-      {selectedBuilding && !isMinimized && (
-        <div className="w-[180px] sm:w-[200px] md:w-[210px] bg-[#07090C]/95 border-2 border-b-0 border-[#1E293B] text-[#E8E8E8] p-2 flex flex-col gap-1 backdrop-blur-md shadow-xl rounded-t">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5 overflow-hidden">
-              <span className="w-2 h-2 bg-[#10B981] animate-pulse shrink-0" />
-              <span className="font-heading font-black text-xs text-white uppercase truncate">
-                {isHQ
-                  ? 'COLONY HQ'
-                  : adaptedBuildingInfo
-                  ? adaptedBuildingInfo.name || 'ADAPTED FACILITY'
-                  : selectedBuilding
-                  ? selectedBuilding.name || 'STRUCTURE'
-                  : 'STRUCTURE'}
-              </span>
-            </div>
-
-            {/* Coordinates Tag */}
-            <div className="font-mono text-[9px] text-[#94A3B8] shrink-0">
-              {Math.abs(lat).toFixed(2)}°{lat >= 0 ? 'N' : 'S'}
-            </div>
-          </div>
-
-          {/* Building Subtitle / Status */}
-          <div className="text-[10px] font-mono text-[#64748B] pt-0.5 border-t border-[#1E293B]">
-            {isHQ ? (
-              <span className="truncate">Operational Central Base</span>
-            ) : adaptedBuildingInfo ? (
-              <div className="flex flex-col gap-0.5">
-                <span className="truncate">
-                  Levels: {adaptedBuildingInfo.levels || 1} • Staff: {staffCount}/{staffSlots}
-                </span>
-                {outputLines.length > 0 ? (
-                  <span className="truncate text-[#4BEFA8]">{outputLines.join(' • ')}</span>
-                ) : buildingDef?.outputs?.length ? (
-                  <span className="truncate text-[#94A3B8]">Unstaffed — no production</span>
-                ) : null}
-              </div>
-            ) : (
-              <span className="truncate">
-                {selectedBuilding.type ? selectedBuilding.type.toUpperCase() : 'Unexplored / Raw Structure'}
-              </span>
-            )}
-          </div>
-
-          {/* Quick Actions Bar if building selected */}
-          <div className="flex items-center gap-1 pt-1 mt-0.5 border-t border-[#1E293B]/60">
-            {onScavengeSelected && !isHQ && (
-              <button
-                id="btn-quick-scavenge-building"
-                onClick={() => onScavengeSelected(selectedBuilding)}
-                title="Move Selected Squad to Scavenge Building"
-                className="flex-1 py-1 px-1 bg-[#0F141D] hover:bg-[#1A2332] border border-[#1E293B] hover:border-[#E8E8E8] text-[9px] font-mono text-[#E8E8E8] flex items-center justify-center gap-1 transition-colors min-h-[32px] touch-manipulation"
-              >
-                <Search className="w-2.5 h-2.5" /> Scavenge
-              </button>
-            )}
-
-            {onAdaptSelected && !isHQ && !adaptedBuildingInfo && (
-              <button
-                id="btn-quick-adapt-building"
-                onClick={() => onAdaptSelected(selectedBuilding)}
-                title="Adapt Building Facility"
-                className="flex-1 py-1 px-1 bg-[#0F141D] hover:bg-[#1A2332] border border-[#1E293B] hover:border-[#10B981] text-[9px] font-mono text-[#10B981] flex items-center justify-center gap-1 transition-colors min-h-[32px] touch-manipulation"
-              >
-                <Home className="w-2.5 h-2.5" /> Adapt
-              </button>
-            )}
-
-            {onDemolishSelected && !isHQ && (
-              <button
-                id="btn-quick-demolish-building"
-                onClick={() => onDemolishSelected(selectedBuilding)}
-                title="Demolish Building for Materials"
-                className="px-2 py-1 bg-[#0F141D] hover:bg-[#1A2332] border border-[#1E293B] hover:border-[#EF4444] text-[9px] font-mono text-[#EF4444] flex items-center justify-center transition-colors min-h-[32px] touch-manipulation"
-              >
-                <Trash2 className="w-2.5 h-2.5" />
-              </button>
-            )}
-          </div>
-        </div>
       )}
 
       {/* ---------------- BOTTOM: RADAR MINIMAP & 4 ICON UTILITY COLUMN ---------------- */}
@@ -933,7 +797,7 @@ export const TacticalMinimapWidget: React.FC<TacticalMinimapWidgetProps> = ({
               title="Expedition View (Toggle 2D Top-Down Strategic Map / 3D Isometric View)"
               className={`w-7 h-7 sm:w-7 sm:h-7 min-w-[28px] min-h-[28px] flex items-center justify-center border transition-all touch-manipulation active:scale-95 ${
                 isExpeditionViewActive
-                  ? 'bg-[#0284C7] border-[#38BDF8] text-white shadow-[0_0_8px_rgba(56,189,248,0.4)]'
+                  ? 'bg-[#064E3B]/80 border-[#10B981] text-white shadow-[0_0_8px_rgba(16,185,129,0.4)]'
                   : 'bg-[#0F141D] hover:bg-[#1A2332] border-[#1E293B] text-[#94A3B8] hover:text-white'
               }`}
             >

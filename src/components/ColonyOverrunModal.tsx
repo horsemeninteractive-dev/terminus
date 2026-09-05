@@ -106,7 +106,7 @@ export const ColonyOverrunModal: React.FC<ColonyOverrunModalProps> = ({
  </div>
  </div>
 
- <div className="bg-[#141b24] border border-[#25384e] p-3 text-[11px] text-[#93c5fd] space-y-1 clip-card-chip">
+ <div className="bg-[#0B0F15] border border-[#1E293B] p-3 text-[11px] text-[#6ee7b7] space-y-1 clip-card-chip">
  <div className="font-bold flex items-center gap-1 text-white">
  <Truck className="w-3.5 h-3.5 text-[#CBD5E1]" />
  <span>COLONY RECOVERY PROTOCOL (§7.5):</span>

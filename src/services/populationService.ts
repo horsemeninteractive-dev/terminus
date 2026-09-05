@@ -15,6 +15,7 @@ import {
   WorkerJobTypeId,
   WorkerPriorityLevel,
   SquadWeaponLoadout,
+  SquadArmorLoadout,
 } from '../types/population';
 import {
   AdaptedBuilding,
@@ -1074,7 +1075,8 @@ export function createSquad(
   squadName: string,
   leaderId: string,
   generalCount = 0,
-  weaponLoadout: SquadWeaponLoadout = 'knife'
+  weaponLoadout: SquadWeaponLoadout = 'knife',
+  armorLoadout: SquadArmorLoadout = 'none'
 ): { success: boolean; newState: SettlementState; error?: string } {
   // Check squad capacity limit
   if (state.squads.length >= state.squadCapacity) {
@@ -1113,8 +1115,9 @@ export function createSquad(
   // per person), so leaderless squads carry exactly their member count.
   const squadPeople = (hasNamedLeader ? 1 : 0) + clampedGeneral;
 
-  // §4.3 Weapon deduction: for any non-knife loadout, pull one weapon per squad
-  // member from the colony armory. Knives are assumed infinite (melee default).
+  // §4.3 Gear deduction: for any non-default loadout, pull one item per squad
+  // member from the colony armory. Knives (weapon) and no-armor are the free
+  // defaults — no deduction for those.
   let updatedArmory = cleanedState.armory || { weapons: [], armor: [] };
   if (weaponLoadout !== 'knife') {
     const available = updatedArmory.weapons.filter((w) => w === weaponLoadout);
@@ -1136,6 +1139,26 @@ export function createSquad(
     });
     updatedArmory = { ...updatedArmory, weapons: remainingWeapons };
   }
+  // Armor deduction mirrors the weapon path; 'none' issues no gear.
+  if (armorLoadout !== 'none') {
+    const available = updatedArmory.armor.filter((a) => a === armorLoadout);
+    if (available.length < squadPeople) {
+      return {
+        success: false,
+        newState: state,
+        error: `Not enough ${armorLoadout.replace('_', ' ')}s in the armory (need ${squadPeople}, have ${available.length}).`,
+      };
+    }
+    let toRemove = squadPeople;
+    const remainingArmor = updatedArmory.armor.filter((a) => {
+      if (a === armorLoadout && toRemove > 0) {
+        toRemove--;
+        return false;
+      }
+      return true;
+    });
+    updatedArmory = { ...updatedArmory, armor: remainingArmor };
+  }
 
   const squadId = `squad_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
   const newSquad: Squad = {
@@ -1144,6 +1167,7 @@ export function createSquad(
     // Empty leaderId = leaderless squad led by a generic field leader.
     leaderId: hasNamedLeader ? leader!.id : '',
     weaponLoadout,
+    armorLoadout,
     generalCount: clampedGeneral,
     status: 'idle',
     inventory: [],

@@ -36,6 +36,10 @@ import {
 } from '../data/functionalBuildings';
 import { RESEARCH_TREE_NODES } from '../data/researchTreeData';
 import { CATEGORY_COLORS } from '../render/BuildingRenderer';
+import {
+  humanLocationLabel,
+  resolveBuildingLocation,
+} from '../services/osmLocationResolver';
 import { calculateBuildingRepairCost } from '../services/combatService';
 import {
   WeaponItemId,
@@ -136,6 +140,8 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  if (!building) return null;
 
  const footprintArea = Math.round(calculatePolygonArea(building.polygon));
+ const resolvedLocation = resolveBuildingLocation(building);
+ const resolvedLabel = humanLocationLabel(resolvedLocation);
  const levels = Math.max(1, building.levels || Math.round(building.height / 3.5));
  const totalFloorArea = footprintArea * levels;
  const volume = footprintArea * building.height;
@@ -161,7 +167,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
 
   if (isMinimized) {
     return (
-      <div className="relative z-40 w-full md:w-[min(94vw,340px)] shrink-0 bg-[#0e1012]/95 border-2 border-[#38bdf8] p-2.5 flex items-center justify-between font-mono text-white shadow-2xl backdrop-blur-md clip-tactical-bracket pointer-events-auto animate-in fade-in duration-150">
+      <div className="relative z-40 w-full md:w-[min(94vw,340px)] shrink-0 bg-[#07090C]/95 border-2 border-[#10B981] p-2.5 flex items-center justify-between font-mono text-white shadow-2xl backdrop-blur-md clip-tactical-bracket pointer-events-auto animate-in fade-in duration-150">
         <div className="flex items-center gap-2 min-w-0">
           <span
             className="w-3 h-3 shrink-0 inline-block"
@@ -171,13 +177,13 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
           />
           <div className="flex flex-col min-w-0">
             <span className="font-heading font-bold text-xs uppercase truncate text-white">
-              {isHQ ? 'COMMAND HQ' : building.name || activeDef?.name || CATEGORY_COLORS[building.type]?.label || 'Structure'}
+              {isHQ ? 'COMMAND HQ' : building.name || activeDef?.name || resolvedLabel || 'Structure'}
             </span>
             <div className="text-[10px] text-[#9ca3af]">
               {adaptedInfo ? (
-                <span className="text-[#38bdf8] uppercase font-bold">{activeDef?.name || 'Adapted Facility'}</span>
+                <span className="text-[#4BEFA8] uppercase font-bold">{activeDef?.name || 'Adapted Facility'}</span>
               ) : (
-                <span>OSM: {building.type} ({footprintArea}m²)</span>
+                <span>OSM: {resolvedLabel} ({footprintArea}m²)</span>
               )}
             </div>
           </div>
@@ -187,7 +193,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
           <button
             onClick={() => setIsMinimized(false)}
             title="Expand Building Panel"
-            className="p-1 text-[#38bdf8] hover:text-white bg-[#0369a1]/40 hover:bg-[#0369a1] border border-[#38bdf8] transition-colors"
+            className="p-1 text-[#10B981] hover:text-white bg-[#064E3B]/40 hover:bg-[#064E3B] border border-[#10B981] transition-colors"
           >
             <ChevronUp className="w-3.5 h-3.5" />
           </button>
@@ -204,7 +210,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
   }
 
   return (
-    <div className="relative z-40 w-full md:w-[min(94vw,340px)] shrink-0 max-h-[50vh] md:max-h-[70vh] overflow-y-auto bg-[#0e1012]/95 border-2 border-[#33373d] clip-sidebar-edge-right surface-bevel backdrop-blur-md flex flex-col font-mono pointer-events-auto text-white shadow-2xl">
+    <div className="relative z-40 w-full md:w-[min(94vw,340px)] shrink-0 max-h-[50vh] md:max-h-[70vh] overflow-y-auto bg-[#07090C]/95 border-2 border-[#1E293B] clip-sidebar-edge-right surface-bevel backdrop-blur-md flex flex-col font-mono pointer-events-auto text-white shadow-2xl">
  {/* Header */}
  <div className="p-3 bg-[#14171c] border-b border-[#292c31] flex items-center justify-between">
  <div className="flex items-center gap-2">
@@ -216,10 +222,10 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  />
  <div>
  <h2 className="font-black text-sm uppercase tracking-wider text-white truncate max-w-[200px]">
- {isHQ ? 'COMMAND HQ' : building.name || CATEGORY_COLORS[building.type]?.label || 'Real Structure'}
+ {isHQ ? 'COMMAND HQ' : building.name || resolvedLabel || 'Real Structure'}
  </h2>
  <div className="text-[10px] text-[#9ca3af]">
- OSM: <span className="text-[#fcd34d] uppercase font-bold">{building.type}</span> (#{building.id})
+ OSM: <span className="text-[#fcd34d] uppercase font-bold">{resolvedLabel}</span> (#{building.id})
  </div>
  </div>
  </div>
@@ -253,7 +259,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  <div className="p-3 bg-[#111317] border-b border-[#24272c] grid grid-cols-4 gap-2 text-center text-[10px]">
  <div className="bg-[#171a20] p-1.5 border border-[#252a33]">
  <div className="text-[8px] text-[#6b7280] uppercase">Footprint</div>
- <div className="font-black text-[#38bdf8] text-xs">{footprintArea} m²</div>
+ <div className="font-black text-[#4BEFA8] text-xs">{footprintArea} m²</div>
  </div>
  <div className="bg-[#171a20] p-1.5 border border-[#252a33]">
  <div className="text-[8px] text-[#6b7280] uppercase">Levels</div>
@@ -362,9 +368,9 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  {/* CASE 2: Building is Already Adapted */}
  {!isHQ && adaptedInfo && activeDef && (
  <div className="space-y-3">
- <div className="bg-[#141820] border-2 border-[#3b82f6] p-3 space-y-2.5">
+ <div className="bg-[#0c2f22] border-2 border-[#14532d] p-3 space-y-2.5">
  <div className="flex items-center justify-between">
- <span className="text-[10px] font-black uppercase text-[#38bdf8] bg-[#1e2838] px-2 py-0.5 border border-[#2b3c54]">
+ <span className="text-[10px] font-black uppercase text-[#4BEFA8] bg-[#1e2838] px-2 py-0.5 border border-[#2b3c54]">
  Active Adapted Facility
  </span>
  <span className="text-[10px] text-[#6b7280]">
@@ -373,7 +379,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  </div>
 
  <div className="flex items-center gap-2 pt-1">
- <div className="p-2 bg-[#1e2533] border border-[#303f54] text-[#38bdf8]">
+ <div className="p-2 bg-[#1e2533] border border-[#303f54] text-[#4BEFA8]">
  <Hammer className="w-5 h-5" />
  </div>
  <div>
@@ -423,7 +429,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  {queueIndex >= 0 && onReorderConstruction && constructionQueue.all.length > 1 ? (
  <div className="flex items-center justify-between gap-2 bg-slate-900/80 border border-slate-800 rounded px-2 py-1.5">
  <div className="flex items-center gap-1.5 text-[10px] min-w-0">
- <ListOrdered className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+ <ListOrdered className="w-3.5 h-3.5 text-[#10B981] shrink-0" />
  <span className="text-slate-300">
  QUEUE {queueIndex + 1} OF {constructionQueue.all.length}
  </span>
@@ -517,7 +523,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
           className={`p-2 border text-left transition-colors ${
            on
             ? 'bg-[#0c2f22] border-[#10b981] text-emerald-200'
-            : 'bg-[#12161d] border-[#28303c] text-slate-500 hover:border-[#38bdf8]'
+            : 'bg-[#12161d] border-[#28303c] text-slate-500 hover:border-[#10B981]'
           }`}
          >
           <div className="flex items-center justify-between gap-1">
@@ -581,7 +587,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
          ? 'bg-[#0c2f22] border-[#10b981] text-emerald-200 cursor-default'
          : locked
          ? 'bg-[#0d0f13] border-[#232830] text-slate-500 cursor-not-allowed opacity-80'
-         : 'bg-[#12161d] border-[#28303c] text-slate-300 hover:border-[#38bdf8] hover:text-white cursor-pointer'
+         : 'bg-[#12161d] border-[#28303c] text-slate-300 hover:border-[#10B981] hover:text-white cursor-pointer'
        }`}
       >
        <div className="flex items-center justify-between">
@@ -752,7 +758,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  <div className="bg-[#0e1117] p-2.5 border border-[#202836] space-y-1.5 text-[11px]">
  <div className="flex justify-between items-center">
  <span className="text-[#9ca3af]">Adaptation Coverage:</span>
- <span className="font-black text-[#38bdf8] text-sm">
+ <span className="font-black text-[#4BEFA8] text-sm">
  {adaptedInfo.adaptationPercentage}%
  </span>
  </div>
@@ -764,7 +770,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  background:
  (adaptedInfo.adaptationPercentage || 0) >= 100
  ? 'linear-gradient(90deg,#059669,#10b981)'
- : 'linear-gradient(90deg,#0ea5e9,#38bdf8)',
+ : 'linear-gradient(90deg,#0f766e,#14b8a6)',
  }}
  />
  </div>
@@ -788,7 +794,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  <button
  onClick={() => onExpandAdaptation(adaptedInfo.buildingId, 100)}
  title={`Convert the remaining ${(100 - (adaptedInfo.adaptationPercentage || 0))}% of this structure — the crew expands the facility to full ${adaptedInfo.fullCapacity ?? adaptedInfo.maxCapacity} ${adaptedInfo.capacityUnit} capacity.`}
- className="w-full mt-1 py-1.5 px-2 bg-[#0ea5e9]/15 hover:bg-[#0ea5e9]/30 border border-[#38bdf8]/50 text-[#38bdf8] text-[11px] font-bold flex items-center justify-center gap-1.5 transition-colors"
+ className="w-full mt-1 py-1.5 px-2 bg-[#059669]/15 hover:bg-[#059669]/30 border border-[#10B981]/50 text-[#10B981] text-[11px] font-bold flex items-center justify-center gap-1.5 transition-colors"
  >
  <Maximize2 className="w-3.5 h-3.5" />
  EXPAND ADAPTATION TO 100%
@@ -802,7 +808,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  <div className="bg-[#0e1117] p-2.5 border border-[#202836] space-y-1.5 text-[11px]">
   <div className="flex justify-between items-center">
    <span className="text-[#9ca3af] font-semibold flex items-center gap-1.5">
-    <Scissors className="w-3.5 h-3.5 text-[#38bdf8]" /> Sections (§7.1)
+    <Scissors className="w-3.5 h-3.5 text-[#10B981]" /> Sections (§7.1)
    </span>
    <span className="text-[10px] font-mono text-[#6b7280]">
     {buildingSections.length > 0 ? `${buildingSections.length} sections` : 'unsplit'}
@@ -819,7 +825,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
         <div className="text-[10px] font-bold text-[#e2e8f0]">
          Section {i + 1}
          {adapted && (
-          <span className="ml-1.5 font-mono text-[9px] text-[#38bdf8]">
+          <span className="ml-1.5 font-mono text-[9px] text-[#10B981]">
            {FUNCTIONAL_BUILDING_DEFINITIONS[adapted.typeId]?.name || adapted.typeId}
           </span>
          )}
@@ -838,7 +844,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
          <button
           onClick={() => onAdaptSection(building, sec.id, defaultSectionType)}
           title="Convert this section into a facility (defaults to a Shelter; convert from the Build menu to choose another type)"
-          className="px-1.5 py-0.5 text-[9px] font-bold bg-[#0ea5e9]/15 hover:bg-[#0ea5e9]/30 border border-[#38bdf8]/50 text-[#38bdf8] transition-colors"
+          className="px-1.5 py-0.5 text-[9px] font-bold bg-[#059669]/15 hover:bg-[#059669]/30 border border-[#10B981]/50 text-[#10B981] transition-colors"
          >
           CONVERT
          </button>
@@ -874,7 +880,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
         key={parts}
         onClick={() => onSplitBuilding(building, parts)}
         title={`Split into ${parts} sections (brick cost for partition walls)`}
-        className="flex-1 py-1 text-[10px] font-bold bg-[#12161d] hover:bg-[#1a2332] border border-[#28303c] hover:border-[#38bdf8] text-[#e2e8f0] transition-colors"
+        className="flex-1 py-1 text-[10px] font-bold bg-[#12161d] hover:bg-[#1a2332] border border-[#28303c] hover:border-[#10B981] text-[#e2e8f0] transition-colors"
        >
         SPLIT ×{parts}
        </button>
@@ -1040,7 +1046,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  </div>
  <div>
  <span className="text-[#6b7280]">Defense Score:</span>{' '}
- <span className="font-bold text-[#38bdf8]">+{adaptedInfo.defenseRating}</span>
+ <span className="font-bold text-[#4BEFA8]">+{adaptedInfo.defenseRating}</span>
  </div>
  </div>
 

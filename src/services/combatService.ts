@@ -2503,12 +2503,18 @@ export function syncTacticalSquadUnits(
       sq.trainingTier ?? 0
     );
 
-    // §4.3 Apply weapon loadout chosen at muster time. The armory deduction
-    // already happened in createSquad — here we just stamp the weaponId on
-    // every member so the tactical unit reflects the correct gear.
+    // §4.3 Apply weapon & armor loadouts chosen at muster time. The armory
+    // deduction already happened in createSquad — here we just stamp the
+    // gear on every member so the tactical unit reflects the correct loadout.
     const loadout = sq.weaponLoadout ?? 'knife';
-    if (loadout !== 'knife') {
-      newUnit.members = newUnit.members.map((m) => ({ ...m, weaponId: loadout as WeaponItemId }));
+    const armorLoadout = (sq as { armorLoadout?: string }).armorLoadout ?? 'none';
+    if (loadout !== 'knife' || armorLoadout !== 'none') {
+      newUnit.members = newUnit.members.map((m) => ({
+        ...m,
+        weaponId: loadout !== 'knife' ? (loadout as WeaponItemId) : m.weaponId,
+        armorId:
+          armorLoadout !== 'none' ? (armorLoadout as ArmorItemId) : m.armorId,
+      }));
       return recomputeSquadStats(newUnit);
     }
     return newUnit;

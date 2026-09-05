@@ -19,7 +19,7 @@ import { updateRadioDirectiveSystem } from '../services/radioDirectiveService';
 import { isSquadInsideBuilding } from '../services/scavengingService';
 import { soundService, ToastMessage } from '../services/soundService';
 import type { BuildingPolygon, MapData, Point2D } from '../types/map';
-import type { JobSector, HiddenSurvivorGroup, SquadWeaponLoadout } from '../types/population';
+import type { JobSector, HiddenSurvivorGroup, SquadWeaponLoadout, SquadArmorLoadout } from '../types/population';
 import type { AdaptedBuilding } from '../types/settlement';
 import type { GameClockState, TacticalSquadUnit, ZombieUnit } from '../types/combat';
 import type { SettlementState } from '../types/settlement';
@@ -132,9 +132,9 @@ export function useSquadActions(runtime: SquadActionsRuntime) {
     });
   };
 
-  const handleCreateSquad = (squadName: string, leaderId: string, generalCount: number, weaponLoadout: SquadWeaponLoadout = 'knife') => {
+  const handleCreateSquad = (squadName: string, leaderId: string, generalCount: number, weaponLoadout: SquadWeaponLoadout = 'knife', armorLoadout: SquadArmorLoadout = 'none') => {
     const currentSettlement = settlementRef.current || settlement;
-    const res = createSquad(currentSettlement, squadName, leaderId, generalCount, weaponLoadout);
+    const res = createSquad(currentSettlement, squadName, leaderId, generalCount, weaponLoadout, armorLoadout);
 
     if (!res.success) {
       setToastMessage({

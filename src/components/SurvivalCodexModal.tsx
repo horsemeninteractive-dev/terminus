@@ -346,12 +346,12 @@ export const SurvivalCodexModal: React.FC<SurvivalCodexModalProps> = ({
  </div>
 
  {/* Pro Tips */}
- <div className="mt-4 p-3.5 bg-gradient-to-r from-[#172554]/40 to-[#0F172A]/40 border border-[#64748B]/50">
+ <div className="mt-4 p-3.5 bg-gradient-to-r from-[#0E2A1F]/60 to-[#0B1710]/50 border border-[#065F46]/60">
  <div className="flex items-center gap-2 text-xs font-heading font-bold text-[#CBD5E1] uppercase tracking-wide mb-1.5">
  <Sparkles className="w-4 h-4 text-[#CBD5E1]" />
  <span>VETERAN SURVIVOR FIELD TIPS</span>
  </div>
- <ul className="space-y-1.5 text-xs font-mono text-[#93C5FD]">
+ <ul className="space-y-1.5 text-xs font-mono text-[#A7F3D0]/90">
  {selectedTopic.content.proTips.map((tip, idx) => (
  <li key={idx} className="flex items-start gap-2">
  <span className="text-[#CBD5E1]">•</span>

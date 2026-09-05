@@ -5,20 +5,22 @@ import {
  Minus,
  Plus,
  Shield,
+ ShieldCheck,
  Trash2,
  Truck,
  UserCheck,
  Users,
  X,
 } from 'lucide-react';
-import { NamedSurvivor, Squad, StatTier, SquadWeaponLoadout } from '../types/population';
+import { NamedSurvivor, Squad, StatTier, SquadWeaponLoadout, SquadArmorLoadout } from '../types/population';
 import { SettlementState } from '../types/settlement';
+import { ARMOR_CATALOG, ArmorItemId, WEAPON_CATALOG, WeaponItemId, getArmorDefinition, getWeaponDefinition } from '../types/combat';
 
 interface SquadManagementModalProps {
  isOpen: boolean;
  onClose: () => void;
  settlement: SettlementState;
- onCreateSquad: (name: string, leaderId: string, generalCount: number, weaponLoadout?: SquadWeaponLoadout) => void;
+ onCreateSquad: (name: string, leaderId: string, generalCount: number, weaponLoadout?: SquadWeaponLoadout, armorLoadout?: SquadArmorLoadout) => void;
  onModifyGeneralMembers?: (squadId: string, newCount: number) => void;
  onModifyGeneralCount?: (squadId: string, newCount: number) => void;
  onDisbandSquad: (squadId: string) => void;
@@ -49,9 +51,9 @@ export const SquadManagementModal: React.FC<SquadManagementModalProps> = ({
  const [isFormingNew, setIsFormingNew] = useState(false);
  const [newSquadName, setNewSquadName] = useState('');
  const [selectedLeaderId, setSelectedLeaderId] = useState('');
- const [newGeneralCount, setNewGeneralCount] = useState(1);
- const [weaponLoadout, setWeaponLoadout] = useState<'knife' | 'pistol' | 'shotgun' | 'assault_rifle'>('knife');
- const [errorMessage, setErrorMessage] = useState<string | null>(null);
+ const [newGeneralCount, setNewGeneralCount] = useState(1);  const [weaponLoadout, setWeaponLoadout] = useState<'knife' | 'pistol' | 'shotgun' | 'assault_rifle'>('knife');
+  const [armorLoadout, setArmorLoadout] = useState<SquadArmorLoadout>('none');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
  if (!isOpen) return null;
 
@@ -91,21 +93,38 @@ export const SquadManagementModal: React.FC<SquadManagementModalProps> = ({
  return;
  }
 
- const validGeneralCount = Math.min(Math.max(0, newGeneralCount), freeGeneralWorkers);
+ const validGeneralCount = Math.min(Math.max(0, newGeneralCount), freeGeneralWorkers);  onCreateSquad(
+   newSquadName.trim() || `Tactical Squad ${squads.length + 1}`,
+   leaderIdToUse,
+   validGeneralCount,
+   weaponLoadout,
+   armorLoadout
+  );
 
- onCreateSquad(
- newSquadName.trim() || `Tactical Squad ${squads.length + 1}`,
- leaderIdToUse,
- validGeneralCount,
- weaponLoadout
- );
+  setIsFormingNew(false);
+  setNewSquadName('');
+  setSelectedLeaderId('');
+  setNewGeneralCount(1);
+  setWeaponLoadout('knife');
+  setArmorLoadout('none');
+  };
 
- setIsFormingNew(false);
- setNewSquadName('');
- setSelectedLeaderId('');
- setNewGeneralCount(1);
- setWeaponLoadout('knife');
- };
+  // Colony armory stock — shows the player what gear is on hand to assign while
+  // the modal covers the header strip (§4.3). Weapons & armor pieces are real
+  // individual items; knives are the free melee default and never tracked.
+  const armoryWeapons: Partial<Record<WeaponItemId, number>> = {};
+  for (const w of settlement.armory?.weapons || []) {
+    armoryWeapons[w] = (armoryWeapons[w] || 0) + 1;
+  }
+  const armoryArmor: Partial<Record<ArmorItemId, number>> = {};
+  for (const a of settlement.armory?.armor || []) {
+    armoryArmor[a] = (armoryArmor[a] || 0) + 1;
+  }
+  const loadoutWeaponIds: WeaponItemId[] = ['knife', 'pistol', 'shotgun', 'assault_rifle'];
+  const loadoutArmorIds: ArmorItemId[] = ['padded_jacket', 'riot_vest', 'tactical_gear'];
+  const squadPeople = (selectedLeaderId ? 1 : 0) + newGeneralCount;
+  const weaponShort = weaponLoadout === 'knife' ? 0 : (armoryWeapons[weaponLoadout] || 0) < squadPeople;
+  const armorShort = armorLoadout !== 'none' ? (armoryArmor[armorLoadout] || 0) < squadPeople : false;
 
  return (
  <div
@@ -245,11 +264,73 @@ export const SquadManagementModal: React.FC<SquadManagementModalProps> = ({
  </div>
  </div>
 
- <div className="p-3 bg-slate-900/60 border border-slate-800 flex items-center justify-between">
- <label className="text-xs font-semibold text-slate-200">Starting Weapon Loadout</label>
- <select value={weaponLoadout} onChange={(e) => setWeaponLoadout(e.target.value as typeof weaponLoadout)} className="px-2 py-1 text-xs bg-slate-900 border border-slate-700 text-slate-100">
- <option value="knife">Combat Knives</option><option value="pistol">Pistols</option><option value="shotgun">Shotguns</option><option value="assault_rifle">Assault Rifles</option>
+ <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+ <div className="p-3 bg-slate-900/60 border border-slate-800">
+ <label className="block text-xs font-semibold text-slate-200 mb-1">Starting Weapon Loadout</label>
+ <div className="flex items-center justify-between gap-2">
+ <select value={weaponLoadout} onChange={(e) => setWeaponLoadout(e.target.value as typeof weaponLoadout)} className={`px-2 py-1 text-xs bg-slate-900 border text-slate-100 ${weaponShort ? 'border-amber-500 text-amber-300' : 'border-slate-700'}`}>
+ <option value="knife">Combat Knives (free)</option><option value="pistol">Pistols</option><option value="shotgun">Shotguns</option><option value="assault_rifle">Assault Rifles</option>
  </select>
+ <span className="text-[10px] text-slate-400 whitespace-nowrap">
+ {weaponLoadout === 'knife' ? '∞ in stock' : `Armory: ${armoryWeapons[weaponLoadout] || 0}`}
+ </span>
+ </div>
+ {weaponShort && (
+ <div className="text-[11px] text-amber-300 mt-1">Not enough in armory for {squadPeople} members.</div>
+ )}
+ </div>
+ <div className="p-3 bg-slate-900/60 border border-slate-800">
+ <label className="block text-xs font-semibold text-slate-200 mb-1">Starting Armor Loadout</label>
+ <div className="flex items-center justify-between gap-2">
+ <select value={armorLoadout} onChange={(e) => setArmorLoadout(e.target.value as SquadArmorLoadout)} className={`px-2 py-1 text-xs bg-slate-900 border text-slate-100 ${armorShort ? 'border-amber-500 text-amber-300' : 'border-slate-700'}`}>
+ <option value="none">No Armor</option>
+ <option value="padded_jacket">Padded Jackets</option>
+ <option value="riot_vest">Riot Vests</option>
+ <option value="tactical_gear">Tactical Gear</option>
+ </select>
+ <span className="text-[10px] text-slate-400 whitespace-nowrap">
+ {armorLoadout === 'none' ? 'No gear issued' : `Armory: ${armoryArmor[armorLoadout] || 0}`}
+ </span>
+ </div>
+ {armorShort && (
+ <div className="text-[11px] text-amber-300 mt-1">Not enough in armory for {squadPeople} members.</div>
+ )}
+ </div>
+ </div>
+
+ {/* Available Armory — shows what weapons/armor the colony has to hand while the
+     modal hides the header strip (§4.3). */}
+ <div className="p-3 bg-[#10131a] border border-slate-800">
+ <div className="text-xs font-semibold text-slate-200 flex items-center gap-2 mb-2">
+ <ShieldCheck className="w-4 h-4 text-[#34d399]" />
+ Colony Armory — Weapons &amp; Armor on Hand
+ </div>
+ <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-[11px]">
+ {loadoutWeaponIds.map((id) => {
+  const name = getWeaponDefinition(id).name;
+  const count = id === 'knife' ? '∞' : (armoryWeapons[id] || 0);
+  const active = weaponLoadout === id;
+  return (
+   <div key={id} className={`flex items-center justify-between px-2 py-1 border ${active ? 'border-[#34d399] bg-emerald-950/30 text-emerald-200' : 'border-slate-700/70 bg-slate-900/40 text-slate-300'}`}>
+    <span className="truncate mr-2">{name}</span>
+    <span className="font-bold whitespace-nowrap">{count}</span>
+   </div>
+  );
+ })}
+ </div>
+ <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-[11px] mt-1.5">
+ {loadoutArmorIds.map((id) => {
+  const name = getArmorDefinition(id).name;
+  const count = armoryArmor[id] || 0;
+  const active = armorLoadout === id;
+  return (
+   <div key={id} className={`flex items-center justify-between px-2 py-1 border ${active ? 'border-[#34d399] bg-emerald-950/30 text-emerald-200' : 'border-slate-700/70 bg-slate-900/40 text-slate-300'}`}>
+    <span className="truncate mr-2">{name}</span>
+    <span className="font-bold whitespace-nowrap">{count}</span>
+   </div>
+  );
+ })}
+ </div>
  </div>
 
  {/* General Members Selector */}

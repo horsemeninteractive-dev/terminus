@@ -148,7 +148,7 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  {Object.keys(settlements).length > 1 && (
  <button
  onClick={() => setColonyDropdownOpen(!colonyDropdownOpen)}
- className="text-[9px] text-[#38bdf8] hover:text-white bg-[#151c24] px-1 py-0.2 border border-[#23354a] flex items-center gap-0.5"
+ className="text-[9px] text-[#10B981] hover:text-white bg-[#151D28] px-1 py-0.2 border border-[#1E293B] flex items-center gap-0.5"
  >
  <span>{Object.keys(settlements).length} Colonies</span>
  <ChevronDown className="w-2.5 h-2.5" />
@@ -171,7 +171,7 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  setColonyDropdownOpen(false);
  onOpenGlobe();
  }}
- className="text-[#38bdf8] hover:underline flex items-center gap-1"
+ className="text-[#10B981] hover:underline flex items-center gap-1"
  >
  <Globe className="w-3 h-3" />
  <span>Globe Map</span>
@@ -190,7 +190,7 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  }}
  className={`w-full text-left p-1.5 text-[11px] border transition-colors ${
  s.id === activeSettlementId
- ? 'bg-[#1b222c] border-[#38bdf8] text-white font-bold'
+ ? 'bg-[#064E3B]/40 border-[#10B981] text-white font-bold'
  : s.status === 'destroyed'
  ? 'bg-[#210f11] border-[#591c20] text-[#fca5a5] cursor-not-allowed'
  : 'bg-[#121519] border-[#222730] text-[#9ca3af] hover:text-white'
@@ -309,7 +309,7 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  <button
  id="open-population-btn"
  onClick={onOpenPopulation}
- className="px-2.5 py-1 bg-[#1a1e28] hover:bg-[#252c3d] border border-[#3b5278] hover:border-[#cbd5e1] text-[#93c5fd] hover:text-white text-[10px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+ className="px-2.5 py-1 bg-[#151D28] hover:bg-[#243129] border border-[#1E293B] hover:border-[#10B981] text-[#CBD5E1] hover:text-white text-[10px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
  title="Open Population & Labor Command (§4.1 - §4.6)"
  >
  <Users className="w-3.5 h-3.5 text-indigo-400" />
@@ -322,7 +322,7 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  <button
  id="open-vehicles-btn"
  onClick={onOpenVehicles}
- className="px-2.5 py-1 bg-[#1a212b] hover:bg-[#253040] border border-[#2e4769] hover:border-[#cbd5e1] text-[#93c5fd] hover:text-white text-[10px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+ className="px-2.5 py-1 bg-[#151D28] hover:bg-[#243129] border border-[#1E293B] hover:border-[#10B981] text-[#CBD5E1] hover:text-white text-[10px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
  title="Open Motor Pool & Vehicle Fleet Management (§8)"
  >
  <Truck className="w-3.5 h-3.5 text-[#CBD5E1]" />
@@ -438,14 +438,12 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  <button
  id="open-research-btn"
  onClick={onOpenResearch}
- className="px-2.5 py-1 bg-[#161c28] hover:bg-[#202a3d] border border-[#2b4168] hover:border-[#38bdf8] text-[#7dd3fc] hover:text-white text-[10px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"   title="Open Colony Technology & Research Tree (§10) — Scientific Materials fund research"
- >
- <BookOpen className="w-3.5 h-3.5 text-cyan-400" />
- <span>
- TECH:{' '}
- <strong className="text-cyan-300 font-mono">
- {Math.floor(settlement.stockpile.materials.scientific_materials || 0)} SM
- </strong>{' '}
+ className="px-2.5 py-1 bg-[#151D28] hover:bg-[#243129] border border-[#1E293B] hover:border-[#10B981] text-[#CBD5E1] hover:text-white text-[10px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"   title="Open Colony Technology & Research Tree (§10) — Scientific Materials fund research"
+ ><BookOpen className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>
+                    TECH:{' '}<strong className="text-white font-mono">
+                  {Math.floor(settlement.stockpile.materials.scientific_materials || 0)} SM
+                </strong>{' '}
  <span className="text-[9px] text-slate-400">
  ({settlement.research?.unlockedNodes?.length || 0}/24)
  </span>
@@ -477,11 +475,10 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  <button
  id="open-globe-map-btn"
  onClick={onOpenGlobe}
- className="px-2.5 py-1 bg-[#101e28] hover:bg-[#182d3d] border border-[#1e445f] hover:border-[#38bdf8] text-[#7dd3fc] hover:text-white text-[10px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+ className="px-2.5 py-1 bg-[#151D28] hover:bg-[#243129] border border-[#1E293B] hover:border-[#10B981] text-[#CBD5E1] hover:text-white text-[10px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
  title="Open Global Satellite Map to found colonies and view network"
- >
- <Globe className="w-3.5 h-3.5 text-[#38bdf8]" />
- <span>GLOBE</span>
+ ><Globe className="w-3.5 h-3.5 text-[#10B981]" />
+                  <span>GLOBE</span>
  </button>
  )}
  <div className="hidden lg:flex items-center gap-2 text-[10px] bg-[#141619] px-2 py-1 border border-[#24272c]">
@@ -501,7 +498,7 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  onClick={() => setDetailsOpen(!detailsOpen)}
  className={`p-1.5 border transition-colors ${
  detailsOpen
- ? 'bg-[#1e232b] border-[#38bdf8] text-[#38bdf8]'
+ ? 'bg-[#064E3B]/40 border-[#10B981] text-[#10B981]'
  : 'bg-[#141619] border-[#292c31] text-[#9ca3af] hover:text-white'
  }`}
  title="Expand Itemized Resource Stockpile Breakdown"
@@ -620,10 +617,9 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  </div>
 
  {/* Settlement Infrastructure Overview */}
- <div className="bg-[#121417] p-2 border border-[#22262c] space-y-1">
- <div className="text-[#38bdf8] font-bold uppercase text-[9px] flex items-center gap-1 pb-1 border-b border-[#24272c]">
- <Shield className="w-3 h-3" />
- <span>Outpost Assets</span>
+ <div className="bg-[#121417] p-2 border border-[#22262c] space-y-1">    <div className="text-[#10B981] font-bold uppercase text-[9px] flex items-center gap-1 pb-1 border-b border-[#24272c]">
+      <Shield className="w-3 h-3" />
+      <span>Outpost Assets</span>
  </div>
  <div className="flex justify-between">
  <span className="text-[#6b7280]">Adapted Buildings:</span>
@@ -638,8 +634,7 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  <span className="text-white font-bold">{settlement.freestandingBuildings?.length || 0}</span>
  </div>
  <div className="flex justify-between">
- <span className="text-[#6b7280]">Living Capacity:</span>
- <span className="text-[#38bdf8] font-bold">{totalLivingCapacity} Beds</span>
+ <span className="text-[#6b7280]">Living Capacity:</span>    <span className="text-[#4BEFA8] font-bold">{totalLivingCapacity} Beds</span>
  </div>
  </div>
  </div>

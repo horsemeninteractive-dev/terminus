@@ -16,11 +16,12 @@ import {
   Play,
   Radio,
   Scale,
+  Shield,
   Sun,
   TriangleAlert,
   Wheat,
 } from 'lucide-react';
-import { GameClockState, NoiseEvent, WEAPON_IDS, WeaponItemId, getWeaponDefinition } from '../types/combat';
+import { GameClockState, NoiseEvent, WEAPON_IDS, WeaponItemId, ARMOR_IDS, ArmorItemId, getWeaponDefinition, getArmorDefinition } from '../types/combat';
 import { SettlementState } from '../types/settlement';
 import { WEATHER_CONDITIONS } from '../services/weatherService';
 import { WeatherType } from '../types/weather';
@@ -201,6 +202,22 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
     value: weaponCounts[id] || 0,
   }));
   const totalWeapons = weaponItems.reduce((acc, it) => acc + it.value, 0);
+
+  // Armor: armory stock + armor equipped by squad members, per armor type.
+  const armorCounts: Partial<Record<ArmorItemId, number>> = {};
+  for (const a of settlement.armory?.armor || []) {
+    armorCounts[a] = (armorCounts[a] || 0) + 1;
+  }
+  for (const sq of (squads as any[])) {
+    for (const m of (sq.members || [])) {
+      if (m.armorId) armorCounts[m.armorId as ArmorItemId] = (armorCounts[m.armorId as ArmorItemId] || 0) + 1;
+    }
+  }
+  const armorItems = ARMOR_IDS.map((id) => ({
+    label: getArmorDefinition(id).name,
+    value: armorCounts[id] || 0,
+  }));
+  const totalArmor = armorItems.reduce((acc, it) => acc + it.value, 0);
 
   const medItems = [
     { label: 'First Aid Kits', value: Math.floor(stockpile.medical?.first_aid_kits || 0) },
@@ -516,7 +533,7 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
             <Archive className="w-3.5 h-3.5 text-slate-300" />
           )}
         </div>
-        <div className="hidden group-hover:block absolute top-full right-0 mt-1.5 z-50 w-64 bg-[#0B0F17]/98 border border-[#23354A] shadow-[0_12px_32px_rgba(0,0,0,0.95)] backdrop-blur-md clip-tactical-bracket p-2.5">
+        <div className="hidden group-hover:block absolute top-full right-0 mt-1.5 z-50 w-64 bg-[#0B0F17]/98 border border-[#1E293B] shadow-[0_12px_32px_rgba(0,0,0,0.95)] backdrop-blur-md clip-tactical-bracket p-2.5">
           <div className="text-[10px] font-bold uppercase text-slate-300">Storage Capacity</div>
           <div className="mt-1 text-[10px] font-mono text-slate-200">
             {Math.floor(stockpileUnits)} / {totalStorageCapacity} units stored
@@ -525,12 +542,12 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
             {((totalStorageCapacity > 0 ? stockpileUnits / totalStorageCapacity : 0) * 100).toFixed(0)}%
           </div>
           {storageFull && (
-            <div className="mt-1.5 pt-1.5 border-t border-[#23354A] text-[10px] font-mono text-red-400">
+            <div className="mt-1.5 pt-1.5 border-t border-[#1E293B] text-[10px] font-mono text-red-400">
               STORAGE FULL — loot that cannot be stored stays with the carrying squad, vehicle or crew, and is auto-deposited once space frees.
             </div>
           )}
           {overflowLootUnits > 0 && (
-            <div className="mt-1.5 pt-1.5 border-t border-[#23354A] text-[10px] font-mono text-amber-300">
+            <div className="mt-1.5 pt-1.5 border-t border-[#1E293B] text-[10px] font-mono text-amber-300">
               OVERFLOW +{overflowLootUnits} units — couldn't fit in storage; held by squads / vehicles / crews (deposits once space frees) or stranded by a full caravan arrival.
             </div>
           )}
@@ -570,14 +587,16 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
         </div>
       </div>
 
-      {/* Firearms */}
+      {/* Firearms & Armor (count = total weapons + total armor pieces) */}
       <div className="relative group">
-        <div className="flex items-center gap-1 text-slate-200 cursor-default" title={`Equipped & Armory Firearms: ${totalWeapons}`}>
+        <div className="flex items-center gap-1 text-slate-200 cursor-default" title={`Equipped & Armory Firearms + Armor: ${totalWeapons} weapons / ${totalArmor} armor`}>
           <Crosshair className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-[#CBD5E1]" />
           <span className="font-bold">{totalWeapons}</span>
+          <Shield className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-[#34d399]" />
+          <span className="font-bold text-[#34d399]">{totalArmor}</span>
         </div>
         <div className="hidden group-hover:block">
-          <ResourceDropdown title="Firearms by Type" icon={<Crosshair className="w-3 h-3 text-[#CBD5E1]" />} items={weaponItems} align="right" />
+          <ResourceDropdown title="Weapons & Armor" icon={<Crosshair className="w-3 h-3 text-[#CBD5E1]" />} items={[...weaponItems, { label: '— Armor —', value: 0 }, ...armorItems]} align="right" />
         </div>
       </div>
 
@@ -673,17 +692,17 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
                 : `Research Tree — ${sciMat} Scientific Material${sciMat !== 1 ? 's' : ''} available`}
               className="relative w-8 sm:w-9 h-full flex flex-col items-center justify-center border-r border-[#1E293B] hover:bg-[#151D28] text-slate-300 hover:text-white transition-colors overflow-hidden"
             >
-              {/* Blue bottom-to-top fill revealing research progress */}
+              {/* Emerald bottom-to-top fill revealing research progress */}
               {activeResearchNode && (
                 <span
-                  className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-[#0369a1] to-[#38bdf8]/70"
+                  className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-[#047857] to-[#10B981]/70"
                   style={{ height: `${researchProgressPct}%` }}
                 />
               )}
-              <span className={`relative z-10 text-[9px] sm:text-[10px] font-mono font-bold leading-none ${activeResearchNode ? 'text-[#7dd3fc]' : sciMat > 0 ? 'text-[#a78bfa]' : 'text-[#64748B]'}`}>
+              <span className={`relative z-10 text-[9px] sm:text-[10px] font-mono font-bold leading-none ${activeResearchNode ? 'text-[#4BEFA8]' : sciMat > 0 ? 'text-[#a78bfa]' : 'text-[#64748B]'}`}>
                 {activeResearchNode ? `${Math.round(researchProgressPct)}%` : sciMat}
               </span>
-              <FlaskConical className={`relative z-10 w-3.5 h-3.5 mt-0.5 ${activeResearchNode ? 'text-[#38bdf8]' : sciMat > 0 ? 'text-[#a78bfa]' : 'text-[#CBD5E1]'}`} />
+              <FlaskConical className={`relative z-10 w-3.5 h-3.5 mt-0.5 ${activeResearchNode ? 'text-[#4BEFA8]' : sciMat > 0 ? 'text-[#a78bfa]' : 'text-[#CBD5E1]'}`} />
             </button>
 
             {/* 3. Laws & Policy (§IFZ Major Update #5) — Gathering Place forum */}

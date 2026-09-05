@@ -1,5 +1,5 @@
 import { BuildingCategory, BuildingPolygon, Point2D, WorldAreaBounds } from '../types/map';
-import { SettlementState, SettlementStockpile } from '../types/settlement';
+import { AdaptedBuilding, SettlementState, SettlementStockpile } from '../types/settlement';
 import { getStockpileUnits } from './settlementService';
 import { SquadInventory, SquadLootItem } from '../types/population';
 import { BuildingSearchState } from '../types/scavenging';
@@ -7,6 +7,9 @@ import { ArmorItemId, TacticalSquadUnit, WeaponItemId } from '../types/combat';
 import { WorldVehicle } from '../types/vehicle';
 import { depositItemsIntoVehicle, getVehicleInventoryCapacity } from './vehicleService';
 import { getPrimaryHQ, isBuildingOperational, isBuildingFullyLooted, isHQBuilding } from './buildingOperational';
+import { rollLootForBuilding } from './lootRollService';
+import { resolveBuildingLocation } from './osmLocationResolver';
+import { getLootProfileForLocation } from '../data/lootProfiles';
 
 const DEFAULT_CAPACITY = 4;
 
@@ -88,80 +91,11 @@ export function generateLootForBuilding(
   b: BuildingPolygon,
   resourceMultiplier = 1
 ): SquadLootItem[] {
-  const r = (min: number, max: number) => Math.max(1, Math.round((min + Math.floor(Math.random() * (max - min + 1))) * resourceMultiplier));
-  const items: SquadLootItem[] = [];
-
-  switch (b.type) {
-    case 'supermarket':
-      items.push(q('canned_goods', r(4, 9), 1.2), q('bottled_water', r(3, 8), 1.0));
-      if (Math.random() < 0.6) items.push(q('first_aid_kits', r(1, 2), 1.5));
-      if (Math.random() < 0.4) items.push(q('dried_rations', r(3, 6), 0.8));
-      break;
-    case 'restaurant':
-      items.push(q('dried_rations', r(3, 6), 0.8), q('bottled_water', r(2, 5), 1.0));
-      if (Math.random() < 0.3) items.push(q('canned_goods', r(2, 4), 1.2));
-      break;
-    case 'pharmacy':
-      items.push(q('sterile_bandages', r(3, 7), 0.4), q('first_aid_kits', r(1, 4), 1.5));
-      if (Math.random() < 0.7) items.push(q('antibiotics', r(1, 3), 0.4));
-      if (Math.random() < 0.6) items.push(q('painkillers', r(2, 4), 0.4));
-      break;
-    case 'hospital':
-      items.push(
-        q('first_aid_kits', r(2, 5), 1.5),
-        q('sterile_bandages', r(4, 10), 0.4),
-        q('antibiotics', r(2, 5), 0.4),
-        q('painkillers', r(2, 5), 0.4)
-      );
-      break;
-    case 'police':
-      items.push(q('ammunition', r(14, 32), 0.15));
-      if (Math.random() < 0.8) {
-        const isShotgun = Math.random() < 0.55;
-        items.push(i('weapon', isShotgun ? 'Shotgun' : 'Pistol', isShotgun ? 'shotgun' : 'pistol', 3.2));
-      }
-      if (Math.random() < 0.5) {
-        items.push(i('armor', 'Riot Vest', 'riot_vest', 4.0));
-      }
-      break;
-    case 'gas_station':
-      items.push(q('gasoline', r(12, 32), 0.5), q('diesel', r(6, 18), 0.5));
-      if (Math.random() < 0.4) items.push(q('canned_goods', r(2, 5), 1.2));
-      break;
-    case 'warehouse':
-    case 'industrial':
-      items.push(q('metal', r(6, 16), 1.5), q('wood', r(5, 14), 1.2), q('gasoline', r(4, 12), 0.5));
-      if (Math.random() < 0.6) items.push(q('scrap', r(4, 12), 0.9));
-      if (Math.random() < 0.5) items.push(q('tools', r(2, 6), 1.8));
-      if (Math.random() < 0.35) items.push(i('weapon', 'Fire Axe', 'axe', 2.0));
-      if (Math.random() < 0.25) items.push(q('bricks', r(4, 10), 2.0));
-      if (Math.random() < 0.3) items.push(q('logs', r(3, 8), 1.2));
-      break;
-    case 'school':
-      // Guaranteed 1-3 scientific materials for Research Center construction & ongoing science
-      items.push(
-        q('scientific_materials', r(1, 3), 0.8),
-        q('canned_goods', r(2, 6), 1.2),
-        q('bottled_water', r(2, 6), 1.0),
-        q('sterile_bandages', r(1, 4), 0.4)
-      );
-      if (Math.random() < 0.45) items.push(q('first_aid_kits', r(1, 3), 1.5));
-      if (Math.random() < 0.35) items.push(q('tools', r(1, 3), 1.8));
-      break;
-    case 'commercial':
-      items.push(q('canned_goods', r(2, 5), 1.2), q('bottled_water', r(2, 4), 1.0));
-      if (Math.random() < 0.45) items.push(q('tools', r(1, 3), 1.8));
-      if (Math.random() < 0.4) items.push(q('scrap', r(3, 8), 0.9));
-      if (Math.random() < 0.25) items.push(q('first_aid_kits', r(1, 2), 1.5));
-      break;
-    default:
-      items.push(q('canned_goods', r(1, 4), 1.2), q('bottled_water', r(1, 3), 1.0));
-      if (Math.random() < 0.35) items.push(q('ammunition', r(2, 8), 0.15));
-      if (Math.random() < 0.25) items.push(q('wood', r(2, 6), 1.2));
-      if (Math.random() < 0.2) items.push(q('tools', r(1, 3), 1.8));
-      if (Math.random() < 0.2) items.push(q('scrap', r(2, 6), 0.9));
-  }
-  return items;
+  // Canonical OSM location -> loot profile -> roll (see osmLocationResolver,
+  // data/lootProfiles and lootRollService). The profile layer only answers
+  // "what loot does this real-world building hold"; eligibility, searched
+  // state, queueing, carry capacity and deposits remain authoritative here.
+  return rollLootForBuilding(b, resourceMultiplier).loot;
 }
 
 export function createBuildingSearchState(
@@ -196,13 +130,18 @@ export function ensureBuildingSearchStates(
     if (!existing) {
       m.set(b.id, createBuildingSearchState(b.id, b, resourceMultiplier));
     } else {
-      // If an existing unsearched building is a school whose loot doesn't yet contain scientific_materials,
-      // refresh its loot pool so active games immediately gain scientific materials to scavenge.
+      // Migration refresh: when an untouched, unsearched building now maps to a
+      // location whose profile can yield scientific materials but its previously
+      // rolled pool lacks any, re-roll so research-critical loot appears.
+      const profileCanYieldSci = (() => {
+        const prof = getLootProfileForLocation(resolveBuildingLocation(b));
+        return [...prof.guaranteed, ...prof.pool].some((e) => e.label === 'scientific_materials');
+      })();
       const needsLootRefresh =
         !existing.searched &&
         existing.searchProgress === 0 &&
         (!existing.lootedItems || existing.lootedItems.length === 0) &&
-        b.type === 'school' &&
+        profileCanYieldSci &&
         !existing.loot.some((l) => l.label === 'scientific_materials');
 
       if (needsLootRefresh) {
@@ -354,6 +293,46 @@ export function findNearestStorageDropoff(
   }
 
   return { x: 0, z: 0, name: 'HQ Fortress' };
+}
+
+/**
+ * True when a map building is the colony's own infrastructure and must never
+ * be scavenged as a loot target: the HQ fortress, or any building hosting an
+ * operational warehouse / storage depot (adapted or freestanding). Squads may
+ * still be ordered TO it (move / deposit destinations resolve through the same
+ * building ids) — but scavenging logic must never auto-start a search on it,
+ * otherwise a squad that returns to drop off its haul stands inside the depot
+ * and begins "looting" its own storage building.
+ */
+export function isSettlementDropoffBuilding(
+  settlement: SettlementState,
+  buildingId: string | number
+): boolean {
+  if (isHQBuilding(settlement, buildingId)) return true;
+  const id = String(buildingId);
+  const adapted =
+    settlement.adaptedBuildings instanceof Map
+      ? Array.from(settlement.adaptedBuildings.values())
+      : Object.values(settlement.adaptedBuildings || {});
+  for (const b of adapted as AdaptedBuilding[]) {
+    if (
+      (b.typeId === 'warehouse' || b.typeId === 'storage_depot') &&
+      isBuildingOperational(b) &&
+      (String(b.buildingId) === id || String(b.sourceBuildingId ?? '') === id)
+    ) {
+      return true;
+    }
+  }
+  for (const b of settlement.freestandingBuildings || []) {
+    if (
+      (b.typeId === 'warehouse' || b.typeId === 'storage_depot') &&
+      isBuildingOperational(b) &&
+      String(b.buildingId) === id
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -601,6 +580,7 @@ export function tickBuildingScavengeProgress(
         nextSquad = {
           ...nextSquad,
           state: 'idle',
+          manualOrder: false, // auto behaviour, not a player order
           holdHaul: true,
           targetPos: null,
           targetBuildingId: null,
@@ -615,6 +595,7 @@ export function tickBuildingScavengeProgress(
         nextSquad = {
           ...nextSquad,
           state: 'returning',
+          manualOrder: false, // auto behaviour, not a player order
           targetPos: { x: dropoffDestination.x, z: dropoffDestination.z },
           targetBuildingId: null,
           targetBuildingName: dropoffDestination.name,
@@ -627,6 +608,7 @@ export function tickBuildingScavengeProgress(
       nextSquad = {
         ...nextSquad,
         state: 'idle',
+        manualOrder: false, // auto behaviour, not a player order
         targetBuildingId: null,
         targetBuildingName: null,
         searchProgress: undefined,

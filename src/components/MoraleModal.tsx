@@ -451,7 +451,7 @@ export const MoraleModal: React.FC<MoraleModalProps> = ({
  {/* Footer */}
  <div className="border-t border-neutral-800 pt-4 flex items-center justify-between text-xs text-neutral-400">
  <div className="flex items-center gap-2">
- <Users className="w-4 h-4 text-sky-400" />
+ <Users className="w-4 h-4 text-emerald-400" />
  <span>
  Colony Pop: {settlement.namedSurvivors?.length || 0} Named +{' '}
  {typeof settlement.generalPopulation === 'number' ? settlement.generalPopulation : (settlement.generalPopulation?.total || 0)} General (

@@ -181,7 +181,7 @@ export const NotificationTray: React.FC<NotificationTrayProps> = ({
                     ? 'bg-[#D97706] shadow-[0_0_8px_#D97706]'
                     : row.type === 'success'
                     ? 'bg-[#10B981] shadow-[0_0_8px_#10B981]'
-                    : 'bg-[#38BDF8] shadow-[0_0_8px_#38BDF8]'
+                    : 'bg-[#64748B] shadow-[0_0_8px_#64748B]'
                 }`}
               />
               <div className="flex items-start justify-between gap-2">

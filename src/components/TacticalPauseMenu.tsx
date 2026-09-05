@@ -137,10 +137,10 @@ export const TacticalPauseMenu: React.FC<TacticalPauseMenuProps> = ({
  className="w-full flex items-center justify-between px-4 py-3 bg-[#1E293B] hover:bg-[#475569] border border-[#E8E8E8] text-white text-sm font-heading font-black tracking-wider uppercase transition-all"
  >
  <div className="flex items-center gap-2.5">
- <Play className="w-4 h-4 fill-current text-[#93C5FD]" />
+ <Play className="w-4 h-4 fill-current text-[#6EE7B7]" />
  <span>RESUME SIMULATION (ESC)</span>
  </div>
- <span className="text-[10px] font-mono text-[#93C5FD]">CONTINUE</span>
+ <span className="text-[10px] font-mono text-[#6EE7B7]">CONTINUE</span>
  </button>
 
  {/* QUICK SAVE (F5) */}

@@ -12,6 +12,7 @@ import {
   findNearestStorageDropoff,
   formatLootLabel,
   hasStockpileRoomForHaul,
+  isSettlementDropoffBuilding,
   isSquadInsideBuilding,
   tickBuildingScavengeProgress,
 } from '../services/scavengingService';
@@ -25,7 +26,7 @@ import {
   isStrandedLootOrderId,
   STRANDED_COLLECT_RADIUS_M,
 } from '../services/strandedLootService';
-import { getPrimaryHQ, isHQBuilding } from '../services/buildingOperational';
+import { getPrimaryHQ } from '../services/buildingOperational';
 import type { BuildingPolygon, LocationPreset, MapData, SettlementPlacement } from '../types/map';
 import type {
   ArmorItemId,
@@ -380,8 +381,10 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
           if (sq.targetPos) continue; // Still walking somewhere
           if (sq.state !== 'idle') continue;
           const searches = workingSettlement.buildingSearches || (new Map() as Map<string | number, BuildingSearchState>);
+          // Never resume onto the HQ or the settlement's own storage depots —
+          // those are dropoff destinations, not loot targets.
           const nextBuilding = findNextScavengeTarget(
-            queue.filter((id) => !isHQBuilding(workingSettlement, id)),
+            queue.filter((id) => !isSettlementDropoffBuilding(workingSettlement, id)),
             mapData.buildings,
             searches
           );
@@ -431,6 +434,7 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
             ...sq,
             holdHaul: false,
             state: 'returning',
+            manualOrder: false, // auto deposit run, not a player order
             targetPos: { x: dropoff.x, z: dropoff.z },
             targetBuildingId: null,
             targetBuildingName: dropoff.name,
@@ -501,10 +505,27 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
 
           // Scavenging begins only after the squad reaches the precise point
           // selected by the player inside the building — and never on the
-          // headquarters, which is command infrastructure, not a loot target.
+          // headquarters or the colony's own storage depots, which are dropoff
+          // destinations, not loot targets (otherwise a squad depositing its
+          // haul inside the warehouse would start "looting" its own depot).
+          const targetIsDropoff = !!targetBldg && isSettlementDropoffBuilding(workingSettlement, targetBldg.id);
+          if (targetIsDropoff && sq.state === 'searching') {
+            // Ordered (or auto-acquired) into the HQ / a storage depot: the
+            // combat tick flipped the squad to 'searching' on arrival because
+            // it carries a targetBuildingId. It is a dropoff, never a loot
+            // target — stand down to idle so the deposit stage acts and the
+            // post-deposit queue resume isn't blocked by a phantom search.
+            combatResult.updatedSquads[i] = {
+              ...sq,
+              state: 'idle',
+              targetBuildingId: null,
+              targetBuildingName: null,
+              searchProgress: undefined,
+            };
+          }
           if (
             targetBldg &&
-            !isHQBuilding(workingSettlement, targetBldg.id) &&
+            !targetIsDropoff &&
             isSquadInsideBuilding({ x: sq.x, z: sq.z }, targetBldg)
           ) {
             const bSearch = workingSettlement.buildingSearches?.get(targetBldg.id);
@@ -594,6 +615,7 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
                     combatResult.updatedSquads[i] = {
                       ...finishedSquad,
                       state: 'idle',
+                      manualOrder: false, // auto hold, not a player order
                       holdHaul: true,
                       targetPos: null,
                       targetBuildingId: null,
@@ -618,6 +640,7 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
                     combatResult.updatedSquads[i] = {
                       ...finishedSquad,
                       state: 'returning',
+                      manualOrder: false, // auto deposit run, not a player order
                       targetPos: { x: dropoff.x, z: dropoff.z },
                       targetBuildingId: null,
                       targetBuildingName: dropoff.name,
@@ -628,9 +651,10 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
                 } else if (!carrying && finishedSquad.state !== 'returning') {
                   // Empty haul: continue straight to the next queued building
                   // that still has loot, skipping any already-cleared structures
-                  // and the HQ (legacy queues may contain it pre-guard).
+                  // and the HQ / storage depots (legacy queues may contain them
+                  // pre-guard).
                   const nextBuilding = findNextScavengeTarget(
-                    remainingQueue.filter((id) => !isHQBuilding(workingSettlement, id)),
+                    remainingQueue.filter((id) => !isSettlementDropoffBuilding(workingSettlement, id)),
                     mapData.buildings,
                     searches
                   );

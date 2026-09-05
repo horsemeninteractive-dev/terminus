@@ -81,6 +81,16 @@ Releasing:
   loadout now deducts one weapon per member from the colony armory (with a
   clear "not enough rifles" error when short) and stamps the real weapon id on
   every member, so the tactical unit reflects the gear the player paid for.
+- **Armor loadouts & armory visibility at muster (§4.3).** Squads can now be
+  issued armor at formation — a Padded Jacket / Riot Vest / Tactical Gear
+  loadout pulls one piece per member from the armory exactly like weapons
+  (with a "not enough" error and amber shortage warning when short), and the
+  chosen `armorId` is stamped on every tactical-unit member so they actually
+  absorb damage. Because the muster modal covers the header strip, both the
+  modal and the sidebar squad form now render an **Available Armory** panel
+  showing every weapon and armor type the colony has on hand (highlighting the
+  selected loadout), and the header's Firearms counter gains a paired green
+  armor count with a Weapons & Armor hover breakdown.
 - **Radial group-health gauge on zombie pins.** Individual zombie health bars
   and yellow/red alert markers are gone from the world (IFZ shows no per-zombie
   health); instead the clustered skull pin carries a radial meter — a dark

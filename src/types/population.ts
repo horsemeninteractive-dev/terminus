@@ -121,9 +121,15 @@ export interface SquadInventory {
 
 export type SquadWeaponLoadout = 'knife' | 'pistol' | 'shotgun' | 'assault_rifle';
 
+/** Armor loadout chosen at muster time. 'none' = no armor issued; otherwise
+ *  the named armor type is pulled from the colony armory for every member. */
+export type SquadArmorLoadout = 'none' | 'padded_jacket' | 'riot_vest' | 'tactical_gear';
+
 export interface Squad {
   id: string;
   weaponLoadout?: SquadWeaponLoadout;
+  /** Armor loadout chosen at muster time (default 'none' — members equip no armor). */
+  armorLoadout?: SquadArmorLoadout;
   name: string;
   leaderId: string; // NamedSurvivor ID, or '' for a leaderless all-recruit squad (generic Field Leader)
   generalCount: number; // general pop members: 0-3 with a named leader, 4 for a leaderless squad (Total squad max = 4)
