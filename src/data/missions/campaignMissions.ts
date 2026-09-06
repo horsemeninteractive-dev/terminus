@@ -112,15 +112,320 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
         researchId: 'triangulation',
         dependsOn: ['d1_antenna'],
       },
-    ],
-    rewards: {
+    ],    rewards: {
       resources: { scientific_materials: 3 },
       summary: '+3 Scientific Materials — signal source identified',
     },
     completionTransmissionId: 'tx_c1_deadchannel_done',
   },
+
   // =========================================================================
-  // CHAPTER II — THE DEAD AREN'T RANDOM
+  // ACT II — VOICES IN THE DARK: first contact (spec §10/§33)
+  // =========================================================================
+  // The faction is NEVER named before the player answers. The briefing is an
+  // anonymous signal; only the chosen response establishes contact, adds the
+  // faction to contactedFactionIds and reveals its standing in the tracker.
+  {
+    id: 'mission_unknownsignal',
+    code: 'OP-UNKNOWNSIGNAL',
+    title: 'UNKNOWN TRANSMISSION',
+    description: "A voice has appeared on a frequency you've never heard before.",
+    briefing:
+      'No callsign. No registry. No location. A repeating fragment has surfaced on an unregistered scientific band: "—anyone receiving this, answer." The triangulation rig can hold the frequency open long enough to respond. Whatever is on the other end, it is organised — and it knows things about the dead.',
+    category: 'faction',
+    priority: 'high',
+    chapter: 2,
+    isMainStory: true,
+    trigger: { type: 'condition', condition: { kind: 'flag', key: 'lore_behaviour_anomaly' } },
+    prerequisites: [{ kind: 'hq_established', value: true }],
+    requiresMissionsCompleted: ['mission_deadchannel', 'mission_nightmove'],
+    briefingTransmissionId: 'tx_c2_unknownsignal',
+    responseOptions: [
+      {
+        label: 'RESPOND — HOLD THE FREQUENCY OPEN.',
+        action: 'accept',
+        contactFactionId: 'seekers',
+        followUpTransmissionId: 'tx_c2_unknownsignal_done',
+        responseNote: 'Unregistered scientific band answered.',
+      },
+      {
+        label: 'MONITOR ONLY — DO NOT ANSWER.',
+        action: 'decline',
+        flag: { key: 'ignored_unknown_signal', value: true },
+        responseNote: 'The signal is logged and monitored. Contact is not established.',
+      },
+    ],
+    tasks: [
+      {
+        id: 'us1_contact',
+        type: 'contact_faction',
+        title: 'Hold Contact with the Unknown Operator',
+        factionId: 'seekers',
+        targetCount: 1,
+      },
+      {
+        id: 'us2_records',
+        type: 'scavenge_resource',
+        title: 'Trade Scientific Materials for What They Know',
+        description: 'The operator will not talk for free — pull scientific materials from the old world to open the conversation.',
+        resourceType: 'scientific_materials',
+        targetCount: 3,
+        dependsOn: ['us1_contact'],
+      },
+    ],
+    rewards: {
+      narrativeFlags: { seekers_contacted: true },
+      summary: 'Contact established with the scientific collective',
+    },
+    completionTransmissionId: 'tx_c2_unknownsignal_done',
+  },
+
+  // =========================================================================
+  // ACT IV — THE REMNANT: the factions reveal themselves (spec §14)
+  // =========================================================================
+  // Different survivor groups tell different stories about the collapse. The
+  // player chooses which frequencies to answer; each response establishes real
+  // contact and shifts standings. No faction is named before this choice.
+  {
+    id: 'mission_crossroads',
+    code: 'OP-CROSSROADS',
+    title: 'CROSSROADS',
+    description: 'Four frequencies. Four stories about the end of the world. Answer any of them.',
+    briefing:
+      "Since the depot records went out over our own channel, the band has been loud. A military frequency using old designators. A civilian coordination net with a shipping manifest for a constitution. A channel that only ever says the same two words: burn them. And a settlement cluster that wants nothing from anyone. They are all real. They do not all agree about what happened. Choose who we talk to.",
+    category: 'faction',
+    priority: 'high',
+    chapter: 5,
+    isMainStory: true,
+    trigger: {
+      type: 'and',
+      children: [
+        { type: 'condition', condition: { kind: 'flag', key: 'lore_military_records' } },
+        { type: 'condition', condition: { kind: 'population', min: 15 } },
+      ],
+    },
+    prerequisites: [{ kind: 'population', min: 15 }],
+    requiresMissionsCompleted: ['mission_military'],
+    briefingTransmissionId: 'tx_c5_crossroads',
+    responseOptions: [
+      {
+        label: 'ANSWER THE MILITARY FREQUENCY.',
+        action: 'branch',
+        missionId: 'mission_crossroads_remnant',
+        contactFactionId: 'remnant',
+        responseNote: 'Standing Order 9 answered.',
+      },
+      {
+        label: 'ANSWER THE CIVILIAN COORDINATION NET.',
+        action: 'branch',
+        missionId: 'mission_crossroads_commonwealth',
+        contactFactionId: 'commonwealth',
+        responseNote: 'Coordination net answered.',
+      },
+      {
+        label: 'ANSWER THE BURN-THEM CHANNEL.',
+        action: 'branch',
+        missionId: 'mission_crossroads_purifiers',
+        contactFactionId: 'purifiers',
+        responseNote: 'Extremist channel answered.',
+      },
+      {
+        label: 'ANSWER THE INDEPENDENT CLUSTER.',
+        action: 'branch',
+        missionId: 'mission_crossroads_freeholds',
+        contactFactionId: 'freeholds',
+        responseNote: 'Independent cluster answered.',
+      },
+      {
+        label: 'WE ANSWER NO ONE YET.',
+        action: 'decline',
+        flag: { key: 'declined_crossroads', value: true },
+        responseNote: 'The frequencies stay logged. No contact is established.',
+      },
+    ],
+    tasks: [],
+  },
+  {
+    id: 'mission_crossroads_remnant',
+    code: 'OP-CROSSROADS-REMNANT',
+    title: 'CROSSROADS — STANDING ORDER 9',
+    description: 'The Remnant wants to know if we can hold an orderly line.',
+    briefing:
+      'The military frequency resolves to a colonel still reading civil-containment designations into the dark. They are holding fragments of the old order together — structure, command, quarantine law. They ask what we are building. The answer decides whether this becomes a partnership or an inspection.',
+    category: 'faction',
+    priority: 'normal',
+    chapter: 5,
+    isMainStory: false,
+    trigger: { type: 'condition', condition: { kind: 'flag', key: 'never_auto' } },
+    briefingTransmissionId: 'tx_c5_crossroads_remnant',
+    responseOptions: [
+      {
+        label: 'REPORT OPERATIONS — REQUEST INTELLIGENCE SHARING.',
+        action: 'accept',
+        factionEffects: [{ factionId: 'remnant', delta: 10 }],
+        responseNote: 'Open reporting — the colonel approves.',
+      },
+      {
+        label: 'REPORT NOTHING — WE ANSWER TO OUR OWN TOWN.',
+        action: 'decline',
+        factionEffects: [{ factionId: 'remnant', delta: -10 }],
+        responseNote: 'The colonel logs us as unaligned. The channel stays open.',
+      },
+    ],
+    tasks: [
+      {
+        id: 'cr1_records',
+        type: 'scavenge_building',
+        title: "Recover Records from a Government Site",
+        description: 'The Remnant trades in information. Search a police or civic building for anything with an official stamp.',
+        target: { type: 'building', buildingCategory: 'police' },
+        focusAction: 'focus_location',
+      },
+    ],
+    rewards: {
+      narrativeFlags: { remnant_contacted: true },
+      factionEffects: [{ factionId: 'remnant', delta: 5 }],
+      summary: 'Intelligence relationship opened with the Remnant',
+    },
+    completionTransmissionId: 'tx_c5_crossroads_remnant_done',
+  },
+  {
+    id: 'mission_crossroads_commonwealth',
+    code: 'OP-CROSSROADS-COMMONWEALTH',
+    title: 'CROSSROADS — COORDINATION NET',
+    description: 'The Commonwealth offers membership in something bigger.',
+    briefing:
+      'The coordination net is everything the old world was not: civilian-run, trade-first, no uniforms. They are connecting survivor settlements into a mutual-aid network. They want us in — and their price is participation, not obedience.',
+    category: 'faction',
+    priority: 'normal',
+    chapter: 5,
+    isMainStory: false,
+    trigger: { type: 'condition', condition: { kind: 'flag', key: 'never_auto' } },
+    briefingTransmissionId: 'tx_c5_crossroads_commonwealth',
+    responseOptions: [
+      {
+        label: 'OPEN TRADE — JOIN THE MUTUAL-AID NETWORK.',
+        action: 'accept',
+        factionEffects: [{ factionId: 'commonwealth', delta: 10 }],
+        responseNote: 'Commonwealth membership initiated.',
+      },
+      {
+        label: 'STAY INDEPENDENT FOR NOW.',
+        action: 'decline',
+        factionEffects: [{ factionId: 'commonwealth', delta: -5 }],
+        responseNote: 'The net logs us as friendly but unaligned.',
+      },
+    ],
+    tasks: [
+      {
+        id: 'cw1_caravan',
+        type: 'deliver_resources',
+        title: 'Complete a Run on the Coordination Route',
+        description: 'The Commonwealth measures partners by whether the wagons actually run.',
+        targetCount: 1,
+      },
+    ],
+    rewards: {
+      narrativeFlags: { commonwealth_contacted: true },
+      factionEffects: [{ factionId: 'commonwealth', delta: 5 }],
+      resources: { canned_goods: 10 },
+      summary: 'Mutual-aid relationship opened — +10 Rations',
+    },
+    completionTransmissionId: 'tx_c5_crossroads_commonwealth_done',
+  },
+  {
+    id: 'mission_crossroads_purifiers',
+    code: 'OP-CROSSROADS-PURIFIERS',
+    title: 'CROSSROADS — BURN THEM',
+    description: 'The Purifiers make their case in two words.',
+    briefing:
+      "The channel's operator has watched towns die. Their arithmetic is simple: every infected left standing is a town that falls later. They are not mad — that is what makes them hard to dismiss. They want to know if we will help burn the nests out of the region.",
+    category: 'faction',
+    priority: 'normal',
+    chapter: 5,
+    isMainStory: false,
+    trigger: { type: 'condition', condition: { kind: 'flag', key: 'never_auto' } },
+    briefingTransmissionId: 'tx_c5_crossroads_purifiers',
+    responseOptions: [
+      {
+        label: 'COORDINATE — THE NESTS HAVE TO GO.',
+        action: 'accept',
+        factionEffects: [{ factionId: 'purifiers', delta: 10 }, { factionId: 'seekers', delta: -5 }],
+        responseNote: 'Suppression cooperation opened.',
+      },
+      {
+        label: 'REFUSE — WE DO NOT BURN WHAT WE DO NOT UNDERSTAND.',
+        action: 'decline',
+        factionEffects: [{ factionId: 'purifiers', delta: -10 }],
+        responseNote: 'The channel goes quiet. It will be back.',
+      },
+    ],
+    tasks: [
+      {
+        id: 'cp1_lair',
+        type: 'clear_lair',
+        title: 'Clear a Lair in the Region',
+        description: 'The Purifiers count commitment in nests burned.',
+        targetCount: 1,
+        focusAction: 'focus_lair',
+      },
+    ],
+    rewards: {
+      narrativeFlags: { purifiers_contacted: true },
+      factionEffects: [{ factionId: 'purifiers', delta: 5 }],
+      resources: { sharedPool: 25 },
+      summary: 'Suppression relationship opened — +25 Shared Ammo',
+    },
+    completionTransmissionId: 'tx_c5_crossroads_purifiers_done',
+  },
+  {
+    id: 'mission_crossroads_freeholds',
+    code: 'OP-CROSSROADS-FREEHOLDS',
+    title: 'CROSSROADS — THE CLUSTER',
+    description: 'The Freeholds want neighbours, not a government.',
+    briefing:
+      "The independent cluster is a dozen small settlements that survived by owing nothing to anyone. They watch, they trade, they keep their own roads. Their offer is simple: be a good neighbour, and the roads between us stay open.",
+    category: 'faction',
+    priority: 'normal',
+    chapter: 5,
+    isMainStory: false,
+    trigger: { type: 'condition', condition: { kind: 'flag', key: 'never_auto' } },
+    briefingTransmissionId: 'tx_c5_crossroads_freeholds',
+    responseOptions: [
+      {
+        label: 'EXCHANGE SURVEY DATA — BE A NEIGHBOUR.',
+        action: 'accept',
+        factionEffects: [{ factionId: 'freeholds', delta: 10 }],
+        responseNote: 'Neighbourly relations opened with the cluster.',
+      },
+      {
+        label: 'KEEP OUR MAPS TO OURSELVES.',
+        action: 'decline',
+        factionEffects: [{ factionId: 'freeholds', delta: -5 }],
+        responseNote: 'The cluster respects it — warily.',
+      },
+    ],
+    tasks: [
+      {
+        id: 'cf1_survey',
+        type: 'scavenge_building',
+        title: 'Survey an Industrial Site for the Cluster',
+        description: 'They want to know what the old supply chains left behind. Search an industrial site and log it.',
+        target: { type: 'building', buildingCategory: 'industrial' },
+        focusAction: 'focus_location',
+      },
+    ],
+    rewards: {
+      narrativeFlags: { freeholds_contacted: true },
+      factionEffects: [{ factionId: 'freeholds', delta: 5 }],
+      resources: { metal: 10, gasoline: 6 },
+      summary: 'Neighbourly relations opened — +10 Metal +6 Fuel',
+    },
+    completionTransmissionId: 'tx_c5_crossroads_freeholds_done',
+  },
+
+  // =========================================================================
+  // ACT II — THE DEAD AREN'T RANDOM
   // =========================================================================
   {
     id: 'mission_nest',
@@ -164,6 +469,9 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
     ],
     rewards: {
       resources: { sharedPool: 30 },
+      // Act III entry: a cleared nest proves lairs are persistent structures,
+      // not one-off hordes — the first hard evidence for what follows.
+      narrativeFlags: { lore_lair_research: true },
       summary: '+30 Shared Ammo — neighbourhood secured',
     },
     completionTransmissionId: 'tx_c2_nest_done',
@@ -198,10 +506,19 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
         title: 'Survive Through the Night',
         targetCount: 1,
       },
+      {
+        id: 'nm2_record',
+        type: 'eliminate_infected',
+        title: 'Break the Night Push and Record the Pattern',
+        description: 'Fight the night wave and log the timing, direction and density — this is not the same enemy we met in week one.',
+        targetCount: 15,
+        dependsOn: ['nm1_survive'],
+      },
     ],
     rewards: {
       resources: { sharedPool: 20, canned_goods: 8 },
-      summary: '+20 Ammo +8 Rations — colony still standing',
+      narrativeFlags: { lore_behaviour_anomaly: true },
+      summary: '+20 Ammo +8 Rations — behavioural anomaly recorded',
     },
     completionTransmissionId: 'tx_c2_nightmove_done',
   },
@@ -248,7 +565,10 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
     ],
     rewards: {
       resources: { antibiotics: 6, first_aid_kits: 8 },
-      summary: '+6 Antibiotics +8 First Aid Kits',
+      // DISCOVERY 1–3 (spec §17): the sealed cabinets hold more than stock —
+      // intake ledgers show unusual cases weeks before the collapse.
+      narrativeFlags: { lore_early_cases: true },
+      summary: '+6 Antibiotics +8 First Aid Kits — intake ledgers recovered',
     },
     completionTransmissionId: 'tx_c2_oldworld_done',
   },
@@ -848,7 +1168,7 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
       {
         label: 'ANSWER THE CALL. HOLD THE FREQUENCY.',
         action: 'accept',
-        contactFactionId: 'gravel_bend',
+        contactFactionId: 'greywater',
         responseNote: 'Contact attempt logged with the unknown operator.',
       },
     ],
@@ -857,7 +1177,7 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
         id: 'vo1_contact',
         type: 'contact_faction',
         title: 'Establish Contact with the Unknown Operator',
-        factionId: 'gravel_bend',
+        factionId: 'greywater',
         targetCount: 1,
       },
       {
@@ -880,7 +1200,7 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
   {
     id: 'mission_military',
     code: 'OP-WIDERWORLD',
-    title: 'THE WIDER WORLD',
+    title: 'THE RELAY',
     description: 'Recover the sealed military depot the dead channel revealed.',
     briefing:
       'The dead channel finally paid out: a military logistics relay keyed to old grid references. The nearest sealed position is bound to a police station on the map. Reach it and search it — the inventory could change everything.',
@@ -923,8 +1243,334 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
     ],
     rewards: {
       resources: { crates: 5, tools: 6, canned_goods: 15 },
-      summary: '+5 Ammo Crates +6 Tools +15 Rations',
+      // DISCOVERY 5 (spec §17): quarantine orders + evacuation records show a
+      // major containment operation was ALREADY RUNNING before the collapse.
+      narrativeFlags: { lore_military_records: true, lore_outbreak_timeline: true },
+      summary: '+5 Ammo Crates +6 Tools +15 Rations — quarantine orders recovered',
     },
     completionTransmissionId: 'tx_c6_military_done',
+  },
+
+  // =========================================================================
+  // ACT V — THE SOURCE: the discovery chain (spec §16/§17)
+  // =========================================================================
+
+  {
+    id: 'mission_coldstorage',
+    code: 'OP-COLDSTORAGE',
+    title: 'COLD STORAGE',
+    description: 'Search a research-linked site for the old project archive.',
+    briefing:
+      "Okafor cross-referenced the hospital ledgers and the quarantine stamps: both point at the same research programme. University labs and libraries held the published side of it. Search a campus or library and pull whatever the archive still holds.",
+    category: 'discovery',
+    priority: 'high',
+    chapter: 6,
+    isMainStory: true,
+    trigger: {
+      type: 'and',
+      children: [
+        { type: 'condition', condition: { kind: 'flag', key: 'lore_military_records' } },
+        { type: 'condition', condition: { kind: 'squad_formed', min: 1 } },
+      ],
+    },
+    prerequisites: [{ kind: 'squad_formed', min: 1 }],
+    requiresMissionsCompleted: ['mission_military'],
+    briefingTransmissionId: 'tx_c6_coldstorage',
+    responseOptions: [
+      {
+        label: 'SEND A SQUAD. PULL THE ARCHIVE.',
+        action: 'accept',
+        responseNote: 'Research archive recovery authorised.',
+      },
+    ],
+    tasks: [
+      {
+        id: 'cs1_reach',
+        type: 'travel_to_location',
+        title: 'Reach the Academic Site',
+        description: 'Bound to a school, university or library on the satellite grid.',
+        target: { type: 'building', buildingCategory: 'school' },
+        focusAction: 'focus_location',
+      },
+      {
+        id: 'cs2_search',
+        type: 'scavenge_building',
+        title: 'Search the Academic Site',
+        target: { type: 'building', buildingCategory: 'school' },
+        dependsOn: ['cs1_reach'],
+      },
+    ],
+    rewards: {
+      resources: { scientific_materials: 6 },
+      narrativeFlags: { lore_research_records: true },
+      summary: '+6 Scientific Materials — the published record recovered',
+    },
+    completionTransmissionId: 'tx_c6_coldstorage_done',
+  },
+
+  {
+    id: 'mission_thefacility',
+    code: 'OP-THEFACILITY',
+    title: 'THE FACILITY',
+    description: 'Cross-reference military and academic records to locate the source facility.',
+    briefing:
+      "The military containment grid and the published research reference the same blank spot on the map — a facility that officially does not exist. Okafor and the comms team have triangulated its likely position. Find it.",
+    category: 'discovery',
+    priority: 'critical',
+    chapter: 6,
+    isMainStory: true,
+    trigger: {
+      type: 'and',
+      children: [
+        { type: 'condition', condition: { kind: 'flag', key: 'lore_research_records' } },
+        { type: 'condition', condition: { kind: 'lair_discovered', min: 1 } },
+      ],
+    },
+    prerequisites: [{ kind: 'squad_formed', min: 1 }],
+    requiresMissionsCompleted: ['mission_coldstorage'],
+    briefingTransmissionId: 'tx_c6_facility',
+    responseOptions: [
+      {
+        label: 'MARK THE POSITION. FIND THE FACILITY.',
+        action: 'accept',
+        responseNote: 'Facility search authorised.',
+      },
+    ],
+    tasks: [
+      {
+        id: 'tf1_reach',
+        type: 'travel_to_location',
+        title: 'Locate the Facility Site',
+        description: 'Bound to an industrial or research building on the grid.',
+        target: { type: 'building', buildingCategory: 'industrial' },
+        focusAction: 'focus_location',
+      },
+      {
+        id: 'tf2_search',
+        type: 'scavenge_building',
+        title: 'Search the Facility Site',
+        target: { type: 'building', buildingCategory: 'industrial' },
+        dependsOn: ['tf1_reach'],
+      },
+    ],
+    rewards: {
+      resources: { scientific_materials: 8 },
+      narrativeFlags: { lore_facility_located: true },
+      summary: 'Facility position confirmed',
+    },
+    completionTransmissionId: 'tx_c6_facility_done',
+  },
+
+  {
+    id: 'mission_containment',
+    code: 'OP-CONTAINMENT',
+    title: 'CONTAINMENT',
+    description: 'Breach the facility and recover what went wrong.',
+    briefing:
+      "This is the source. Whatever ended the old world started in that building — quarantine seals, dead generators, and the project's own records are all still inside. Clear a path and pull the truth out.",
+    category: 'discovery',
+    priority: 'critical',
+    chapter: 6,
+    isMainStory: true,
+    trigger: {
+      type: 'and',
+      children: [
+        { type: 'condition', condition: { kind: 'flag', key: 'lore_facility_located' } },
+        { type: 'condition', condition: { kind: 'squad_formed', min: 1 } },
+      ],
+    },
+    prerequisites: [{ kind: 'squad_formed', min: 1 }],
+    requiresMissionsCompleted: ['mission_thefacility'],
+    briefingTransmissionId: 'tx_c6_containment',
+    responseOptions: [
+      {
+        label: 'BREACH THE FACILITY. RECOVER EVERYTHING.',
+        action: 'accept',
+        responseNote: 'Facility breach authorised.',
+      },
+    ],
+    tasks: [
+      {
+        id: 'ct1_clear',
+        type: 'clear_lair',
+        title: 'Clear the Facility Perimeter',
+        description: 'The dead hold the ground around the source — take it from them.',
+        targetCount: 1,
+        focusAction: 'focus_lair',
+      },
+      {
+        id: 'ct2_search',
+        type: 'scavenge_building',
+        title: 'Search the Facility',
+        description: 'Recover the project\'s own records — the truth is inside.',
+        target: { type: 'building', buildingCategory: 'industrial' },
+        dependsOn: ['ct1_clear'],
+      },
+    ],
+    rewards: {
+      resources: { scientific_materials: 10 },
+      narrativeFlags: { lore_facility_investigated: true, lore_pathogen_nature: true },
+      summary: 'The nature of the outbreak is understood',
+    },
+    completionTransmissionId: 'tx_c6_containment_done',
+  },
+
+  // =========================================================================
+  // ACT VI — WHAT COMES NEXT: resolution (spec §20/§21)
+  // =========================================================================
+
+  {
+    id: 'mission_theprotocol',
+    code: 'OP-THEPROTOCOL',
+    title: 'THE PROTOCOL',
+    description: 'The settlement must choose what humanity does about the outbreak.',
+    briefing:
+      "We know what happened. The choice is what happens next. Cure, purge, or coexistence — each path is real work, and none of them are clean. Decide.",
+    category: 'campaign',
+    priority: 'critical',
+    chapter: 7,
+    isMainStory: true,
+    trigger: {
+      type: 'and',
+      children: [
+        { type: 'condition', condition: { kind: 'flag', key: 'lore_pathogen_nature' } },
+      ],
+      },
+    prerequisites: [{ kind: 'population', min: 15 }],
+    requiresMissionsCompleted: ['mission_containment'],
+    briefingTransmissionId: 'tx_c7_protocol',
+    responseOptions: [
+      {
+        label: 'PURSUE A TREATMENT — CURE.',
+        action: 'branch',
+        missionId: 'mission_protocol_cure',
+        factionEffects: [{ factionId: 'seekers', delta: 15 }, { factionId: 'purifiers', delta: -10 }],
+        responseNote: 'Treatment programme authorised.',
+      },
+      {
+        label: 'DESTROY EVERY INFECTED — PURGE.',
+        action: 'branch',
+        missionId: 'mission_protocol_purge',
+        factionEffects: [{ factionId: 'purifiers', delta: 15 }, { factionId: 'seekers', delta: -10 }],
+        responseNote: 'Suppression doctrine adopted.',
+      },
+      {
+        label: 'CONTAIN AND MANAGE — COEXISTENCE.',
+        action: 'branch',
+        missionId: 'mission_protocol_coexistence',
+        factionEffects: [{ factionId: 'commonwealth', delta: 12 }, { factionId: 'purifiers', delta: -5 }],
+        responseNote: 'Containment doctrine adopted.',
+      },
+    ],
+    tasks: [],
+  },
+
+  {
+    id: 'mission_protocol_cure',
+    code: 'OP-PROTOCOL-CURE',
+    title: 'THE PROTOCOL — CURE',
+    description: 'Prove a treatment is possible.',
+    briefing:
+      "The Seekers have the fragments; the facility records supply the rest. Research the countermeasure, prove it works, and give the world something more than survival.",
+    category: 'campaign',
+    priority: 'critical',
+    chapter: 7,
+    isMainStory: true,
+    trigger: { type: 'condition', condition: { kind: 'flag', key: 'never_auto' } },
+    briefingTransmissionId: 'tx_c7_protocol_cure',
+    responseOptions: [{ label: 'ACKNOWLEDGED. THE WORK STARTS NOW.', action: 'accept' }],
+    tasks: [
+      {
+        id: 'pc1_research',
+        type: 'research_technology',
+        title: 'Research a Medicine Node',
+        description: 'Any medicine-line research advances the treatment programme.',
+        researchId: 'basic_sanitation',
+      },
+      {
+        id: 'pc2_endure',
+        type: 'survive_duration',
+        title: 'Hold the Programme Together for Three Days',
+        targetCount: 72,
+        dependsOn: ['pc1_research'],
+      },
+    ],
+    rewards: {
+      narrativeFlags: { campaign_resolved: true, campaign_resolution: 'cure' },
+      summary: 'THE OUTBREAK — RESOLVED. Treatment pathway established.',
+    },
+    completionTransmissionId: 'tx_c7_resolved',
+  },
+
+  {
+    id: 'mission_protocol_purge',
+    code: 'OP-PROTOCOL-PURGE',
+    title: 'THE PROTOCOL — PURGE',
+    description: 'Commit to long-term suppression of the infected.',
+    briefing:
+      "The Purifiers have been right about one thing all along: the infected will not stop. Commit the colony to suppression — clear lairs, break the night waves, and make the land survivable again, mile by mile.",
+    category: 'campaign',
+    priority: 'critical',
+    chapter: 7,
+    isMainStory: true,
+    trigger: { type: 'condition', condition: { kind: 'flag', key: 'never_auto' } },
+    briefingTransmissionId: 'tx_c7_protocol_purge',
+    responseOptions: [{ label: 'ACKNOWLEDGED. WE TAKE IT TO THEM.', action: 'accept' }],
+    tasks: [
+      {
+        id: 'pp1_lairs',
+        type: 'clear_lair',
+        title: 'Clear 2 Lairs',
+        targetCount: 2,
+        focusAction: 'focus_lair',
+      },
+      {
+        id: 'pp2_kills',
+        type: 'eliminate_infected',
+        title: 'Put Down 60 Infected',
+        targetCount: 60,
+        dependsOn: ['pp1_lairs'],
+      },
+    ],
+    rewards: {
+      narrativeFlags: { campaign_resolved: true, campaign_resolution: 'purge' },
+      summary: 'THE OUTBREAK — RESOLVED. Suppression doctrine operational.',
+    },
+    completionTransmissionId: 'tx_c7_resolved',
+  },
+  {
+    id: 'mission_protocol_coexistence',
+    code: 'OP-PROTOCOL-COEXIST',
+    title: 'THE PROTOCOL — COEXISTENCE',
+    description: 'Build a containment network and learn to live with the dead.',
+    briefing:
+      "Eradication is a dream and a cure is a long road. Build containment: a second settlement, a working caravan line, and enough stability that humanity outlasts the dead instead of hiding from them.",
+    category: 'campaign',
+    priority: 'critical',
+    chapter: 7,
+    isMainStory: true,
+    trigger: { type: 'condition', condition: { kind: 'flag', key: 'never_auto' } },
+    briefingTransmissionId: 'tx_c7_protocol_coexist',
+    responseOptions: [{ label: 'ACKNOWLEDGED. WE BUILD.', action: 'accept' }],
+    tasks: [
+      {
+        id: 'pn1_settlement',
+        type: 'establish_settlement',
+        title: 'Hold Two Settlements',
+        targetCount: 2,
+      },
+      {
+        id: 'pn2_caravan',
+        type: 'deliver_resources',
+        title: 'Run a Supply Caravan Between Them',
+        targetCount: 1,
+        dependsOn: ['pn1_settlement'],
+      },
+    ],
+    rewards: {
+      narrativeFlags: { campaign_resolved: true, campaign_resolution: 'coexistence' },
+      summary: 'THE OUTBREAK — RESOLVED. Containment network operational.',
+    },
+    completionTransmissionId: 'tx_c7_resolved',
   },
 ];

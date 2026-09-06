@@ -16,7 +16,7 @@ import { sampleElevation } from '../services/elevationService';
 import { polygonArea, sweepFootprintSelection } from '../services/adaptationGeometry';
 import { getAdaptedCost } from '../data/functionalBuildings';
 import type { ResourceCost } from '../types/settlement';
-import { getFreestandingDimensions, getFreestandingCollisionPolygon } from '../services/freestandingFootprint';
+import { getFreestandingDimensions, getFreestandingCollisionPolygon, freestandingFootprintOverlapsWater } from '../services/freestandingFootprint';
 import { BuildingRenderer } from './BuildingRenderer';
 import { CameraController } from './CameraController';
 import { CombatRenderer } from './CombatRenderer';
@@ -124,10 +124,13 @@ interface DayNightKeyframe {
 }
 
 const DAY_NIGHT_KEYFRAMES: DayNightKeyframe[] = [
-  // Midnight (0h / 24h): Greyscale nocturnal visibility. High contrast, cool silver ambient, moonlight highlights, clear ground & buildings.
-  { hour: 0, skyTop: 0x1a2332, horizon: 0x3d4b60, fog: 0x3d4b60, fogDensity: 0.0006, ambient: 0x8e9ba8, ambientIntensity: 0.72, hemiSky: 0x9fb0c4, hemiGround: 0x4a5568, hemiIntensity: 0.62, sunColor: 0xd8e4f2, sunIntensity: 0.85, sunElevation: -0.15, sunAzimuth: -1.2 },
-  // Late night / Pre-dawn (5h): Silvery twilight greyscale
-  { hour: 5, skyTop: 0x222d3e, horizon: 0x475569, fog: 0x475569, fogDensity: 0.0007, ambient: 0x94a3b8, ambientIntensity: 0.70, hemiSky: 0xa4b5c8, hemiGround: 0x525f72, hemiIntensity: 0.60, sunColor: 0xdde7f5, sunIntensity: 0.82, sunElevation: -0.05, sunAzimuth: -1.9 },
+  // Midnight (0h / 24h): Genuinely dark, desaturated nocturnal visibility —
+  // cool dim blue-grey ambient (~45% of noon) plus faint moonlight so building
+  // colours mute instead of reading as full daylight. Lit windows, floodlights
+  // and the moon carry the scene.
+  { hour: 0, skyTop: 0x101826, horizon: 0x2c3a4e, fog: 0x2c3a4e, fogDensity: 0.0007, ambient: 0x5f6f82, ambientIntensity: 0.34, hemiSky: 0x6d7f96, hemiGround: 0x232c3a, hemiIntensity: 0.30, sunColor: 0xb9c9de, sunIntensity: 0.30, sunElevation: -0.15, sunAzimuth: -1.2 },
+  // Late night / Pre-dawn (5h): Still dark, a hint of coming light
+  { hour: 5, skyTop: 0x141d2c, horizon: 0x33415a, fog: 0x33415a, fogDensity: 0.0008, ambient: 0x64748a, ambientIntensity: 0.38, hemiSky: 0x7284a0, hemiGround: 0x28313f, hemiIntensity: 0.32, sunColor: 0xbccadd, sunIntensity: 0.34, sunElevation: -0.05, sunAzimuth: -1.9 },
   // Dawn (6.5h): Golden sunrise break
   { hour: 6.5, skyTop: 0x485a78, horizon: 0xd2bea0, fog: 0xada598, fogDensity: 0.0009, ambient: 0xaec6e2, ambientIntensity: 0.68, hemiSky: 0x9bc0e4, hemiGround: 0x2e3846, hemiIntensity: 0.52, sunColor: 0xffe2b8, sunIntensity: 1.15, sunElevation: 0.04, sunAzimuth: -1.55 },
   // Morning (9h): Crisp morning daylight
@@ -138,10 +141,10 @@ const DAY_NIGHT_KEYFRAMES: DayNightKeyframe[] = [
   { hour: 17, skyTop: 0x365a7c, horizon: 0xbccfdc, fog: 0xb0c4d6, fogDensity: 0.0007, ambient: 0xdce2ec, ambientIntensity: 0.72, hemiSky: 0xecf0f8, hemiGround: 0x303640, hemiIntensity: 0.58, sunColor: 0xffecc8, sunIntensity: 1.38, sunElevation: 0.5, sunAzimuth: 0.9 },
   // Dusk (19h): Amber dusk sunset
   { hour: 19, skyTop: 0x342a3a, horizon: 0xd0805e, fog: 0xaa7866, fogDensity: 0.0009, ambient: 0xd08c6c, ambientIntensity: 0.60, hemiSky: 0xe0866c, hemiGround: 0x362422, hemiIntensity: 0.48, sunColor: 0xff8555, sunIntensity: 1.10, sunElevation: 0.04, sunAzimuth: 1.55 },
-  // Nightfall (20.5h): Smooth transition to nocturnal greyscale
-  { hour: 20.5, skyTop: 0x20293a, horizon: 0x425064, fog: 0x425064, fogDensity: 0.0007, ambient: 0x8c99a6, ambientIntensity: 0.70, hemiSky: 0x9eb0c4, hemiGround: 0x485364, hemiIntensity: 0.60, sunColor: 0xd4e0ee, sunIntensity: 0.82, sunElevation: -0.05, sunAzimuth: 1.9 },
+  // Nightfall (20.5h): Smooth transition into dark nocturnal greyscale
+  { hour: 20.5, skyTop: 0x141c2b, horizon: 0x303e52, fog: 0x303e52, fogDensity: 0.0008, ambient: 0x62728a, ambientIntensity: 0.38, hemiSky: 0x70829c, hemiGround: 0x273040, hemiIntensity: 0.32, sunColor: 0xbccadd, sunIntensity: 0.34, sunElevation: -0.05, sunAzimuth: 1.9 },
   // Midnight (24h)
-  { hour: 24, skyTop: 0x1a2332, horizon: 0x3d4b60, fog: 0x3d4b60, fogDensity: 0.0006, ambient: 0x8e9ba8, ambientIntensity: 0.72, hemiSky: 0x9fb0c4, hemiGround: 0x4a5568, hemiIntensity: 0.62, sunColor: 0xd8e4f2, sunIntensity: 0.85, sunElevation: -0.15, sunAzimuth: -1.2 },
+  { hour: 24, skyTop: 0x101826, horizon: 0x2c3a4e, fog: 0x2c3a4e, fogDensity: 0.0007, ambient: 0x5f6f82, ambientIntensity: 0.34, hemiSky: 0x6d7f96, hemiGround: 0x232c3a, hemiIntensity: 0.30, sunColor: 0xb9c9de, sunIntensity: 0.30, sunElevation: -0.15, sunAzimuth: -1.2 },
 ];
 
 const TIME_OF_DAY_HOURS: Record<TimeOfDay, number> = {
@@ -395,6 +398,31 @@ export class WorldScene {
   // newer map payload arrived) can detect it aborted and stop adding meshes.
   private loadGeneration = 0;
 
+  // Uniform-grid spatial index over the current map's buildings for O(cells)
+  // point-in-building queries. Rebuilt only on map load; queried at sim-tick
+  // frequency by the marker/label phase (previously a linear O(N) scan per
+  // query, which at 1,600+ buildings × 10 Hz dominated the frame budget).
+  private buildingIndex: {
+    cellSize: number;
+    minX: number;
+    minZ: number;
+    cols: number;
+    rows: number;
+    cells: Map<number, BuildingPolygon[]>;
+  } | null = null;
+  private buildingById: Map<string, BuildingPolygon> = new Map();
+  private lastMarkerBuildAt = 0;
+
+  // §Graphics quality presets. 'high' = full detail always; 'medium'/'low'
+  // cull full-detail buildings beyond a camera-distance radius and drop
+  // shadow quality. Radii scale with zoom so panning never pops buildings in
+  // and out at the view centre.
+  private graphicsQuality: import('../types/saveGame').GraphicsQuality = 'high';
+  private qualityLodScale = 1.0;   // altitude-LOD threshold multiplier
+  private detailCullRadius = 0;    // 0 = disabled (high preset)
+  private detailCullAccum = 0;
+  private detailCullActive = false;
+
   constructor(options: WorldSceneOptions) {
     this.container = options.container;
     this.onSelectBuilding = options.onSelectBuilding;
@@ -556,6 +584,10 @@ export class WorldScene {
     const stale = () => gen !== this.loadGeneration;
 
     this.currentMapData = mapData;
+    this.buildingById = new Map(
+      (mapData.buildings || []).map((b) => [String(b.id), b])
+    );
+    this.buildingIndex = this.buildSpatialIndex(mapData.buildings || []);
     this.waterPolygons = (mapData.landuse || [])
       .filter((l) => l.type === 'water' && l.polygon?.length >= 3)
       .map((l) => l.polygon as Point2D[]);
@@ -856,6 +888,83 @@ export class WorldScene {
     }
   }
 
+  /**
+   * §Graphics quality presets.
+   *
+   * - **high** — everything renders, distance culling off (pixel ratio cap 2).
+   * - **medium** — pixel ratio capped at 1.5, shadows off beyond 140m camera
+   *   distance, full-detail buildings culled beyond ~2.6× camera distance,
+   *   and the merged-city LOD swaps in at a lower altitude.
+   * - **low** — pixel ratio capped at 1, shadows disabled entirely, detail
+   *   cull radius ~1.7× camera distance, merged LOD swaps in even lower.
+   *
+   * Cull radii track the camera's focus distance, so the buildings the player
+   * is actually looking at always render full detail and only the horizon
+   * thins out. Toggling this at runtime is safe: culled meshes keep their
+   * state and `restoreAllDetailVisibility()` un-hides everything on upgrade.
+   */
+  public setGraphicsQuality(quality: import('../types/saveGame').GraphicsQuality) {
+    if (this.graphicsQuality === quality) return;
+    this.graphicsQuality = quality;
+
+    switch (quality) {
+      case 'low':
+        this.qualityLodScale = 0.45;
+        this.detailCullRadius = 1.7;
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1));
+        this.sunLight.castShadow = false;
+        this.buildingRenderer.setEdgesVisible(false);
+        break;
+      case 'medium':
+        this.qualityLodScale = 0.72;
+        this.detailCullRadius = 2.6;
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+        this.sunLight.castShadow = true;
+        this.buildingRenderer.setEdgesVisible(this.showBuildingEdges);
+        break;
+      case 'high':
+      default:
+        this.qualityLodScale = 1.0;
+        this.detailCullRadius = 0;
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        this.sunLight.castShadow = true;
+        this.buildingRenderer.setEdgesVisible(this.showBuildingEdges);
+        break;
+    }
+  }
+
+  /**
+   * Hides full-detail building bodies beyond `detailCullRadius × camera
+   * distance` from the camera focus point. Runs at 4 Hz — far cheaper than
+   * per-frame, and pop-in at the cull horizon is masked by fog + distance.
+   * Roof meshes ride along with their body; the selected/hovered building is
+   * always kept visible so interaction never breaks.
+   */
+  private applyDistanceDetailCull() {
+    const mapData = this.currentMapData;
+    if (!mapData || this.detailCullRadius <= 0) return;
+    const focus = this.cameraController.target;
+    const radius = this.cameraController.distance * this.detailCullRadius;
+    const r2 = radius * radius;
+    let anyCulled = false;
+
+    for (const [id, mesh] of this.buildingRenderer.buildingMeshes) {
+      const bldg = this.buildingRenderer.getBuildingById(id);
+      if (!bldg) continue;
+      const dx = bldg.center.x - focus.x;
+      const dz = bldg.center.z - focus.z;
+      const within = dx * dx + dz * dz <= r2;
+      const keep = within || String(id) === String(this.buildingRenderer.getSelectedId());
+      if (mesh.visible !== keep) {
+        mesh.visible = keep;
+        anyCulled = true;
+      }
+      const roof = this.buildingRenderer.getRoofMesh(id);
+      if (roof && roof.visible !== keep) roof.visible = keep;
+    }
+    this.detailCullActive = anyCulled || this.detailCullActive;
+  }
+
   public setDisableElevation(disable: boolean) {
     if (this.disableElevation === disable || !this.currentMapData) return;
     this.disableElevation = disable;
@@ -977,6 +1086,8 @@ export class WorldScene {
     }
 
     this.skyAtmosphere.setSkyColors(topCol, horizCol, sunCol, moonCol);
+    // Dome clouds + star occlusion follow the eased weather cloud cover.
+    this.skyAtmosphere.setCloudCover(this.weatherFX.getCloudCover());
     this.skyAtmosphere.update(h, this.camera.position, performance.now() / 1000);
 
     const sceneBg = this.scene.background instanceof THREE.Color ? this.scene.background : null;
@@ -1279,21 +1390,18 @@ export class WorldScene {
 
   /**
    * True when the current freestanding structure, placed at (x, z) with the
-   * given rotation, has its footprint centre or any corner inside a water
-   * polygon. Used to tint the placement ghost red and reject the placement.
+   * given rotation, genuinely collides with open water (corner/edge crossing
+   * the waterline beyond the grazing tolerance). Shared with the commit path in
+   * useSettlementActions so the red ghost exactly predicts rejected placement.
    */
   private isPlacementOverWater(x: number, z: number, rotDeg: number): boolean {
-    if (this.waterPolygons.length === 0) return false;
     const type = this.pendingFreestandingType;
     if (!type) return false;
-    const poly = getFreestandingCollisionPolygon({ typeId: type, position: { x, z }, rotationDeg: rotDeg });
-    const corners = [{ x, z }, ...poly];
-    for (const water of this.waterPolygons) {
-      for (const c of corners) {
-        if (this.isPointInsidePoly(c, water)) return true;
-      }
-    }
-    return false;
+    const dims = getFreestandingDimensions(type);
+    return freestandingFootprintOverlapsWater(
+      { typeId: type, position: { x, z }, rotationDeg: rotDeg, width: dims.width, length: dims.length },
+      this.waterPolygons
+    );
   }
 
   /**
@@ -2055,6 +2163,30 @@ export class WorldScene {
     // (gatherer / demolition overflow) dispatches the squad to collect it.
     // Checked before building raycasts so a pile inside a demolished structure
     // wins over enter/scavenge orders.
+    //
+    // Two hit paths, because the pile badge floats above the terrain: clicking
+    // the badge sprite hits the marker (key `stranded_<pileId>`), while clicking
+    // the ground next to it resolves via terrain intersection below.
+    if (markerHit?.kind === 'stranded_loot' && this.onOrderSquadMove) {
+      const pile = this.strandedPiles.find((p) => markerHit.key === `stranded_${p.id}`);
+      if (pile) {
+        const elevAt = this.disableElevation ? 0 : sampleElevation(
+          this.currentMapData?.elevation,
+          pile.position.x,
+          pile.position.z,
+          this.currentExaggeration
+        );
+        this.spawnTapFeedback(pile.position.x, elevAt, pile.position.z, 0xf59e0b);
+        this.issueMoveOrder(
+          this.orderSquadIdsFor(targetSquadId),
+          { x: Math.round(pile.position.x * 10) / 10, z: Math.round(pile.position.z * 10) / 10 },
+          getStrandedLootOrderId(pile.id),
+          `Stranded Field Loot (${pile.wood + pile.metal + pile.bricks} units)`,
+          queue
+        );
+        return;
+      }
+    }
     {
       const ground = this.raycaster.intersectObjects([
         ...this.groundRenderer.group.children,
@@ -2070,7 +2202,14 @@ export class WorldScene {
       if (at && this.strandedPiles.length > 0 && this.onOrderSquadMove) {
         const pile = findPileAt(this.strandedPiles, at, STRANDED_DISPATCH_RADIUS);
         if (pile) {
-          this.spawnTapFeedback(pile.position.x, 0, pile.position.z, 0xf59e0b);
+          // Feedback ring rides the terrain like the pile's marker badge.
+          const elevAt = this.disableElevation ? 0 : sampleElevation(
+            this.currentMapData?.elevation,
+            pile.position.x,
+            pile.position.z,
+            this.currentExaggeration
+          );
+          this.spawnTapFeedback(pile.position.x, elevAt, pile.position.z, 0xf59e0b);
           this.issueMoveOrder(
             this.orderSquadIdsFor(targetSquadId),
             { x: Math.round(pile.position.x * 10) / 10, z: Math.round(pile.position.z * 10) / 10 },
@@ -2168,7 +2307,14 @@ export class WorldScene {
     const hitPos = new THREE.Vector3();
 
     if (this.raycaster.ray.intersectPlane(plane, hitPos) && this.onOrderSquadMove) {
-      this.spawnTapFeedback(hitPos.x, 0, hitPos.z, 0x10b981);
+      // Ring must sit on the actual terrain: the mathematical plane is at y=0,
+      // but on elevated maps the hit point can be well above/below the surface.
+      const hitElev = this.disableElevation
+        ? 0
+        : this.currentMapData?.elevation
+        ? sampleElevation(this.currentMapData.elevation, hitPos.x, hitPos.z, this.currentExaggeration)
+        : 0;
+      this.spawnTapFeedback(hitPos.x, hitElev, hitPos.z, 0x10b981);
       this.issueMoveOrder(this.orderSquadIdsFor(targetSquadId), {
         x: Math.round(hitPos.x * 10) / 10,
         z: Math.round(hitPos.z * 10) / 10,
@@ -2445,6 +2591,15 @@ export class WorldScene {
     if (zombieLairs) this.zombieLairs = toSafeMap<string | number, ZombieLair>(zombieLairs);
     if (occupiedBuildings) this.occupiedBuildings = toSafeMap<string | number, BuildingOccupation>(occupiedBuildings);
 
+    // Marker rebuild throttle: the sim loop pushes state at 10 Hz, but marker
+    // sprites glide between updates via PositionSmoother, so rebuilding the
+    // whole marker list (O(entities + map scans)) at full tick rate wastes
+    // frame budget. 5 Hz keeps badges visually live; positions interpolate in
+    // the per-frame markerRenderer.update() regardless.
+    const nowMs = performance.now();
+    if (nowMs - this.lastMarkerBuildAt < 200) return;
+    this.lastMarkerBuildAt = nowMs;
+
     const classify = (x: number, z: number) =>
       this.fogGrid && fogEnabled ? classifyPoint(this.fogGrid, this.visibleCells, x, z) : 'visible';
 
@@ -2527,7 +2682,7 @@ export class WorldScene {
             ? String(squad.noPath.buildingId)
             : `pos_${squad.noPath.x.toFixed(1)}_${squad.noPath.z.toFixed(1)}`;
         if (noPathTargets.has(key)) continue;
-        const bldg = mapData?.buildings.find((b) => String(b.id) === String(squad.noPath.buildingId));
+        const bldg = this.findBuildingById(mapData, squad.noPath.buildingId);
         if (bldg) {
           noPathTargets.set(key, { x: bldg.center.x, z: bldg.center.z, label: bldg.name || 'NO PATH' });
         } else {
@@ -2599,7 +2754,7 @@ export class WorldScene {
     // 4. Discovered survivor groups — orange unknown (? icon) until encountered, or red if hostile
     for (const group of safeHidden.values()) {
       if (!group.isDiscovered || group.isRecruited) continue;
-      const bldg = mapData?.buildings.find((b) => String(b.id) === String(group.buildingId));
+      const bldg = this.findBuildingById(mapData, group.buildingId);
       if (!bldg) continue;
       if (classify(bldg.center.x, bldg.center.z) !== 'visible') continue;
 
@@ -2645,7 +2800,7 @@ export class WorldScene {
     // 6. Rival Hideouts (§5.2) — unfriendly NPC strongholds in red
     for (const hideout of this.rivalHideouts.values()) {
       if (!hideout.isDiscovered || hideout.isCleared) continue;
-      const bldg = mapData?.buildings.find((b) => String(b.id) === String(hideout.buildingId));
+      const bldg = this.findBuildingById(mapData, hideout.buildingId);
       if (!bldg) continue;
       if (classify(bldg.center.x, bldg.center.z) !== 'visible') continue;
 
@@ -2671,7 +2826,7 @@ export class WorldScene {
     // 7. Zombie Lairs (§5.2) — unfriendly NPC nests in round red badge
     for (const lair of this.zombieLairs.values()) {
       if (!lair.isDiscovered || lair.isCleared) continue;
-      const bldg = mapData?.buildings.find((b) => String(b.id) === String(lair.buildingId));
+      const bldg = this.findBuildingById(mapData, lair.buildingId);
       if (!bldg) continue;
       if (classify(bldg.center.x, bldg.center.z) !== 'visible') continue;
 
@@ -2700,7 +2855,7 @@ export class WorldScene {
     // is dead (the occupation clears and the marker disappears).
     for (const occ of this.occupiedBuildings.values()) {
       if (occ.isCleared) continue;
-      const bldg = mapData?.buildings.find((b) => String(b.id) === String(occ.buildingId));
+      const bldg = this.findBuildingById(mapData, occ.buildingId);
       if (!bldg) continue;
       if (classify(bldg.center.x, bldg.center.z) !== 'visible') continue;
 
@@ -2883,14 +3038,25 @@ export class WorldScene {
           (pile.items || []).reduce((sum, it) => sum + it.quantity, 0);
         if (pileUnits <= 0) continue;
         if (classify(pile.position.x, pile.position.z) === 'unexplored') continue;
+        // Elevation-aware anchor: stranded piles sit on real terrain (and can
+        // strand inside a building footprint during deconstruction). Sampling
+        // keeps the badge on the ground — a y=0 anchor would end up buried or
+        // floating on hilly maps, and the displaced badge breaks click-to-
+        // recover because the ground ray lands far from the pile.
+        const pileElev = activeElevation
+          ? sampleElevation(activeElevation, pile.position.x, pile.position.z, this.currentExaggeration)
+          : 0;
+        const pileBldg = mapData ? this.getBuildingAtPoint(mapData, pile.position.x, pile.position.z) : null;
+        const pileTopY = pileBldg ? this.getBuildingTopY(pileBldg.id) : 0;
+        const pileAnchorY = Math.max(pileElev, pileTopY);
         markers.push({
           key: `stranded_${pile.id}`,
           kind: 'stranded_loot',
           faction: 'unknown',
           x: pile.position.x,
           z: pile.position.z,
-          y: 2.2,
-          anchorY: 0,
+          y: pileAnchorY + 2.2,
+          anchorY: pileAnchorY,
           label: `Stranded Field Loot — ${pileUnits} units`,
           lootCategory: pile.wood + pile.metal + pile.bricks > 0 ? 'materials' : 'assorted',
           leftoverCount: pileUnits,
@@ -2904,26 +3070,96 @@ export class WorldScene {
     this.markerRenderer.updateMarkers(markers);
   }
 
-  private getBuildingAtPoint(mapData: MapData, x: number, z: number): BuildingPolygon | null {
-    for (const bldg of mapData.buildings) {
-      if (!bldg.polygon || bldg.polygon.length < 3) continue;
-      let inside = false;
-      const pts = bldg.polygon;
-      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
-        const xi = pts[i].x;
-        const zi = pts[i].z;
-        const xj = pts[j].x;
-        const zj = pts[j].z;
-        const intersect = zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi;
-        if (intersect) inside = !inside;
+  /**
+   * Builds a uniform-grid index (cell ≈ 25 m) over building footprints. A
+   * point query visits only the buildings registered in its cell — typically
+   * zero or one — instead of testing every footprint on the map.
+   */
+  private buildSpatialIndex(buildings: BuildingPolygon[]) {
+    const cellSize = 25;
+    let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
+    for (const b of buildings) {
+      for (const p of b.polygon || []) {
+        if (p.x < minX) minX = p.x;
+        if (p.z < minZ) minZ = p.z;
+        if (p.x > maxX) maxX = p.x;
+        if (p.z > maxZ) maxZ = p.z;
       }
-      if (inside) return bldg;
+    }
+    if (!Number.isFinite(minX)) return null;
+    const cols = Math.ceil((maxX - minX) / cellSize) + 1;
+    const rows = Math.ceil((maxZ - minZ) / cellSize) + 1;
+    const cells = new Map<number, BuildingPolygon[]>();
+    for (const b of buildings) {
+      if (!b.polygon || b.polygon.length < 3) continue;
+      // Register the footprint in every cell its AABB overlaps. Real OSM
+      // footprints are small, so overlap lists stay tiny.
+      const xs = b.polygon.map((p) => p.x);
+      const zs = b.polygon.map((p) => p.z);
+      const c0 = Math.max(0, Math.floor((Math.min(...xs) - minX) / cellSize));
+      const c1 = Math.min(cols - 1, Math.floor((Math.max(...xs) - minX) / cellSize));
+      const r0 = Math.max(0, Math.floor((Math.min(...zs) - minZ) / cellSize));
+      const r1 = Math.min(rows - 1, Math.floor((Math.max(...zs) - minZ) / cellSize));
+      for (let r = r0; r <= r1; r++) {
+        for (let c = c0; c <= c1; c++) {
+          const key = r * cols + c;
+          const list = cells.get(key);
+          if (list) list.push(b);
+          else cells.set(key, [b]);
+        }
+      }
+    }
+    return { cellSize, minX, minZ, cols, rows, cells };
+  }
+
+  private getBuildingAtPoint(mapData: MapData, x: number, z: number): BuildingPolygon | null {
+    // Fast path: spatial index (available whenever this map was loaded).
+    const idx = this.buildingIndex;
+    if (idx && mapData === this.currentMapData) {
+      const col = Math.floor((x - idx.minX) / idx.cellSize);
+      const row = Math.floor((z - idx.minZ) / idx.cellSize);
+      if (col < 0 || row < 0 || col >= idx.cols || row >= idx.rows) return null;
+      const list = idx.cells.get(row * idx.cols + col);
+      if (!list) return null;
+      for (const bldg of list) {
+        if (this.pointInFootprint(x, z, bldg)) return bldg;
+      }
+      return null;
+    }
+    // Fallback for foreign map payloads: legacy linear scan.
+    for (const bldg of mapData.buildings) {
+      if (this.pointInFootprint(x, z, bldg)) return bldg;
     }
     return null;
   }
 
+  private pointInFootprint(x: number, z: number, bldg: BuildingPolygon): boolean {
+    if (!bldg.polygon || bldg.polygon.length < 3) return false;
+    let inside = false;
+    const pts = bldg.polygon;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const xi = pts[i].x;
+      const zi = pts[i].z;
+      const xj = pts[j].x;
+      const zj = pts[j].z;
+      const intersect = zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi;
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
+
   private isPointInsideAnyBuilding(mapData: MapData, x: number, z: number): boolean {
     return this.getBuildingAtPoint(mapData, x, z) !== null;
+  }
+
+  /**
+   * O(1) building lookup by id (falls back to a linear find for payloads that
+   * were never indexed — e.g. tests passing a hand-built map).
+   */
+  private findBuildingById(mapData: MapData | null, id: string | number): BuildingPolygon | undefined {
+    const key = String(id);
+    if (mapData === this.currentMapData) return this.buildingById.get(key);
+    return mapData?.buildings.find((b) => String(b.id) === key);
   }
 
   private getBuildingTopY(buildingId: string | number): number {
@@ -3045,14 +3281,37 @@ export class WorldScene {
     this.fogOfWarRenderer.update(delta, now / 1000);
 
     // Zoom-out LOD: swap the ~8.4k individual building meshes for the merged
-    // overview meshes when the camera is high (hysteresis avoids flicker)
+    // overview meshes when the camera is high (hysteresis avoids flicker).
+    // Quality presets shift the swap threshold: on Medium/Low the merged LOD
+    // kicks in much sooner, so tilted/wide views render mostly merged geometry.
     const camY = this.camera.position.y;
-    if (!this.buildingLodDistant && camY > 380) {
+    const distantOn = 380 * this.qualityLodScale;
+    const distantOff = distantOn * 0.74;
+    if (!this.buildingLodDistant && camY > distantOn) {
       this.buildingLodDistant = true;
       this.buildingRenderer.setLodMode('distant');
-    } else if (this.buildingLodDistant && camY < 280) {
+    } else if (this.buildingLodDistant && camY < distantOff) {
       this.buildingLodDistant = false;
       this.buildingRenderer.setLodMode('detailed');
+    }
+
+    // Distance-based detail culling (quality-gated): in detailed mode, hide
+    // far-away individual buildings so a tilted zoomed-out view — where the
+    // frustum contains the whole city but the altitude LOD hasn't fired —
+    // doesn't draw thousands of full-detail meshes. Near buildings stay full
+    // detail; far ones vanish (the fog + ground layer reads as distance haze).
+    // Merged distant cells, freestanding structures, roofs and edges skip this
+    // (visibility is per body-mesh only, and freestanding walls are gameplay
+    // objects the player placed).
+    if (this.graphicsQuality !== 'high' && !this.buildingLodDistant) {
+      this.detailCullAccum += delta;
+      if (this.detailCullAccum >= 0.25) {
+        this.detailCullAccum = 0;
+        this.applyDistanceDetailCull();
+      }
+    } else if (this.detailCullActive) {
+      this.detailCullActive = false;
+      this.buildingRenderer.restoreAllDetailVisibility();
     }
 
     // Update Combat & Zombies Animations

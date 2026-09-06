@@ -67,13 +67,27 @@ export function runLogisticsStage(state: SettlementState, map: MapData, squads: 
       ? isSquadInsideBuilding(squadPos, building) || isSquadAtBuilding(squadPos, building, 5)
       : Math.hypot(squad.x - dropoff.x, squad.z - dropoff.z) <= 8;
     if (!atDropoff) continue;
+    // Deposit radius must cover the whole arrival zone: a squad standing
+    // INSIDE a large HQ footprint can be >10m from the building's centre, and
+    // a fixed 10m radius silently refused the deposit (loot never left the
+    // backpack, the auto-return gate never opened, queues stalled). Use the
+    // distance that just passed the arrival check, plus margin.
+    const depositRadius = building
+      ? Math.max(
+          10,
+          Math.hypot(squad.x - dropoff.x, squad.z - dropoff.z) + 5,
+          building.polygon?.length
+            ? Math.max(...building.polygon.map((p) => Math.hypot(p.x - dropoff.x, p.z - dropoff.z)))
+            : 10
+        )
+      : 10;
     if (inventory?.items?.length) {
-      const result = unloadSquadAtDropoff(nextState, squad.squadId, { x: squad.x, z: squad.z }, dropoff, 10);
+      const result = unloadSquadAtDropoff(nextState, squad.squadId, { x: squad.x, z: squad.z }, dropoff, depositRadius);
       nextState = result.newState;
       if (result.unloaded.length) events.push({ title: 'SUPPLIES SECURED', desc: `${squad.name} deposited recovered supplies at ${dropoff.name}.`, type: 'success' });
     }
     if (vehicle?.inventory?.length) {
-      nextState = unloadVehicleAtDropoff(nextState, vehicle, dropoff, 10).newState;
+      nextState = unloadVehicleAtDropoff(nextState, vehicle, dropoff, depositRadius).newState;
     }
   }
   return { state: nextState, squads: nextSquads, events };

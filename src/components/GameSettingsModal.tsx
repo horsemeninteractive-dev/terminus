@@ -282,6 +282,34 @@ export const GameSettingsModal: React.FC<GameSettingsModalProps> = ({
 
  {activeTab === 'graphics' && (
  <div className="space-y-5">
+ {/* Graphics Quality Preset */}
+ <div className="p-4 bg-[#0E1524] border border-[#1E293B]">
+ <div className="flex items-center justify-between mb-2">
+ <label className="text-xs font-heading font-bold text-white uppercase">
+ GRAPHICS QUALITY
+ </label>
+ <span className="text-xs font-mono text-[#E8E8E8] uppercase">{settings.graphicsQuality ?? 'high'}</span>
+ </div>
+ <div className="text-[10px] font-mono text-[#64748B] mb-2">
+ Lower presets cull full-detail buildings beyond a distance from the camera (helps FPS in tilted/zoomed-out views)
+ </div>
+ <div className="grid grid-cols-3 gap-2">
+ {(['high', 'medium', 'low'] as const).map((q) => (
+ <button
+ key={q}
+ onClick={() => handleUpdate({ graphicsQuality: q })}
+ className={`p-2 text-xs font-mono uppercase border transition-colors ${
+ (settings.graphicsQuality ?? 'high') === q
+ ? 'bg-[#1E293B] border-[#E8E8E8] text-white'
+ : 'bg-[#080C14] border-[#1C283B] text-[#64748B] hover:text-white'
+ }`}
+ >
+ {q}
+ </button>
+ ))}
+ </div>
+ </div>
+
  {/* Fullscreen Mode */}
  <div className="p-4 bg-[#0E1524] border border-[#1E293B] flex items-center justify-between">
  <div>

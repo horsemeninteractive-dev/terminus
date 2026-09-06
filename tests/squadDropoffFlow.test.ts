@@ -147,10 +147,16 @@ function tick(world: World, map: MapData, delta = 1): World {
   if (
     carriedBefore > 0 && (invAfter?.items?.length || 0) < carriedBefore && after
   ) {
-    const dw = Math.hypot(after.x - WAREHOUSE.center.x, after.z - WAREHOUSE.center.z);
-    const dh = Math.hypot(after.x - HQ.center.x, after.z - HQ.center.z);
-    if (dw <= 10) warehouseDeposits += 1;
-    else if (dh <= 10) hqDeposits += 1;
+    // Mirror the logistics stage's arrival zone: inside the footprint OR
+    // within the building radius + 5 m margin (same test the pipeline uses).
+    const inArrivalZone = (b: BuildingPolygon) => {
+      const d = Math.hypot(after.x - b.center.x, after.z - b.center.z);
+      if (inside(after.x, after.z, b)) return true;
+      const r = Math.max(...b.polygon.map((p) => Math.hypot(p.x - b.center.x, p.z - b.center.z)));
+      return d <= r + 5;
+    };
+    if (inArrivalZone(WAREHOUSE)) warehouseDeposits += 1;
+    else if (inArrivalZone(HQ)) hqDeposits += 1;
     deposits += 1;
   }
 
@@ -228,11 +234,11 @@ function wood(world: World): number {
   return (world.state.stockpile.materials as any).wood || 0;
 }
 
-function setup(withWarehouse: boolean, withB2 = true): { world: World; map: MapData } {
+function setup(withWarehouse: boolean, withB2 = true, hqBldg: BuildingPolygon = HQ): { world: World; map: MapData } {
   const state = createInitialSettlementState('Repro');
   (state as any).totalStorageCapacity = 5000;
-  seedHQ(state);
-  const buildings = [HQ, ...(withWarehouse ? [WAREHOUSE] : []), B1, ...(withB2 ? [B2] : [])];
+  seedHQ(state, hqBldg);
+  const buildings = [hqBldg, ...(withWarehouse ? [WAREHOUSE] : []), B1, ...(withB2 ? [B2] : [])];
   const map = makeMap(buildings);
   if (withWarehouse) seedWarehouse(state);
   seedSearch(state, B1.id, [LOOT('l1'), LOOT('l2'), LOOT('l3'), LOOT('l4')]);
@@ -293,6 +299,32 @@ test('S2 no warehouse: loot B1 -> deposit at HQ -> continue to B2 -> deposit -> 
   assert.equal(wood(end) - base, 6, 'all 6 loot units reached the stockpile at HQ');
   assert.ok(end.hqDeposits >= 2, `deposited at the HQ (${end.hqDeposits}x)`);
   assert.ok(Math.abs(s.x) < 40, `ended at/near the HQ (${s.x.toFixed(0)},${s.z.toFixed(0)})`);
+});
+
+test('S4 large HQ: deposit works anywhere inside the footprint, not just near the centre', () => {
+  // Regression: the logistics stage checked arrival footprint-wide but then
+  // called the unload with a fixed 10 m radius from the building's CENTRE. On
+  // a large OSM HQ (a 40×40 m hospital, say) a squad standing in a corner was
+  // "arrived" but >10 m from the centre — the deposit silently failed, loot
+  // stayed in the backpack forever, and the auto-return gate never opened.
+  const bigHQ = B('b_hq', 0, 0, 40, 40);
+  const { world, map } = setup(false, false, bigHQ);
+  const start = world;
+  // Squad stands inside the HQ footprint near a corner: 16√2 ≈ 22.6 m from
+  // the centre — far beyond the old fixed 10 m deposit radius.
+  start.squads = [{
+    ...mkSquad('sq1', 16, 16),
+    state: 'idle', manualOrder: false, targetPos: null, targetBuildingId: null,
+  }];
+  start.state.squadInventories = {
+    sq1: { squadId: 'sq1', capacity: 4, used: 2, items: [LOOT('a'), LOOT('b')] },
+  };
+  start.queue = []; // deposit-only scenario — no queued scavenge targets
+  const base = wood(start);
+  const end = run(start, map, 20);
+  const inv = end.state.squadInventories?.['sq1'];
+  assert.equal(inv?.items?.length, 0, 'backpack emptied at the large HQ');
+  assert.equal(wood(end) - base, 2, 'loot reached the stockpile');
 });
 
 test('S3 manual move to HQ with loot deposits there and never scavenges the HQ', () => {

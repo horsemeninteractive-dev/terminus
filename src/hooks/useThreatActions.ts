@@ -81,6 +81,7 @@ export interface ThreatActionsRuntime {
   setIsRadioModalOpen: Dispatch<SetStateAction<boolean>>;
   setIsResearchModalOpen: Dispatch<SetStateAction<boolean>>;
   setIsMedbayModalOpen: Dispatch<SetStateAction<boolean>>;
+  setIsSquadModalOpen: Dispatch<SetStateAction<boolean>>;
   addTacticalAlert: (
     title: string,
     desc: string,
@@ -131,6 +132,7 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
     setIsRadioModalOpen,
     setIsResearchModalOpen,
     setIsMedbayModalOpen,
+    setIsSquadModalOpen,
     addTacticalAlert,
     handleOrderSquadMove,
   } = runtime;
@@ -1024,7 +1026,12 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
         break;
       case 'open_squad_panel':
       case 'muster_squad':
+        // Tutorial hand-holding: the tracker's MUSTER FIRETEAM action must
+        // open the actual muster UI, not just a sidebar tab the player has to
+        // hunt for. The '+' form-squad button glows while the task is active
+        // (squadMusterActive → TacticalSquadSelectorStrip).
         setActiveSidebarTab('squads');
+        setIsSquadModalOpen(true);
         break;
       case 'trigger_recruitment':
         if (mapData) {

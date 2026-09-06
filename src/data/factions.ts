@@ -45,18 +45,19 @@ export const FACTION_STANDING_MAX = 100;
 
 export const FACTION_DEFINITIONS: FactionDef[] = [
   {
+    // Not exposed in relations UI until the player earns network status; it is
+    // the settlement's own umbrella, so it starts "known" via story flow.
     id: 'szo_network',
     name: 'SZO NETWORK',
     operator: 'Sgt. Vance / Command',
     blurb: 'The settlement\'s own umbrella network — scouts, operators and the command channel.',
     defaultStanding: 40,
-    // The network is the player's patron; it grumbles but never cuts the line.
   },
   {
     id: 'greywater',
     name: 'GRAVEL BEND',
-    operator: 'Unknown // Gravel Band',
-    blurb: 'Long-range settlement on the river loop — a distant door kept open by radio.',
+    operator: 'Dell Harrow // River Loop',
+    blurb: 'Independent long-range settlement on the river loop — self-sufficient, wary of chains of command, kept close by radio.',
     defaultStanding: 0,
     cutoffThreshold: -20,
   },
@@ -69,6 +70,42 @@ export const FACTION_DEFINITIONS: FactionDef[] = [
     cutoffThreshold: -15,
     contactLostTransmissionId: 'tx_c4_strangers_refused',
     contactRestoredTransmissionId: 'tx_c4_strangers_recovered',
+  },
+  {
+    id: 'remnant',
+    name: 'THE REMNANT',
+    operator: 'Col. Elias Marsh // Standing Order 9',
+    blurb: 'Former military and civil authority holding fragments of the old order together through structure, command and quarantine law. They know more about the collapse than they say — and their methods are not gentle.',
+    defaultStanding: 0,
+    cutoffThreshold: -30,
+  },
+  {
+    id: 'commonwealth',
+    name: 'THE COMMONWEALTH',
+    blurb: 'A network of survivor communities rebuilding civilisation through cooperation, trade and civilian governance — convinced the old world failed, not humanity.',
+    defaultStanding: 10,
+    cutoffThreshold: -25,
+  },
+  {
+    id: 'purifiers',
+    name: 'THE PURIFIERS',
+    blurb: 'An extremist survival movement: the infected cannot be cured, only destroyed. Their argument makes sense to anyone who has watched a town disappear — and their answer terrifies everyone who has watched one survive.',
+    defaultStanding: -10,
+    cutoffThreshold: -35,
+  },
+  {
+    id: 'freeholds',
+    name: 'THE FREEHOLDS',
+    blurb: 'Independent settlements that reject large-scale authority: centralised organisations caused the collapse, so only self-sufficient local communities endure.',
+    defaultStanding: 0,
+    cutoffThreshold: -25,
+  },
+  {
+    id: 'seekers',
+    name: 'THE SEEKERS',
+    blurb: 'Scientists, doctors and technicians chasing what the infection actually is. They hold fragments of pre-collapse research — essential to the truth, and certain of far less than they sound.',
+    defaultStanding: 5,
+    cutoffThreshold: -25,
   },
 ];
 

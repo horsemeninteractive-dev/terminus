@@ -78,6 +78,7 @@ export interface SimLoopRuntime {
   currentPreset: LocationPreset;
   caravans: TradeCaravan[];
   radioDirectiveState: RadioDirectiveState;
+  missionState: import('../types/mission').MissionState;
   dangerLevel: number;
   showSatelliteOverlay: boolean;
   satelliteQuality: import('../types/saveGame').SatelliteQuality;
@@ -151,6 +152,7 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
     currentPreset,
     caravans,
     radioDirectiveState,
+    missionState,
     dangerLevel,
     showSatelliteOverlay,
     satelliteQuality,
@@ -277,8 +279,13 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
                 mapData: mapDataRef.current || mapData,
                 caravans,
                 radioState: radioDirectiveState,
+                // Persist mission progress — without this, loading an autosave
+                // restarts the campaign from the first quest.
+                missionState: missionState,
                 hasCompletedFirstScavenge: true,
                 combatSquads,
+                // Persist the scavenge queue like quicksaves do.
+                scavengeQueue,
                 zombies,
                 worldVehicles: settlement.vehicles || [],
                 dangerLevel,

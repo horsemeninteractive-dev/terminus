@@ -1,7 +1,7 @@
 {
   "name": "terminus",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "scripts": {
     "dev": "vite --port 3000 --host 0.0.0.0",
@@ -15,14 +15,11 @@
     "version:major": "npm version major --no-git-tag-version"
   },
   "dependencies": {
-    "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.1.14",
     "@types/earcut": "^3.0.0",
     "@types/three": "^0.185.4",
     "@vitejs/plugin-react": "^5.0.4",
-    "dotenv": "^17.2.3",
     "earcut": "^3.2.3",
-    "express": "^4.21.2",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "react": "^19.0.1",
@@ -31,7 +28,6 @@
     "vite": "^6.2.3"
   },
   "devDependencies": {
-    "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",

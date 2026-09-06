@@ -231,6 +231,10 @@ export interface SaveGameData {
   };
 }
 
+/** Render quality presets. Lower presets cull full-detail buildings more
+ *  aggressively with camera distance and drop expensive view effects. */
+export type GraphicsQuality = 'high' | 'medium' | 'low';
+
 export interface GameSettings {
   masterVolume: number;
   musicVolume: number;
@@ -242,6 +246,8 @@ export interface GameSettings {
   showRoads: boolean;
   showBuildings: boolean;
   disableElevation?: boolean; // When true, flatten terrain to prevent roads clipping on curated maps
+  /** 3D render quality preset (default 'high' = full detail, distance-culled). */
+  graphicsQuality?: GraphicsQuality;
   autosaveIntervalDays: number; // 0 = off, 1 = every day, 3 = every 3 days
   pauseOnNightfall: boolean;
   pauseOnRaid: boolean;

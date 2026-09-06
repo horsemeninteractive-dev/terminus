@@ -16,6 +16,9 @@ interface GameCanvasProps {
   elevationExaggeration: number;
   disableElevation?: boolean;
   showTerrainWireframe: boolean;
+  /** High/medium/low preset — drives distance-based detail culling and
+   *  pixel-ratio/shadow budget in WorldScene. */
+  graphicsQuality?: import('../types/saveGame').GraphicsQuality;
   showBuildingEdges: boolean;
   showBuildings: boolean;
   showRoads: boolean;
@@ -59,6 +62,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   elevationExaggeration,
   disableElevation = false,
   showTerrainWireframe,
+  graphicsQuality = 'high',
   showBuildingEdges,
   showBuildings,
   showRoads,
@@ -195,6 +199,13 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       sceneRef.current.setDisableElevation(disableElevation);
     }
   }, [disableElevation]);
+
+  // Graphics quality preset (also applied on scene creation below)
+  useEffect(() => {
+    if (sceneRef.current) {
+      sceneRef.current.setGraphicsQuality(graphicsQuality);
+    }
+  }, [graphicsQuality, mapKey]);
 
   // Update settlement buildings overlay when settlement state changes
   useEffect(() => {

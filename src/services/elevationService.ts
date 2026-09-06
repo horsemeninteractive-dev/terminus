@@ -83,6 +83,28 @@ export function sampleElevationNormal(
 }
 
 /**
+ * Gameplay movement penalty for terrain steepness at (x, z). Returns 1 on
+ * flat ground, falling linearly to `minFactor` as the slope approaches 45°.
+ * Uses the DEM slope at exaggeration 1.0 so gameplay difficulty derives from
+ * real terrain, independent of the visual exaggeration setting. Units on
+ * gentle grades keep most of their speed; cliffs slow everyone to a crawl.
+ */
+export function terrainSlopeSpeedFactor(
+  gridData: ElevationGrid | null | undefined,
+  x: number,
+  z: number,
+  minFactor = 0.45
+): number {
+  if (!gridData || !gridData.grid || gridData.grid.length === 0) return 1;
+  const n = sampleElevationNormal(gridData, x, z, 1.0);
+  // Scene-space slope: horizontal deviation of the normal over its vertical
+  // component. slope = tan(steepness): 0 flat, 1 = 45°.
+  const slope = Math.hypot(n.x, n.z) / Math.max(n.y, 1e-6);
+  const t = Math.min(1, slope);
+  return 1 - t * (1 - minFactor);
+}
+
+/**
  * Fetches real Digital Elevation Model (DEM) data from Open-Meteo elevation API,
  * with fast batch fetching and procedural fallback if offline.
  */

@@ -2,6 +2,7 @@ import { MapData, Point2D } from '../types/map';
 import { SettlementState } from '../types/settlement';
 import { ResourceWorkOrder } from '../types/resourceGathering';
 import { PathGrid, stepAlongPath } from './pathfindingService';
+import { terrainSlopeSpeedFactor } from './elevationService';
 import { getPrimaryHQ } from './buildingOperational';
 import { depositWithinCapacity, countStockpileUnits, type StockpileAddition } from './stockpileCapacity';
 import { strandMaterialsAt } from './strandedLootService';
@@ -158,7 +159,9 @@ export function tickResourceGathering(
       const shelter = getWorkerShelterLocation(state, o.position, map);
       const stepRes = stepAlongPath(
         grid, o.pathState, o.position.x, o.position.z,
-        shelter.center.x, shelter.center.z, 6.0, dt, 1.0
+        shelter.center.x, shelter.center.z,
+        6.0 * (map.elevation ? terrainSlopeSpeedFactor(map.elevation, o.position.x, o.position.z) : 1),
+        dt, 1.0
       );
       o.position.x = stepRes.x;
       o.position.z = stepRes.z;
@@ -181,7 +184,9 @@ export function tickResourceGathering(
     if (o.state === 'moving_to_node') {
       const stepRes = stepAlongPath(
         grid, o.pathState, o.position.x, o.position.z,
-        n.position.x, n.position.z, 5.0, dt, 0.8
+        n.position.x, n.position.z,
+        5.0 * (map.elevation ? terrainSlopeSpeedFactor(map.elevation, o.position.x, o.position.z) : 1),
+        dt, 0.8
       );
       o.position.x = stepRes.x;
       o.position.z = stepRes.z;
@@ -205,7 +210,9 @@ export function tickResourceGathering(
       const shelter = getWorkerShelterLocation(state, o.position, map);
       const stepRes = stepAlongPath(
         grid, o.pathState, o.position.x, o.position.z,
-        shelter.center.x, shelter.center.z, 5.5, dt, 0.8
+        shelter.center.x, shelter.center.z,
+        5.5 * (map.elevation ? terrainSlopeSpeedFactor(map.elevation, o.position.x, o.position.z) : 1),
+        dt, 0.8
       );
       o.position.x = stepRes.x;
       o.position.z = stepRes.z;

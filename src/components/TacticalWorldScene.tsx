@@ -4,6 +4,7 @@ import { GameCanvas } from './GameCanvas';
 import { TacticalHeaderStrip } from './TacticalHeaderStrip';
 import { AudioSettingsModal } from './AudioSettingsModal';
 import { TacticalSquadSelectorStrip } from './TacticalSquadSelectorStrip';
+import { TutorialHintArrow } from './TutorialHintArrow';
 import { SquadManagementModal } from './SquadManagementModal';
 import { LawPolicyModal } from './LawPolicyModal';
 import { ExpeditionModal } from './ExpeditionModal';
@@ -125,6 +126,11 @@ export interface TacticalWorldSceneProps {
   isQuestListOpen: boolean;
   isScavengeViewActive: boolean;
   isSquadModalOpen: boolean;
+  /** Tutorial/mission task actively asks the player to muster a squad. */
+  squadMusterActive?: boolean;
+  /** Whether modals the player must dismiss are covering the world view —
+   *  used to suppress the tutorial arrow when its target is unreachable. */
+  isTutorialTargetObscured?: boolean;
   labelDetailMode: 'detailed' | 'minimal';
   mapData: MapData | null;
   noiseEvents: NoiseEvent[];
@@ -201,6 +207,7 @@ export interface TacticalWorldSceneProps {
   satelliteQuality: import('../types/saveGame').SatelliteQuality;
   showStreetLabels: boolean;
   showTerrainWireframe: boolean;
+  graphicsQuality: import('../types/saveGame').GraphicsQuality;
   showWood: boolean;
   toasts: ToastItem[];
   viewMode: AppViewMode;
@@ -277,6 +284,8 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
     isQuestListOpen,
     isScavengeViewActive,
     isSquadModalOpen,
+    squadMusterActive,
+    isTutorialTargetObscured,
     labelDetailMode,
     mapData,
     noiseEvents,
@@ -353,6 +362,7 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
     satelliteQuality,
     showStreetLabels,
     showTerrainWireframe,
+    graphicsQuality,
     showWood,
     toasts,
     viewMode,
@@ -410,6 +420,7 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                 elevationExaggeration={elevationExaggeration}
                 disableElevation={disableElevation}
                 showTerrainWireframe={showTerrainWireframe}
+                graphicsQuality={graphicsQuality}
                 showBuildingEdges={showBuildingEdges}
                 showBuildings={showBuildings}
                 showRoads={showRoads}
@@ -637,12 +648,22 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                     dangerLevel={dangerLevel}
                   />
     
+                  {/* Tutorial affordance: floats beside the form-squad button */}
+                  <TutorialHintArrow
+                    target="#form-new-squad-btn"
+                    label="MUSTER FIRST SQUAD"
+                    sub="Open the + panel → form a fireteam"
+                    side="left"
+                    active={Boolean(squadMusterActive && !isTutorialTargetObscured)}
+                  />
+
                   {/* Top-Right Squad Tactical Command Card & Selector Strip */}
                   <TacticalSquadSelectorStrip
                     squads={combatSquads}
                     selectedSquadId={selectedSquadId}
                     onSelectSquad={handleSelectSquad}
                     onCreateSquad={() => setIsSquadModalOpen(true)}
+                    highlightMuster={squadMusterActive}
                     onPanToSquad={(sq) => {
                       handleMinimapPanTo({ x: sq.position ? sq.position.x : sq.x, z: sq.position ? sq.position.z : sq.z });
                     }}

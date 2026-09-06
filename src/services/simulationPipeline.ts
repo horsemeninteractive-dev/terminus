@@ -1,5 +1,5 @@
 import { SettlementState } from '../types/settlement';
-import { MapData } from '../types/map';
+import { MapData, ElevationGrid } from '../types/map';
 import { TacticalSquadUnit, ZombieUnit, HostileHumanUnit, NoiseEvent, DroppedItem, GameClockState } from '../types/combat';
 import { PathGrid } from './pathfindingService';
 import { RoadNetworkGraph } from './roadPathfinder';
@@ -52,7 +52,8 @@ export function runEconomyStages(
   clockSpeed: number,
   currentDay: number,
   isNight: boolean,
-  pathGrid?: PathGrid | null
+  pathGrid?: PathGrid | null,
+  elevationGrid?: ElevationGrid | null
 ): {
   newState: SettlementState;
   weather: ReturnType<typeof tickWeatherSimulation>['newState'];
@@ -61,7 +62,7 @@ export function runEconomyStages(
   completedDeconstructions: ReturnType<typeof tickSettlementSimulation>['completedDeconstructions'];
 } {
   const events: ToastMessage[] = [];
-  const economy = tickSettlementSimulation(state, deltaSeconds * clockSpeed, pathGrid, isNight);
+  const economy = tickSettlementSimulation(state, deltaSeconds * clockSpeed, pathGrid, isNight, elevationGrid);
   const researched = tickResearchSimulation(economy.newState, deltaSeconds, clockSpeed, isNight);
   const weather = tickWeatherSimulation(
     researched.weather || createInitialWeatherState(currentDay),
@@ -140,7 +141,7 @@ export function runSimulationPipeline(args: {
 }): SimulationPipelineResult {
   const { state, mapData, squads, zombies, hostileHumans, noiseEvents, droppedItems, clock, deltaSeconds, pathGrid, roadGraph, alarmActive = false } = args;
   const events: ToastMessage[] = [];
-  const economyResult = runEconomyStages(state, deltaSeconds, clock.speed, clock.day, clock.isNight, pathGrid);
+  const economyResult = runEconomyStages(state, deltaSeconds, clock.speed, clock.day, clock.isNight, pathGrid, mapData.elevation || null);
   events.push(...economyResult.events);
   // §IFZ Forester's Hut & Sawmill — spatial forestry: staffed huts replant/
   // regrow wood nodes inside their working radius, and staffed sawmills
@@ -155,7 +156,7 @@ export function runSimulationPipeline(args: {
   );
   const gatheringResult = tickResourceGathering(forestry.newState, forestry.mapData, deltaSeconds * clock.speed, clock.isNight, alarmActive, pathGrid);
   const gathering = gatheringResult.newState;
-  const combat = tickCombatSimulation(zombies, squads, gathering.adaptedBuildings, noiseEvents, clock, getPrimaryHQ(gathering)?.center || null, deltaSeconds, gathering, droppedItems, hostileHumans, pathGrid, alarmActive);
+  const combat = tickCombatSimulation(zombies, squads, gathering.adaptedBuildings, noiseEvents, clock, getPrimaryHQ(gathering)?.center || null, deltaSeconds, gathering, droppedItems, hostileHumans, pathGrid, alarmActive, mapData.elevation || null);
   const infection = tickInfectionSimulation(gathering, deltaSeconds, clock.speed, clock.day);
   const vehicles = updateVehiclesTick(gathering.vehicles || [], combat.updatedSquads, combat.updatedZombies, deltaSeconds * clock.speed, Date.now(), mapData, roadGraph, gathering.freestandingBuildings || [], 0);
   let nextSquads = vehicles.updatedSquads;

@@ -85,6 +85,7 @@ export interface SaveLoadRuntime {
   setDisableElevation: Dispatch<SetStateAction<boolean>>;
   setShowTerrainWireframe: Dispatch<SetStateAction<boolean>>;
   setShowBuildingEdges: Dispatch<SetStateAction<boolean>>;
+  setGraphicsQuality: Dispatch<SetStateAction<import('../types/saveGame').GraphicsQuality>>;
   setShowSatelliteOverlay: Dispatch<SetStateAction<boolean>>;
   setSatelliteQuality: Dispatch<SetStateAction<SatelliteQuality>>;
   setSelectedBuilding: Dispatch<SetStateAction<BuildingPolygon | null>>;
@@ -159,6 +160,7 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
     setDisableElevation,
     setShowTerrainWireframe,
     setShowBuildingEdges,
+    setGraphicsQuality,
     setShowSatelliteOverlay,
     setSatelliteQuality,
     setSelectedBuilding,
@@ -203,6 +205,9 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
             missionState: missionState,
             hasCompletedFirstScavenge: true,
             combatSquads,
+            // Persist the scavenge queue like quicksaves do — otherwise a
+            // manual save/load silently forgets every in-progress search plan.
+            scavengeQueue,
             zombies,
             worldVehicles: settlement.vehicles || [],
             dangerLevel,
@@ -332,7 +337,10 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
         if (payload.settlements) setSettlements(payload.settlements);
         if (payload.activeSettlementId) setActiveSettlementId(payload.activeSettlementId);
         if (payload.settlement) setSettlement(payload.settlement);
-        if (payload.gameClock) setGameClock(payload.gameClock);
+        // A loaded game always resumes PAUSED: the player re-orients first,
+        // then unpauses deliberately (Space / speed keys). Restoring the saved
+        // speed would drop a loaded colony straight into a live night siege.
+        if (payload.gameClock) setGameClock({ ...payload.gameClock, speed: 0 });
         if (payload.activePlacement) setActivePlacement(payload.activePlacement);
         if (payload.currentPreset) setCurrentPreset(payload.currentPreset);
         setCaravans(payload.caravans || []);
@@ -585,6 +593,7 @@ export function useSaveLoad(runtime: SaveLoadRuntime) {
     setDisableElevation(settings.disableElevation);
     setShowTerrainWireframe(settings.showTerrainWireframe);
     setShowBuildingEdges(settings.showBuildingEdges);
+    setGraphicsQuality(settings.graphicsQuality ?? 'high');
   }, []);
 
   // Global Keyboard Shortcuts (ESC, F5, F9, Space, 1, 2, 3, 4)

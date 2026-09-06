@@ -798,9 +798,13 @@ export class BuildingRenderer {
     // at night on powered buildings (userData.powered).
     const tex = getBuildingTextureSet(type, variant);
 
-    // Gameplay states tint the WALLS only — roofs always keep their natural
-    // roofing material colour so the city reads as roofs, not coloured blocks.
+    // Gameplay states tint the WALLS, and adapted states ALSO tint the ROOF
+    // (at reduced strength) — a completed colony building reads green across
+    // its whole shell, and an amber construction site is amber-topped too,
+    // instead of walls changing while roofs stay deceptively untouched.
     let wallTint = 0xffffff; // default city building: un-tinted facade
+    let roofTint = 0xffffff;
+    const isAdaptedShell = Boolean(adaptedCategory);
     if (isHQ || (adaptedCategory && constructionStatus !== 'in_progress' && constructionStatus !== 'planned' && constructionStatus !== 'paused')) {
       // Operational colony building (HQ or completed adaptation): green tint
       wallTint = 0x9fd8b0;
@@ -821,7 +825,16 @@ export class BuildingRenderer {
       const b = Math.round(0xff + (0xb0 - 0xff) * t);
       wallTint = (r << 16) | (g << 8) | b;
     }
-    const roofTint = 0xffffff;
+    if (isAdaptedShell && wallTint !== 0xffffff) {
+      // Roofs take the state tint at ~55% strength: clearly reads as
+      // converted/under-construction while keeping the roofing texture's own
+      // material character (tiles, membrane, gravel) underneath.
+      const wr = ((wallTint >> 16) & 255) / 255;
+      const wg = ((wallTint >> 8) & 255) / 255;
+      const wb = (wallTint & 255) / 255;
+      const mix = (wc: number) => Math.round(255 * (1 - 0.55) + wc * 255 * 0.55);
+      roofTint = (mix(wr) << 16) | (mix(wg) << 8) | mix(wb);
+    }
 
     // Powered operational buildings light their windows at night; everything
     // else stays dark even when the emissive map is present.
@@ -1653,10 +1666,12 @@ export class BuildingRenderer {
 
       // Procedural surface texture for walls / towers / gates / facilities so
       // they read as materials (wood planks, brick, corrugated metal, concrete)
-      // rather than flat boxes. repeat is in 0..1 box-UV space — tile every
-      // ~2m so 10m walls show 5 tiles.
+      // rather than flat boxes. Under-construction shells KEEP their real
+      // material texture (amber-tinted, translucent) so a palisade site reads
+      // as timber and a fence site as steel — not as identical brown boxes.
+      // repeat is in 0..1 box-UV space — tile every ~2m so 10m walls show 5 tiles.
       let matKind: FreestandingMaterialKindName | null = null;
-      if (!isUnderConstruction && !isField) {
+      if (!isField) {
         if (isFacility) matKind = look?.kind ?? null;
         else if (typeId === 'wooden_palisade' || typeId === 'wooden_gate' || typeId === 'wooden_tower') matKind = 'wood';
         else if (typeId === 'brick_wall') matKind = 'brick';
@@ -3451,6 +3466,12 @@ export class BuildingRenderer {
     }
   }
 
+  /** Currently selected building id — WorldScene's §quality distance cull
+   *  uses it to never hide the building the player has selected. */
+  public getSelectedId(): string | number | null {
+    return this.selectedBuildingId;
+  }
+
   public setSelected(buildingId: string | number | null) {
     if (this.selectedBuildingId === buildingId) return;
 
@@ -3515,6 +3536,12 @@ export class BuildingRenderer {
     return this.buildingData.get(id);
   }
 
+  /** Pitched-roof sibling mesh for a building body, if one exists (§quality
+   *  distance cull hides it together with the body). */
+  public getRoofMesh(id: string | number): THREE.Mesh | undefined {
+    return this.roofMeshes.get(id);
+  }
+
   /**
    * Roof-top world Y for a built OSM building — the plane the §7.1 adapted-
    * region overlays (and the live drag-paint preview) float on. Same formula
@@ -3552,6 +3579,17 @@ export class BuildingRenderer {
 
   public setEdgesVisible(visible: boolean) {
     this.edgeGroup.visible = visible;
+  }
+
+  /** Un-hides every body/roof mesh hidden by WorldScene's §quality distance
+   *  detail cull (called when the cull is disabled or quality is raised). */
+  public restoreAllDetailVisibility() {
+    for (const mesh of this.buildingMeshes.values()) {
+      if (!mesh.visible) mesh.visible = true;
+    }
+    for (const roof of this.roofMeshes.values()) {
+      if (!roof.visible) roof.visible = true;
+    }
   }
 
   public setVisible(visible: boolean) {

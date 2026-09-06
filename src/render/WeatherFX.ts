@@ -89,7 +89,10 @@ export class WeatherFX {
   }
 
   private buildRain(): THREE.Points {
-    const count = 2200;
+    // Full particle budget is allocated once; the visible count is switched by
+    // intensity via drawRange. Rain gets a large pool so a torrential storm
+    // can saturate the screen without rebuilding buffers mid-storm.
+    const count = 9000;
     const positions = new Float32Array(count * 3);
     for (let i = 0; i < count; i++) {
       positions[i * 3] = (Math.random() - 0.5) * 900;
@@ -114,6 +117,8 @@ export class WeatherFX {
     const pts = new THREE.Points(geo, mat);
     pts.name = 'RainParticles';
     pts.frustumCulled = false;
+    // Start fully active; setWeather() immediately clamps to the target count.
+    geo.setDrawRange(0, count);
     this.rainVelocities = new Float32Array(count);
     for (let i = 0; i < count; i++) {
       this.rainVelocities[i] = 38 + Math.random() * 22;
@@ -227,9 +232,11 @@ export class WeatherFX {
       case 'overcast':
         return { rain: 0, snow: 0, cloud: 0.8, fogScale: 1.18, fogTint: '#aeb8c4', fogTintWeight: 0.25, dim: 0.3, lightning: false, skyTint: '#9aa6b5', skyTintWeight: 0.35 };
       case 'rain':
-        return { rain: 1, snow: 0, cloud: 0.92, fogScale: 1.35, fogTint: '#8fa8c0', fogTintWeight: 0.35, dim: 0.45, lightning: false, skyTint: '#7c8c9e', skyTintWeight: 0.45 };
+        return { rain: 1.0, snow: 0, cloud: 0.92, fogScale: 1.35, fogTint: '#8fa8c0', fogTintWeight: 0.35, dim: 0.45, lightning: false, skyTint: '#7c8c9e', skyTintWeight: 0.45 };
       case 'thunderstorm':
-        return { rain: 1.35, snow: 0, cloud: 0.98, fogScale: 1.6, fogTint: '#5e7088', fogTintWeight: 0.45, dim: 0.62, lightning: true, skyTint: '#525f73', skyTintWeight: 0.55 };
+        // Torrential: roughly 3x the rain particle count of plain rain,
+        // faster drops, heavier opacity — visually distinct from rain.
+        return { rain: 3.0, snow: 0, cloud: 0.98, fogScale: 1.6, fogTint: '#5e7088', fogTintWeight: 0.45, dim: 0.62, lightning: true, skyTint: '#525f73', skyTintWeight: 0.55 };
       case 'dense_fog':
         return { rain: 0, snow: 0, cloud: 0.35, fogScale: 5.5, fogTint: '#cfc9bd', fogTintWeight: 0.75, dim: 0.5, lightning: false, skyTint: '#c9c4ba', skyTintWeight: 0.65 };
       case 'heatwave':
@@ -252,23 +259,38 @@ export class WeatherFX {
     const rainMat = this.rain.material as THREE.PointsMaterial;
     const snowMat = this.snow.material as THREE.PointsMaterial;
     const cloudMat = this.cloudCanopy.material as THREE.MeshBasicMaterial;
+    this.rainBaseOpacity = Math.min(1, 0.75 * Math.min(1.2, t.rain));
+    this.snowBaseOpacity = Math.min(1, 0.85 * t.snow);
+    this.canopyBaseOpacity = Math.max(0, Math.min(1, t.cloud));
 
     if (t.rain > 0.01 && !this.rain.visible) {
       this.rain.visible = true;
     } else if (t.rain <= 0.01 && this.rain.visible) {
       this.rain.visible = false;
     }
-    rainMat.opacity = Math.min(1, 0.75 * t.rain);
+    // Particle-count scaling: rain intensity maps to how much of the pooled
+    // 9000-particle field is actually drawn. Plain rain ≈ 3000 drops, a
+    // thunderstorm saturates all 9000 — a torrential downpour, not a drizzle.
+    const RAIN_POOL = this.rainVelocities.length;
+    this.rain.geometry.setDrawRange(
+      0,
+      t.rain > 0.01
+        ? Math.max(800, Math.min(RAIN_POOL, Math.round(RAIN_POOL * Math.min(1, t.rain / 3))))
+        : 0
+    );
+    rainMat.size = t.rain > 2 ? 3.0 : 2.4;
+    this.targetRainFallMultiplier = t.rain > 2 ? 1.5 : 1.0;
 
     if (t.snow > 0.01 && !this.snow.visible) {
       this.snow.visible = true;
     } else if (t.snow <= 0.01 && this.snow.visible) {
       this.snow.visible = false;
     }
-    snowMat.opacity = Math.min(1, 0.85 * t.snow);
 
     this.cloudCanopy.visible = t.cloud > 0.02;
-    cloudMat.opacity = 0.85 * Math.max(0, Math.min(1, t.cloud));
+
+    // Dome clouds + star occlusion track the eased cloud cover.
+    this.targetCloudCover = t.cloud;
 
     // Store targets; update() eases current values toward them.
     this.targetFogScale = t.fogScale;
@@ -289,7 +311,20 @@ export class WeatherFX {
   private targetDim = 0;
   private targetSkyTint = new THREE.Color(0xffffff);
   private targetSkyTintWeight = 0;
+  private targetCloudCover = 0;
+  private cloudCover = 0;
+  private targetRainFallMultiplier = 1;
+  private rainFallMultiplier = 1;
   private thunderActive = false;
+
+  // Base (sea-level) opacities set per weather; update() multiplies them by
+  // camera-altitude fades so high views thin out gracefully.
+  private rainBaseOpacity = 0.75;
+  private snowBaseOpacity = 0.85;
+  private canopyBaseOpacity = 0;
+
+  /** Fixed cloud-base altitude — the camera stays below this at max zoom. */
+  private CANOPY_ALTITUDE = 420;
 
   /** Eased fog density multiplier (1 = clear). */
   public getFogScale(): number {
@@ -350,10 +385,11 @@ export class WeatherFX {
       const n = arr.length / 3;
       const windX = 6 + Math.sin(now * 0.35) * 3; // slight gust
       const windZ = 3 + Math.cos(now * 0.22) * 2;
+      const fallMult = this.rainFallMultiplier;
       for (let i = 0; i < n; i++) {
-        arr[i * 3] += windX * delta;
-        arr[i * 3 + 1] -= this.rainVelocities[i] * delta;
-        arr[i * 3 + 2] += windZ * delta;
+        arr[i * 3] += windX * delta * (fallMult > 1.2 ? 1.8 : 1);
+        arr[i * 3 + 1] -= this.rainVelocities[i] * delta * fallMult;
+        arr[i * 3 + 2] += windZ * delta * (fallMult > 1.2 ? 1.8 : 1);
         if (arr[i * 3 + 1] < -170) {
           arr[i * 3] = (Math.random() - 0.5) * 900;
           arr[i * 3 + 1] = 150 + Math.random() * 110;
@@ -393,18 +429,43 @@ export class WeatherFX {
     }
 
     // --- Cloud canopy drift ---
+    // The canopy sits inside the camera-following group (x/z already track
+    // the camera) at a fixed high altitude — a genuine cloud base the camera
+    // always stays UNDER (zoom is capped below the deck). The dome's shader
+    // cloud layer carries the overcast look from any altitude.
     if (this.cloudCanopy.visible) {
-      // The canopy sits inside the camera-following group (x/z already track
-      // the camera). While playing at street/tactical zoom the camera stays
-      // low and the canopy holds a high fixed altitude, reading as a cloud
-      // base at the top of the frame; when the camera zooms far out above it,
-      // the plate drops to just below the camera so the storm still reads as
-      // a grey overcast deck seen from above instead of vanishing.
       this.cloudCanopy.position.x = 0;
       this.cloudCanopy.position.z = 0;
-      this.cloudCanopy.position.y = Math.max(360, this.tmpCamera.y - 240);
+      this.cloudCanopy.position.y = this.CANOPY_ALTITUDE;
       this.cloudCanopy.rotation.y = now * 0.0012;
+
+      // Altitude fade: as the camera nears the cloud base the plate thins out
+      // to nothing, so the camera can never visually punch through a hard
+      // cloud plane (the ugly below-the-plate artifact).
+      const approach = THREE.MathUtils.clamp(
+        1 - (this.tmpCamera.y - 200) / (this.CANOPY_ALTITUDE - 200),
+        0,
+        1
+      );
+      const cm = this.cloudCanopy.material as THREE.MeshBasicMaterial;
+      cm.opacity = 0.85 * this.canopyBaseOpacity * approach;
+      this.cloudCanopy.visible = cm.opacity > 0.01;
     }
+
+    // --- Precipitation altitude fade ---
+    // From very high up the particle box reads as a small streak cluster —
+    // fade it so high-altitude views rely on the dome clouds instead.
+    const precipFade = THREE.MathUtils.clamp(1 - (this.tmpCamera.y - 400) / 900, 0, 1);
+    {
+      const rm = this.rain.material as THREE.PointsMaterial;
+      if (this.rain.visible) rm.opacity = this.rainBaseOpacity * precipFade;
+      const sm = this.snow.material as THREE.PointsMaterial;
+      if (this.snow.visible) sm.opacity = this.snowBaseOpacity * precipFade;
+    }
+
+    // --- Rain intensity: storms fall faster and harder ---
+    this.rainFallMultiplier = this.ease(this.rainFallMultiplier, this.targetRainFallMultiplier, delta, 1.0);
+    this.cloudCover = this.ease(this.cloudCover, this.targetCloudCover, delta, 0.7);
 
     // --- Lightning (thunderstorm) ---
     if (this.thunderActive) {
@@ -433,6 +494,16 @@ export class WeatherFX {
     this.dim = this.ease(this.dim, this.targetDim, delta, 0.8);
     this.skyTint.lerp(this.targetSkyTint, Math.min(1, delta * 0.8));
     this.skyTintWeight = this.ease(this.skyTintWeight, this.targetSkyTintWeight, delta, 0.8);
+  }
+
+  /** Eased cloud cover 0..1 — WorldScene forwards it to the sky dome shader. */
+  public getCloudCover(): number {
+    return this.cloudCover;
+  }
+
+  /** Eased rain fall-speed multiplier (1 normal, ~1.5 torrential). */
+  public getRainFallMultiplier(): number {
+    return this.rainFallMultiplier;
   }
 
   public dispose() {

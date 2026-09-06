@@ -26,8 +26,14 @@ export class CameraController {
 
   // Limits
   private minDistance = 25;
-  private maxDistance = 8500; // Allow zooming out across the full 8km x 8km map
-  private minPitch = Math.PI / 10; // ~18 deg
+  // Capped well below the old 8500: past ~5-6 km the exponential fog washes
+  // the map to flat white anyway, and extreme altitudes put the camera above
+  // the cloud deck which wrecks the weather visuals. WeatherFX additionally
+  // keeps the cloud canopy above the camera at any distance.
+  private maxDistance = 6500;
+  // ~6 deg: low enough for near street-level perspective shots (camera eye
+  // lands a couple of meters above the target ground at minimum distance).
+  private minPitch = Math.PI / 30;
   private maxPitch = Math.PI / 2.01; // ~89.7 deg (top-down 2D map)
   private maxPanRadius = 5500; // Broad pan range for full 8km exploration
   public isExpeditionView = false;
@@ -353,7 +359,7 @@ export class CameraController {
    */
   public setMapRadius(radius: number) {
     this.maxPanRadius = Math.max(radius * 1.25, 3500);
-    this.maxDistance = Math.max(radius * 2.2, 5500);
+    this.maxDistance = Math.min(Math.max(radius * 2.2, 5500), 6500);
   }
 
   /**

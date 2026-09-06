@@ -166,6 +166,9 @@ export interface ResearchCompletedPayload {
 export interface ItemManufacturedPayload {
   resourceType: string;
   amount: number;
+  /** Legacy aliases some older emissions used; the mission evaluator tolerates both spellings. */
+  itemId?: string;
+  quantity?: number;
   facilityType?: string;
   settlementId?: string;
 }

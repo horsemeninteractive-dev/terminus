@@ -9,6 +9,9 @@ interface TacticalSquadSelectorStripProps {
   onSelectSquad: (squadId: string) => void;
   onCreateSquad?: () => void;
   onPanToSquad?: (squad: TacticalSquadUnit) => void;
+  /** A tutorial/mission task is asking the player to muster a squad — the
+   *  '+' button glows so the player knows exactly what to press. */
+  highlightMuster?: boolean;
 }
 
 export const TacticalSquadSelectorStrip: React.FC<TacticalSquadSelectorStripProps> = ({
@@ -17,6 +20,7 @@ export const TacticalSquadSelectorStrip: React.FC<TacticalSquadSelectorStripProp
   onSelectSquad,
   onCreateSquad,
   onPanToSquad,
+  highlightMuster = false,
 }) => {
   const handleSquadClick = (squad: TacticalSquadUnit) => {
     soundEngine.playRadioChirp();
@@ -43,12 +47,21 @@ export const TacticalSquadSelectorStrip: React.FC<TacticalSquadSelectorStripProp
       {/* Form Squad Button — square '+' with a dotted add-box */}
       {onCreateSquad && squads.length < 8 && (
         <button
+          id="form-new-squad-btn"
           onClick={() => {
             soundEngine.playClick();
             onCreateSquad();
           }}
-          title="Form New Tactical Squad"
-          className="w-10 h-10 min-w-[40px] min-h-[40px] bg-[#0A0D12]/95 hover:bg-[#151D28] border-2 border-dashed border-[#334155] hover:border-[#10B981] flex items-center justify-center text-[#64748B] hover:text-[#10B981] transition-all group self-start touch-manipulation active:scale-95"
+          title={
+            highlightMuster
+              ? 'OBJECTIVE: MUSTER FIRETEAM — form your first tactical squad'
+              : 'Form New Tactical Squad'
+          }
+          className={`w-10 h-10 min-w-[40px] min-h-[40px] border-2 border-dashed flex items-center justify-center transition-all group self-start touch-manipulation active:scale-95 ${
+            highlightMuster
+              ? 'bg-[#10B981]/20 hover:bg-[#10B981]/30 border-[#10B981] text-[#10B981] animate-pulse shadow-[0_0_14px_rgba(16,185,129,0.55)] ring-2 ring-[#10B981]/40'
+              : 'bg-[#0A0D12]/95 hover:bg-[#151D28] border-[#334155] hover:border-[#10B981] text-[#64748B] hover:text-[#10B981]'
+          }`}
         >
           <Plus className="w-4 h-4" />
         </button>

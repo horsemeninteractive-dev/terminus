@@ -16,8 +16,8 @@ import {
   orderDeconstruction,
   splitBuilding,
 } from '../services/settlementService';
-import { getFreestandingCollisionPolygon, getFreestandingDimensions } from '../services/freestandingFootprint';
-import { isPointInArea, isPointInsidePolygon } from '../services/scavengingService';
+import { getFreestandingCollisionPolygon, getFreestandingDimensions, freestandingFootprintOverlapsWater } from '../services/freestandingFootprint';
+import { isPointInArea } from '../services/scavengingService';
 import { assignResourceGatherers } from '../services/resourceGatheringService';
 import { startSquadTraining, stopSquadTraining } from '../services/trainingService';
 import { updateRadioDirectiveSystem } from '../services/radioDirectiveService';
@@ -306,29 +306,23 @@ export function useSettlementActions(runtime: SettlementActionsRuntime) {
     let next = settlement;
     let built = 0;
 
-    // Reject placements that overlap open water (rivers, lakes). A wall/tower/
-    // gate dropped on water is cancelled entirely and the ghost would turn red.
+    // Reject placements that genuinely collide with open water (rivers, lakes).
+    // The shared helper is tolerance-aware: a footprint grazing the mapped
+    // waterline on visibly dry ground is fine — walls can be built to the
+    // water's edge. For a dragged wall RUN, water-overlapping segments are
+    // skipped individually instead of cancelling the whole run, so the wall
+    // builds right up to the bank and stops there.
     const waterPolys =
-      mapData?.landuse?.filter((l) => l.type === 'water' && l.polygon?.length >= 3) || [];
-    const footprintOverlapsWater = (px: number, pz: number, rotDeg: number, w?: number, l?: number) => {
-      if (waterPolys.length === 0) return false;
-      const fp = getFreestandingCollisionPolygon({
-        typeId,
-        position: { x: px, z: pz },
-        rotationDeg: rotDeg,
-      } as const);
-      for (const poly of waterPolys) {
-        // Water blocks the structure if the footprint's centre OR any corner
-        // lands inside the water polygon.
-        for (const corner of [{ x: px, z: pz }, ...fp]) {
-          if (isPointInsidePolygon(corner, poly.polygon)) return true;
-        }
-      }
-      return false;
-    };
+      mapData?.landuse?.filter((l) => l.type === 'water' && l.polygon?.length >= 3).map((l) => l.polygon as Point2D[]) || [];
 
     for (const p of placements) {
-      if (footprintOverlapsWater(p.x, p.z, p.rotationDeg, p.width, p.length)) {
+      const overWater = freestandingFootprintOverlapsWater(
+        { typeId, position: { x: p.x, z: p.z }, rotationDeg: p.rotationDeg, width: p.width, length: p.length },
+        waterPolys
+      );
+      if (overWater) {
+        // Part of the run hit water — keep building the dry remainder.
+        if (placements.length > 1) continue;
         setToastMessage({
           title: 'Cannot Build on Water',
           desc: 'That structure can not be placed in water. Choose a dry location.',

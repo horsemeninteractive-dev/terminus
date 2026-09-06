@@ -1,4 +1,4 @@
-import { GameSettings } from '../types/saveGame';
+import { GameSettings, GraphicsQuality } from '../types/saveGame';
 
 const SETTINGS_STORAGE_KEY = 'terminus_ifz_game_settings';
 
@@ -13,6 +13,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   showRoads: true,
   showBuildings: true,
   disableElevation: false,
+  graphicsQuality: 'high',
   autosaveIntervalDays: 1,
   pauseOnNightfall: true,
   pauseOnRaid: true,
@@ -28,6 +29,10 @@ export class GameSettingsService {
 
   public getSettings(): GameSettings {
     return { ...this.settings };
+  }
+
+  public getGraphicsQuality(): GraphicsQuality {
+    return this.settings.graphicsQuality ?? 'high';
   }
 
   public updateSettings(newSettings: Partial<GameSettings>): GameSettings {

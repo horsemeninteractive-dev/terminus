@@ -10,12 +10,13 @@ import { getInitialMissionState } from '../services/missionService';
 import { registerAllContent } from '../services/missionRegistry';
 import type { MissionState } from '../types/mission';
 import { detectSatelliteQuality } from '../services/satelliteService';
+import { gameSettingsService } from '../services/gameSettingsService';
 import type { RadioDirectiveState, RadioTransmission } from '../types/radioDirective';
 import { soundService, ToastMessage } from '../services/soundService';
 import { TimeOfDay, WorldScene } from '../render/WorldScene';
-import { createInitialGameClock } from '../services/combatService';
-import type { DroppedItem, GameClockState, HostileHumanUnit, NoiseEvent, TacticalSquadUnit, ZombieUnit } from '../types/combat';
+import type { TacticalSquadUnit } from '../types/combat';
 import { createInitialSettlementState } from '../services/settlementService';
+import { useCombatState } from './useCombatState';
 import { enactLaw, getLawDefinition } from '../services/lawService';
 import { dispatchSquadOnExpedition, recallSquadFromExpedition } from '../services/expeditionService';
 import type { LawId } from '../types/laws';
@@ -323,15 +324,22 @@ export function useGameState() {
   }, []);
 
   // Phase 6 Combat, Day/Night Clock & Horde State (§5, §5.1, §6.1)
-  const [gameClock, setGameClock] = useState<GameClockState>(() => createInitialGameClock());
-  const [zombies, setZombies] = useState<ZombieUnit[]>([]);
-  const [combatSquads, setCombatSquads] = useState<TacticalSquadUnit[]>([]);
-  const [hostileHumans, setHostileHumans] = useState<HostileHumanUnit[]>([]);
-  const [activeRansomHideoutId, setActiveRansomHideoutId] = useState<string | number | null>(null);
-  // Ref mirrors combatSquads so the 100ms combat interval always reads the latest
-  // synced roster (avoids the stale-closure race where an old tick overwrites
-  // freshly synced squads back to []).
-  const combatSquadsRef = useRef<TacticalSquadUnit[]>([]);
+  // Core sim slices live in ONE domain reducer (hooks/useCombatState.ts): the
+  // 100ms combat tick mutates several of them per pass, and a single dispatch
+  // commits the whole result in one render. The setter shims keep the exact
+  // Dispatch<SetStateAction<T>> shape of the old useStates, so every consumer
+  // hook (useSimulationLoop, useSquadActions, useThreatActions, useSaveLoad,
+  // useMapLoading, useWorldEffects) is untouched.
+  const {
+    gameClock, setGameClock,
+    zombies, setZombies,
+    combatSquads, setCombatSquads,
+    hostileHumans, setHostileHumans,
+    droppedItems, setDroppedItems,
+    noiseEvents, setNoiseEvents,
+    activeRansomHideoutId, setActiveRansomHideoutId,
+    combatSquadsRef,
+  } = useCombatState();
 
   const handleDispatchExpedition = useCallback((siteId: string, squadId: string) => {
     const current = settlementRef.current;
@@ -369,8 +377,6 @@ export function useGameState() {
     });
   }, [setSettlement, setCombatSquads, setToastMessage]);
 
-  const [droppedItems, setDroppedItems] = useState<DroppedItem[]>([]);
-  const [noiseEvents, setNoiseEvents] = useState<NoiseEvent[]>([]);
   const [selectedSquadId, setSelectedSquadId] = useState<string | null>(null);
   // §IFZ CTRL+drag box selection: the full set of selected squads. The primary
   // (first) id stays in sync with selectedSquadId for the single-squad UI.
@@ -398,6 +404,12 @@ export function useGameState() {
     return false;
   });
   const [showTerrainWireframe, setShowTerrainWireframe] = useState<boolean>(false);
+
+  // Graphics quality preset (high/medium/low) — drives distance-based building
+  // detail culling, shadow budget and pixel ratio in WorldScene.
+  const [graphicsQuality, setGraphicsQuality] = useState<import('../types/saveGame').GraphicsQuality>(
+    () => gameSettingsService.getGraphicsQuality()
+  );
 
   // Layer Toggles
   const [showBuildingEdges, setShowBuildingEdges] = useState(true);
@@ -556,6 +568,7 @@ export function useGameState() {
     // Elevation & layers
     elevationExaggeration, setElevationExaggeration, disableElevation, setDisableElevation,
     showTerrainWireframe, setShowTerrainWireframe,
+    graphicsQuality, setGraphicsQuality,
     showBuildingEdges, setShowBuildingEdges, showBuildings, setShowBuildings,
     showRoads, setShowRoads, showWood, setShowWood, showMetal, setShowMetal,
     showBricks, setShowBricks, showLanduse, setShowLanduse, activeGatherType, setActiveGatherType,

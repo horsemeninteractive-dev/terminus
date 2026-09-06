@@ -60,6 +60,127 @@ export const CAMPAIGN_TRANSMISSIONS: TransmissionDefinition[] = [
     priority: 'normal',
   },
   // -------------------------------------------------------------------------
+  // ACT II — VOICES IN THE DARK: first contact (anonymous until answered)
+  // -------------------------------------------------------------------------
+  {
+    id: 'tx_c2_unknownsignal',
+    classification: 'INTEL',
+    callsign: 'UNKNOWN OPERATOR // UNREGISTERED FREQUENCY',
+    title: 'UNKNOWN TRANSMISSION — "...ANYONE RECEIVING THIS, ANSWER"',
+    message:
+      'A voice has appeared on a frequency you have never heard before. No callsign. No registry. No location. It repeats on a fixed cycle — a woman\'s voice, calm, tired: "—anyone receiving this, answer." The signal strength says organised. The band says scientific. The choice to answer is yours.',
+    source: 'Unknown signal',
+    priority: 'high',
+    audioCue: 'static',
+  },
+  {
+    id: 'tx_c2_unknownsignal_done',
+    classification: 'INTEL',
+    callsign: 'THE SEEKERS // RESEARCH COLLECTIVE',
+    title: 'CONTACT ESTABLISHED — THE SEEKERS',
+    message:
+      '"Thank you. We did not think anyone real was left on this band." They call themselves the Seekers — scientists, doctors, technicians who survived the fall of their institutes and kept working. They know fragments of what the infection is. Not the whole truth — they are specific about that. They will trade what they know for materials that let them keep working.',
+    source: 'Faction transmission',
+    priority: 'high',
+  },
+
+  // -------------------------------------------------------------------------
+  // ACT IV — THE REMNANT: the crossroads (four frequencies)
+  // -------------------------------------------------------------------------
+  {
+    id: 'tx_c5_crossroads',
+    classification: 'INTEL',
+    callsign: 'COMMS TEAM // SIGNAL BOARD',
+    title: 'CROSSROADS — FOUR NEW FREQUENCIES ACTIVE',
+    message:
+      "Since the depot records moved over our channel, the band has gotten loud. Four signals we have never carried: a military frequency reading old designators, a civilian coordination net with rules of order, a channel that only says 'burn them', and a cluster of small settlements that asks nothing of anyone. They are all real. They do not agree about anything, including what happened. Say the word and we answer one of them.",
+    source: 'Communications relay',
+    priority: 'high',
+    audioCue: 'chirp',
+  },
+  {
+    id: 'tx_c5_crossroads_remnant',
+    classification: 'INTEL',
+    callsign: 'UNKNOWN MILITARY FREQUENCY // STANDING ORDER 9',
+    title: 'UNKNOWN CONTACT — MILITARY DESIGNATORS',
+    message:
+      'The channel opens with a roster format nobody has used in years. A voice identifies itself only as "Standing Order 9" and asks for our civil-defence status, our quarantine posture, and our chain of command. Organised. Disciplined. Underneath it, something they are not saying: they were expecting to have to ask.',
+    source: 'Unknown signal',
+    priority: 'high',
+  },
+  {
+    id: 'tx_c5_crossroads_remnant_done',
+    classification: 'INTEL',
+    callsign: 'THE REMNANT // STANDING ORDER 9',
+    title: 'CONTACT ESTABLISHED — THE REMNANT',
+    message:
+      'The colonel finally gives the faction its name: the Remnant. Former military and civil authority, still reading orders into the dark because someone has to. They have records from before the fall, quarantine designations, and a story about the collapse that starts with "the situation was not contained in time". They will share it — for a price in kind.',
+    source: 'Faction transmission',
+    priority: 'high',
+  },
+  {
+    id: 'tx_c5_crossroads_commonwealth',
+    classification: 'INTEL',
+    callsign: 'UNKNOWN COORDINATION NET // CIVIL DESK',
+    title: 'UNKNOWN CONTACT — COORDINATION NET',
+    message:
+      'The net speaks in minutes-and-agendas: settlement registrations, trade schedules, a standing invitation. No uniforms, no designators — just a lot of tired people trying to run a civilisation on radios. They want to know if we trade, and whether we keep our promises.',
+    source: 'Unknown signal',
+    priority: 'high',
+  },
+  {
+    id: 'tx_c5_crossroads_commonwealth_done',
+    classification: 'INTEL',
+    callsign: 'THE COMMONWEALTH // COORDINATION NET',
+    title: 'CONTACT ESTABLISHED — THE COMMONWEALTH',
+    message:
+      'The net formally registers the settlement: "the Commonwealth welcomes a new member-community." Their story of the collapse is short and pointed: the old systems failed, and rebuilding means building differently. They trade, they connect, and they keep meticulous minutes.',
+    source: 'Faction transmission',
+    priority: 'high',
+  },
+  {
+    id: 'tx_c5_crossroads_purifiers',
+    classification: 'WARNING',
+    callsign: 'UNKNOWN CHANNEL // BURN THEM',
+    title: 'UNKNOWN CONTACT — THE BURN CHANNEL',
+    message:
+      'The channel has carried exactly two words since we first heard it: "burn them." Tonight the operator finally says more. They list settlements by name — every one of them gone. Their voice is steady, which is somehow worse. They ask one question: "how many have you let wander because you felt sorry for them?"',
+    source: 'Unknown signal',
+    priority: 'high',
+    audioCue: 'static',
+  },
+  {
+    id: 'tx_c5_crossroads_purifiers_done',
+    classification: 'INTEL',
+    callsign: 'THE PURIFIERS // FIRE DOCTRINE',
+    title: 'CONTACT ESTABLISHED — THE PURIFIERS',
+    message:
+      'They call themselves the Purifiers. Not a cult, they say — arithmetic. Every infected left standing is a town that falls later. They know how the fires were set, which towns lasted longest, and exactly why the official containment failed. They will teach all of it — to anyone willing to hold the torch.',
+    source: 'Faction transmission',
+    priority: 'high',
+  },
+  {
+    id: 'tx_c5_crossroads_freeholds',
+    classification: 'INTEL',
+    callsign: 'UNKNOWN CLUSTER // OPEN ROAD',
+    title: 'UNKNOWN CONTACT — INDEPENDENT CLUSTER',
+    message:
+      'The cluster does not introduce itself — it interviews us. Who commands here? Who succeeded them? Who is next? The operator is friendly and misses nothing. Their only question that matters: "do you want neighbours or subjects? Because the difference is the whole reason we are still alive."',
+    source: 'Unknown signal',
+    priority: 'high',
+  },
+  {
+    id: 'tx_c5_crossroads_freeholds_done',
+    classification: 'INTEL',
+    callsign: 'THE FREEHOLDS // OPEN ROAD',
+    title: 'CONTACT ESTABLISHED — THE FREEHOLDS',
+    message:
+      'The cluster formally extends neighbourhood: the Freeholds — a dozen-plus independent settlements that survived by owing nothing to anyone. Their account of the collapse blames the people who tried to contain it. They trade survey data, road conditions, and watch warnings. Nothing else, ever.',
+    source: 'Faction transmission',
+    priority: 'high',
+  },
+
+  // -------------------------------------------------------------------------
   // CHAPTER II — THE DEAD AREN\'T RANDOM
   // -------------------------------------------------------------------------
   {
@@ -441,6 +562,129 @@ export const CAMPAIGN_TRANSMISSIONS: TransmissionDefinition[] = [
       'The cache is open and the inventory is real: ordnance, tools, sealed rations. The old world left more behind than we thought. And now we have a map to the rest of it.',
     source: 'Communications relay',
     priority: 'normal',
+  },
+
+  // -------------------------------------------------------------------------
+  // ACT V — THE SOURCE (discovery chain)
+  // -------------------------------------------------------------------------
+  {
+    id: 'tx_c6_coldstorage',
+    classification: 'DIRECTIVE',
+    callsign: 'DR. OKAFOR // MEDICAL WING',
+    title: 'COLD STORAGE — THE PROGRAMME HAD A NAME',
+    message:
+      'I cross-referenced the hospital intake ledgers with the quarantine stamps on the military orders. Same programme. Same dates. The published side of it would have come out of the universities — journals, theses, lab archives. Find a campus or a library that has not burned and pull what the archive still holds.',
+    source: 'Settlement medical staff',
+    priority: 'high',
+    audioCue: 'chirp',
+  },
+  {
+    id: 'tx_c6_coldstorage_done',
+    classification: 'MILESTONE',
+    callsign: 'DR. OKAFOR // MEDICAL WING',
+    title: 'COLD STORAGE — ARCHIVE RECOVERED',
+    message:
+      'The papers are degraded but readable. Case reports from three different regions, weeks before anyone admits the outbreak started. Different symptoms. Different timelines. They were studying it BEFORE it had a name — and every site references a facility none of them are allowed to name.',
+    source: 'Settlement medical staff',
+    priority: 'normal',
+  },
+  {
+    id: 'tx_c6_facility',
+    classification: 'INTEL',
+    callsign: 'RELAY GHOST // TRIANGULATION',
+    title: 'THE FACILITY — POSITION ESTIMATE',
+    message:
+      'The military containment grid and the published papers both draw lines to the same blank spot — a site scrubbed from every public record. Triangulation puts it inside our reach, on old industrial ground. Something went wrong there, and the dead have been walking toward it ever since.',
+    source: 'Communications relay',
+    priority: 'critical',
+    audioCue: 'static',
+  },
+  {
+    id: 'tx_c6_facility_done',
+    classification: 'MILESTONE',
+    callsign: 'RELAY GHOST // TRIANGULATION',
+    title: 'THE FACILITY — POSITION CONFIRMED',
+    message:
+      'Confirmed. Perimeter fencing, containment architecture, generators sized for a laboratory, not a factory. This is the source. Recon also reports what we feared: the dead hold the ground around it — dense, organised, and not wandering.',
+    source: 'Communications relay',
+    priority: 'high',
+  },
+  {
+    id: 'tx_c6_containment',
+    classification: 'EMERGENCY',
+    callsign: 'SGT. VANCE // COMMAND HQ',
+    title: 'CONTAINMENT — AUTHORISE THE BREACH',
+    message:
+      'This is it, Chief. Everything we have pieced together ends at that fence line. The dead hold the approach in force — they are not randomly distributed, they are positioned. Clear a path, get inside, and pull the project records. Whatever humanity does next starts with what is in that building.',
+    source: 'SZO Network',
+    priority: 'critical',
+    audioCue: 'alarm',
+  },
+  {
+    id: 'tx_c6_containment_done',
+    classification: 'MILESTONE',
+    callsign: 'DR. OKAFOR // MEDICAL WING',
+    title: 'CONTAINMENT — THE RECORDS ARE REAL',
+    message:
+      'We have it. The programme studied the infected before the collapse — containment failed during the fall of the old order, and the ecological changes we are seeing in the lairs are consistent with drift away from the original strain. It was never a random disease. Now we know. And knowing means choosing.',
+    source: 'Settlement medical staff',
+    priority: 'critical',
+  },
+
+  // -------------------------------------------------------------------------
+  // ACT VI — WHAT COMES NEXT (resolution)
+  // -------------------------------------------------------------------------
+  {
+    id: 'tx_c7_protocol',
+    classification: 'DIRECTIVE',
+    callsign: 'SETTLEMENT COUNCIL // OPEN SESSION',
+    title: 'THE PROTOCOL — THE CHOICE',
+    message:
+      "The town is assembled. For the first time since the fall, we know what we are facing — and the council wants the decision on the record. A treatment, a war, or a wall. Three factions have made their cases. The word we give tonight is the word the world will hear.",
+    source: 'Settlement operator',
+    priority: 'critical',
+    audioCue: 'chirp',
+  },
+  {
+    id: 'tx_c7_protocol_cure',
+    classification: 'DIRECTIVE',
+    callsign: 'DR. OKAFOR // MEDICAL WING',
+    title: 'THE PROTOCOL — TREATMENT PROGRAMME',
+    message:
+      "Treatment it is. The Seekers' fragments plus the facility records give us a real starting point. It will take research we barely have the benches for — but if it works, it is not just survival. It is an answer.",
+    source: 'Settlement medical staff',
+    priority: 'critical',
+  },
+  {
+    id: 'tx_c7_protocol_purge',
+    classification: 'DIRECTIVE',
+    callsign: 'SGT. VANCE // COMMAND HQ',
+    title: 'THE PROTOCOL — SUPPRESSION DOCTRINE',
+    message:
+      "Understood. We do not negotiate with what is out there — we take the ground back. Lairs first, then the night waves, mile by mile. The Purifiers were right about one thing: the land is only ours if we make it ours.",
+    source: 'SZO Network',
+    priority: 'critical',
+  },
+  {
+    id: 'tx_c7_protocol_coexist',
+    title: 'THE PROTOCOL — CONTAINMENT NETWORK',
+    classification: 'DIRECTIVE',
+    callsign: 'TOWN COUNCIL // CIVIL DESK',
+    message:
+      "Containment, then. Roads that stay open, towns that hold, caravans that run on schedule. The dead are a fact of the map now — and the map is still ours. Build.",
+    source: 'Settlement operator',
+    priority: 'critical',
+  },
+  {
+    id: 'tx_c7_resolved',
+    classification: 'MILESTONE',
+    callsign: 'SETTLEMENT COUNCIL // OPEN SESSION',
+    title: 'THE OUTBREAK — RESOLVED',
+    message:
+      "We know what happened. We know what must be done. The world is still broken — the dead still walk, the winters still come, and every road is still dangerous. But it is no longer unknowable. Whatever comes next, we face it with the truth. Council out.",
+    source: 'Settlement operator',
+    priority: 'critical',
+    audioCue: 'chirp',
   },
 ];
 

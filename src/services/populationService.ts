@@ -1,5 +1,7 @@
 import { BuildingPolygon } from '../types/map';
 import { PathGrid, stepAlongPath } from './pathfindingService';
+import { ElevationGrid } from '../types/map';
+import { terrainSlopeSpeedFactor } from './elevationService';
 import {
   CitizenBreakdownStats,
   ChildCitizen,
@@ -1383,7 +1385,8 @@ export function tickSettlementSimulation(
   state: SettlementState,
   deltaSeconds: number,
   grid?: PathGrid | null,
-  isNight = false
+  isNight = false,
+  elevationGrid?: ElevationGrid | null
 ): {
   newState: SettlementState;
   completedConstructions: string[];
@@ -1509,7 +1512,9 @@ export function tickSettlementSimulation(
       // instead of walking a straight line through new construction.
       const stepRes = stepAlongPath(
         grid, order.pathState, order.position.x, order.position.z,
-        order.targetPosition.x, order.targetPosition.z, 6.0, deltaSeconds, 2.5
+        order.targetPosition.x, order.targetPosition.z,
+        6.0 * (elevationGrid ? terrainSlopeSpeedFactor(elevationGrid, order.position.x, order.position.z) : 1),
+        deltaSeconds, 2.5
       );
       order.position.x = stepRes.x;
       order.position.z = stepRes.z;
@@ -1669,7 +1674,9 @@ export function tickSettlementSimulation(
       // Crew walks back to HQ around any player-built obstacles.
       const stepRes = stepAlongPath(
         grid, order.pathState, order.position.x, order.position.z,
-        hqCenter.x, hqCenter.z, 6.0, deltaSeconds, 3.0
+        hqCenter.x, hqCenter.z,
+        6.0 * (elevationGrid ? terrainSlopeSpeedFactor(elevationGrid, order.position.x, order.position.z) : 1),
+        deltaSeconds, 3.0
       );
       order.position.x = stepRes.x;
       order.position.z = stepRes.z;
@@ -1725,7 +1732,9 @@ export function tickSettlementSimulation(
     if (job.state === 'returning') {
       const stepRes = stepAlongPath(
         grid, (job as any).pathState, job.position.x, job.position.z,
-        hqCenter.x, hqCenter.z, 6.0, deltaSeconds, 3.0
+        hqCenter.x, hqCenter.z,
+        6.0 * (elevationGrid ? terrainSlopeSpeedFactor(elevationGrid, job.position.x, job.position.z) : 1),
+        deltaSeconds, 3.0
       );
       job.position = { x: stepRes.x, z: stepRes.z };
       (job as any).pathState = stepRes.state;

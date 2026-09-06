@@ -41,6 +41,13 @@ export class SkyAtmosphere {
     this.skyMaterial = new THREE.ShaderMaterial({
       side: THREE.BackSide,
       depthWrite: false,
+      // The renderer runs with logarithmicDepthBuffer; custom shaders without
+      // the logdepth chunks write linear gl_FragDepth and lose depth tests
+      // against every built-in material — the dome silently vanished behind
+      // terrain and the flat scene.background showed through instead. The dome
+      // is infinitely far by construction, so it renders first with no depth
+      // test at all and lets the rest of the scene draw over it.
+      depthTest: false,
       uniforms: {
         uSunDir: { value: new THREE.Vector3(0, 1, 0) },
         uMoonDir: { value: new THREE.Vector3(0, -1, 0) },
@@ -50,6 +57,7 @@ export class SkyAtmosphere {
         uSkyHorizon: { value: new THREE.Color(0xa8bcc9) },
         uSunElevation: { value: 0.8 },
         uTime: { value: 0 },
+        uCloudCover: { value: 0 },
       },
       vertexShader: `
         varying vec3 vWorldPosition;
@@ -70,9 +78,35 @@ export class SkyAtmosphere {
         uniform vec3 uSkyHorizon;
         uniform float uSunElevation;
         uniform float uTime;
+        uniform float uCloudCover;
 
         varying vec3 vWorldPosition;
         varying vec3 vViewDir;
+
+        // Cheap value-noise FBM for the procedural cloud layer painted onto
+        // the dome itself — visible in every camera orientation, unlike the
+        // flat cloud-canopy plate which only reads when looking up.
+        float skyHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        float skyNoise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(
+            mix(skyHash(i), skyHash(i + vec2(1.0, 0.0)), u.x),
+            mix(skyHash(i + vec2(0.0, 1.0)), skyHash(i + vec2(1.0, 1.0)), u.x),
+            u.y
+          );
+        }
+        float skyFbm(vec2 p) {
+          float v = 0.0;
+          float a = 0.5;
+          for (int i = 0; i < 4; i++) {
+            v += a * skyNoise(p);
+            p *= 2.15;
+            a *= 0.5;
+          }
+          return v;
+        }
 
         void main() {
           vec3 dir = normalize(vWorldPosition);
@@ -110,6 +144,24 @@ export class SkyAtmosphere {
             sky = mix(sky, uSkyHorizon * 0.85, groundBlend);
           }
 
+          // Procedural cloud layer on the dome. Planar projection of the view
+          // ray onto a high cloud plane, drifted by time (wind). uCloudCover
+          // shifts the density threshold: 0 = clear, 1 = solid overcast.
+          if (uCloudCover > 0.003 && height > 0.015) {
+            vec2 cuv = dir.xz / (dir.y + 0.18);
+            vec2 wind = vec2(uTime * 0.006, uTime * 0.0023);
+            float density = skyFbm(cuv * 0.32 + wind);
+            float threshold = 1.02 - uCloudCover * 1.15;
+            float cloudMask = smoothstep(threshold, threshold + 0.28, density);
+            // Fade at the horizon so clouds blend into the haze band.
+            cloudMask *= smoothstep(0.015, 0.16, height);
+            // Heavy cover reads darker (storm slate), light cover near-white.
+            vec3 cloudColor = mix(vec3(1.02, 1.02, 1.05), vec3(0.42, 0.46, 0.54), uCloudCover);
+            // Soft self-shading from the noise for volume.
+            cloudColor *= 0.72 + 0.55 * density;
+            sky = mix(sky, cloudColor, cloudMask * 0.92);
+          }
+
           gl_FragColor = vec4(sky, 1.0);
         }
       `,
@@ -117,10 +169,13 @@ export class SkyAtmosphere {
 
     this.skyMesh = new THREE.Mesh(skyGeo, this.skyMaterial);
     this.skyMesh.name = 'SkyAtmosphereDome';
+    this.skyMesh.renderOrder = -1000;
+    this.skyMesh.frustumCulled = false;
     this.group.add(this.skyMesh);
 
     // 2. Starfield with twinkle
-    this.starsPoints = this.createStarfield(1200, 1750);
+    this.starsPoints = this.createStarfield(1600, 1750);
+    this.starsPoints.renderOrder = -990;
     this.group.add(this.starsPoints);
 
     // 3. Sun and Moon Sprites
@@ -162,31 +217,46 @@ export class SkyAtmosphere {
     geo.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
     geo.setAttribute('starOpacity', new THREE.BufferAttribute(opacities, 1));
 
-    // Star point shader with twinkle
+    // Star point shader with twinkle. The renderer runs with
+    // logarithmicDepthBuffer, so the shader must include the logdepth chunks —
+    // without them its gl_FragDepth is in the wrong space and the stars lose
+    // every depth test against terrain (the "no stars at night" bug). With
+    // them, stars depth-test like any built-in material: visible in the sky,
+    // correctly hidden behind mountains and buildings.
     const mat = new THREE.ShaderMaterial({
       transparent: true,
       depthWrite: false,
       uniforms: {
         uNightAlpha: { value: 0.0 },
         uTime: { value: 0.0 },
+        uCloudCover: { value: 0.0 },
       },
       vertexShader: `
+        #include <common>
+        #include <logdepthbuf_pars_vertex>
         attribute float size;
         attribute float starOpacity;
         varying float vAlpha;
         uniform float uNightAlpha;
         uniform float uTime;
+        uniform float uCloudCover;
         void main() {
           float twinkle = sin(uTime * 2.0 + position.x * 0.05 + position.z * 0.05) * 0.3 + 0.7;
-          vAlpha = starOpacity * uNightAlpha * twinkle;
+          // Clouds occlude stars: heavy overcast washes the sky out.
+          float cloudOcclusion = 1.0 - clamp(uCloudCover, 0.0, 1.0) * 0.92;
+          vAlpha = starOpacity * uNightAlpha * twinkle * cloudOcclusion;
           vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
           gl_PointSize = size * (1200.0 / -mvPos.z);
           gl_Position = projectionMatrix * mvPos;
+          #include <logdepthbuf_vertex>
         }
       `,
       fragmentShader: `
+        #include <common>
+        #include <logdepthbuf_pars_fragment>
         varying float vAlpha;
         void main() {
+          #include <logdepthbuf_fragment>
           vec2 coord = gl_PointCoord - vec2(0.5);
           float d = length(coord);
           if (d > 0.5) discard;
@@ -354,6 +424,18 @@ export class SkyAtmosphere {
         break;
     }
     this.redrawMoonTexture();
+  }
+
+  /**
+   * Current cloud cover 0..1 (drives dome clouds + star occlusion).
+   */
+  private cloudCover = 0;
+
+  /** Weather-driven cloud cover: 0 clear, 1 solid overcast. Eased by WeatherFX. */
+  public setCloudCover(cover: number) {
+    this.cloudCover = Math.max(0, Math.min(1, cover));
+    this.skyMaterial.uniforms.uCloudCover.value = this.cloudCover;
+    (this.starsPoints.material as THREE.ShaderMaterial).uniforms.uCloudCover.value = this.cloudCover;
   }
 
   /**

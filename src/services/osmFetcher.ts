@@ -155,7 +155,7 @@ export async function fetchFromOverpass(
       }
 
       return data;
-    } catch (err: any) {
+    } catch (err: unknown) {
       // Only a genuine parent abort (user navigated away) stops the chain here.
       // Per-mirror timeouts, HTTP errors, and network failures must NOT be treated
       // as aborts — otherwise the first busy mirror kills the whole fetch instead

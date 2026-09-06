@@ -113,6 +113,79 @@ export function isFreestandingGate(typeId: string): boolean {
 }
 
 /**
+ * How deep a structure's footprint may penetrate past the mapped waterline
+ * before it counts as "in the water". OSM water polygons are simplified
+ * (0.8m point tolerance) and rivers render as soft banks, so a corner that
+ * barely pokes into the mapped polygon on visually dry ground must NOT block
+ * placement — this is what lets a palisade be built right to the water's edge.
+ */
+export const WATER_EDGE_TOLERANCE = 1.4;
+
+function pointInPolygon(pt: { x: number; z: number }, poly: Array<{ x: number; z: number }>): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x, zi = poly[i].z, xj = poly[j].x, zj = poly[j].z;
+    if (zi > pt.z !== zj > pt.z && pt.x < ((xj - xi) * (pt.z - zi)) / (zj - zi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function distToSegmentSq(p: { x: number; z: number }, a: { x: number; z: number }, b: { x: number; z: number }): number {
+  const abx = b.x - a.x, abz = b.z - a.z;
+  const ab2 = abx * abx + abz * abz;
+  const t = ab2 > 0 ? Math.max(0, Math.min(1, ((p.x - a.x) * abx + (p.z - a.z) * abz) / ab2)) : 0;
+  const dx = p.x - (a.x + abx * t), dz = p.z - (a.z + abz * t);
+  return dx * dx + dz * dz;
+}
+
+/** Distance from a point to a polygon's boundary (0 when on the boundary). */
+function distToPolygonBoundary(p: { x: number; z: number }, poly: Array<{ x: number; z: number }>): number {
+  let best = Infinity;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const d = distToSegmentSq(p, poly[j], poly[i]);
+    if (d < best) best = d;
+  }
+  return Math.sqrt(best);
+}
+
+/**
+ * True when a freestanding structure placed at (x, z) with the given rotation
+ * GENUINELY collides with open water. A collision requires a footprint sample
+ * (centre, edge midpoint or corner) to sit inside a water polygon deeper than
+ * WATER_EDGE_TOLERANCE past the mapped waterline — corners or edges that
+ * merely graze the bank on visually dry ground don't block, so walls can be
+ * built right to the water's edge.
+ */
+export function freestandingFootprintOverlapsWater(
+  free: Pick<AdaptedBuilding, 'typeId' | 'position' | 'rotationDeg'> & { width?: number; length?: number },
+  waterPolygons: Point2D[][]
+): boolean {
+  if (!waterPolygons || waterPolygons.length === 0) return false;
+
+  const footprint = getFreestandingCollisionPolygon(free);
+  const centre = free.position;
+  // Midpoints of each edge — catches a wall running along a bank whose corners
+  // and centre are all on dry ground but whose long side dips into the water.
+  const midpoints = footprint.map((a, i) => {
+    const b = footprint[(i + 1) % footprint.length];
+    return { x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 };
+  });
+  const samples = [centre, ...midpoints, ...footprint];
+
+  for (const water of waterPolygons) {
+    if (!water || water.length < 3) continue;
+
+    for (const sample of samples) {
+      if (!pointInPolygon(sample, water)) continue;
+      // Inside the mapped water — but a shallow penetration (within tolerance
+      // of the mapped waterline) is a graze, not a collision.
+      if (distToPolygonBoundary(sample, water) > WATER_EDGE_TOLERANCE) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Collision footprint of a freestanding structure: a rectangle of the type's
  * width x length centred on `position`, rotated by `rotationDeg` using the same
  * rotation convention as the three.js renderer (local +Z is the length axis).

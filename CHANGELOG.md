@@ -21,6 +21,142 @@ Releasing:
 
 ---
 
+## [0.2.3] – 2026-09-06
+
+### Added
+
+- **Graphics quality presets (High / Medium / Low).** New setting in the
+  graphics modal (persisted in game settings): lower presets cull full-detail
+  buildings beyond a distance-dependent radius from the camera and shift the
+  merged-city LOD swap lower (radii scale ~0.45×/0.72×/1.0×). Fixes the low-FPS
+  tilted/zoomed-out views that scaled with building count. Found the root cause
+  of the flat skybox while verifying: the sky dome and starfield shaders
+  predate the renderer's `logarithmicDepthBuffer` and were depth-tested out by
+  every built-in material.
+- **Dynamic skybox.** The sky dome renders first with no depth test
+  (infinitely far by construction), so the flat background colour is gone.
+  Procedural FBM **clouds are painted onto the dome itself** — visible from
+  every camera angle, driven by weather cloud cover (storms read dark slate,
+  light cover near-white) — and the starfield is expanded to 1,600 stars with
+  proper log-depth chunks, so **stars are visible at night** and correctly
+  dimmed by overcast.
+- **Torrential downpour for storms.** Rain pool raised 2,200 → 9,000
+  particles with per-intensity draw-range (no buffer rebuilds mid-storm); rain
+  ≈ 3,000 drops, thunderstorm ≈ 9,000 drops at 3× intensity with faster fall,
+  stronger gusts and larger drops.
+- **Slope-based movement slowdown.** New `terrainSlopeSpeedFactor` (elevation
+  service): units slow linearly to 45% speed at a 45° grade. Applied to squads
+  (path moves + attack-range closing), zombies, hostile humans and construction/
+  gathering crews. Elevation disabled / flat maps are bit-for-bit unchanged.
+- **Campaign chapter 2+ content.** New factions THE REMNANT, THE COMMONWEALTH,
+  THE PURIFIERS and THE FREEHOLDS with a CROSSROADS branching arc (one
+  faction-specific mission chain each), plus UNKNOWN TRANSMISSION, THE RELAY
+  and COLD STORAGE missions and their radio transmissions. New
+  `campaignLore` service: typed lore flags over `MissionState.narrativeFlags`
+  (global, save-persistent, settlement-destruction-proof — knowledge survives
+  even when the people who learned it don't).
+- **Tutorial affordances.** A floating `TutorialHintArrow` points at the form-
+  squad button while a mission/tutorial task asks for the first squad (the
+  button glows too), and the MUSTER FIRETEAM tracker action now opens the
+  actual muster modal. The arrow suppresses while any modal covers the world.
+- **Save payload parity tests.** Manual, autosave and quicksave payloads are
+  asserted to carry the same 19 fields and round-trip through the persistence
+  service; legacy saves without `missionState` still load.
+
+### Changed
+
+- **Nights are actually dark now.** The day/night keyframes never went dark:
+  midnight ambient was 0.72 vs noon's 0.75 and "moonlight" ran at 0.85, so
+  buildings stayed as bright and colourful at night as at noon. Midnight is
+  now ambient 0.34 (cool desaturated blue-grey), moonlight 0.30, hemisphere
+  0.30, with darker sky/fog — the existing night-glow windows, moon-phase
+  scaling and weather dim finally register against a dark baseline.
+- **Camera constraints.** Max zoom-out 8,500 → 6,500 (past ~5–6 km the fog
+  washes the map anyway, and extreme altitudes put the camera above the cloud
+  deck); min pitch 18° → 6° for near street-level perspective. The cloud
+  canopy is a fixed 420 m cloud base the camera stays under, fading out
+  before you could reach it; precipitation fades above ~400 m.
+- **Combat service split.** The 2,500-line `combatService.ts` monolith is
+  now a thin re-export over focused modules in `services/combat/` (armory,
+  buildings, clock, medical, noise, squadcmds, tick, zombie) — all existing
+  imports unchanged. Core combat state slices (clock, zombies, squads,
+  hostiles, dropped items, noise events) moved into one `useCombatState`
+  domain hook so the 100 ms combat tick commits in a single render.
+- **Loaded games resume paused.** The clock speed resets to paused on load —
+  restoring the saved speed could drop a colony straight into a live night
+  siege before the player re-oriented.
+- **Roofs follow building state tints.** Adapted buildings tint their roof at
+  ~55% of the wall state tint (green when completed, amber under
+  construction) instead of roofs deceptively staying at their natural colour.
+- **Under-construction walls show their real material.** The old
+  textureless amber box (which read as "brick" for every type) is replaced by
+  the structure's actual texture — wood planks for a palisade, corrugated
+  metal, brick, concrete — tinted amber at 0.75 opacity so build state is
+  still unmistakable.
+- **Dead AI-Studio dependencies pruned.** `@google/genai`, `express`,
+  `dotenv`, and `@types/express` had zero imports anywhere in the project and
+  were removed from `package.json` / the lockfile.
+- **Typed mission event payload reads.** The task evaluator previously read
+  every journal event through `(e.payload as any)?.field` casts (~20 sites).
+  A single `payloadOf(e, type)` narrowing helper now carries the declared
+  `GameEventPayloadMap` shape, so a misspelled payload field fails to compile
+  instead of silently returning `undefined` at runtime. Behavior is unchanged.
+- **Tightened OSM fetch error typing** (`osmFetcher`) and typed
+  `hiddenGroupsList` as `HiddenSurvivorGroup[]` instead of `any[]`.
+
+### Fixed
+
+- **Walls can be built to the water's edge.** Freestanding placement
+  rejected a footprint the instant its centre or any corner touched a mapped
+  water polygon (no tolerance), and one water-grazing segment cancelled an
+  entire dragged wall run. A new shared `freestandingFootprintOverlapsWater`
+  only counts a collision when a footprint sample penetrates deeper than
+  1.4 m past the mapped waterline (OSM water polygons are simplified and
+  river strips are expanded, so the mapped edge is approximate); wall runs now
+  skip water-overlapping segments individually and build the dry remainder.
+  The red placement ghost and the commit path use the same helper.
+- **Autosave dropped mission progress.** The dawn autosave payload omitted
+  `missionState` entirely, so loading an autosave restarted the campaign from
+  the first quest. (Saves written before this fix genuinely lost progress.)
+- **Manual saves dropped the scavenge queue.** Only quicksaves persisted it —
+  loading a manual save silently forgot every in-progress building search
+  plan. All three save paths now persist it; the autosave case is the same
+  class of bug, caught by the new payload-parity tests.
+- **Field loot no longer floats or buries on slopes.** Dropped field-loot
+  piles now respect terrain elevation instead of anchoring at y=0 — on hills
+  they were floating above or under the ground and unretrievable.
+- **Ground-click feedback ring on hills.** The fallback move-order ring
+  (no terrain mesh under cursor) spawned at y=0, buried on elevated terrain;
+  it now samples the elevation grid.
+- **Builder workers stuck at under-supplied construction sites.** A crew that
+  arrived with insufficient materials on site got stuck forever — never
+  returning for more, never resuming once materials arrived.
+- **Squad deposits at large buildings.** The fixed 10 m deposit radius could
+  sit inside a big HQ footprint: a squad standing inside the building was
+  further than 10 m from its centre, so loot never left the backpack and
+  queues stalled. Deposit radius now covers the whole arrival zone.
+- **Pathfinding wedge on empty paths.** `stepAlongPath` could loop forever on
+  a zero-length path when start and goal shared an obstructed cell; it now
+  reports arrival.
+- **Storm nights are very dark.** Intentional, but noted here for balance:
+  the compounding night + weather dim is harsh at midnight; the dials to
+  soften are midnight ambient or weather-dim-on-night-lights.
+
+### Tests
+
+- **Save-schema round-trip guard** (`tests/saveRoundTrip.test.ts`): asserts a
+  serialized settlement contains no `Map`/`Set` instance (a forgotten map
+  field would silently stringify to `{}`), that a full serialize → JSON →
+  deserialize cycle reconstructs Map collections and scalars without drift,
+  and that serialization is a fixpoint after one normalize pass.
+- New suites: `freestandingWaterEdge` (bank-graze builds, mid-river blocks),
+  `slopeMovement` (flat = 1.0, 45° = max penalty, null grid = no-op),
+  `saveMissionProgress` (mission round-trip + payload parity),
+  `constructionCrewPathing` (stuck-crew regression), `campaignLore`, plus sim-
+  tick benchmarks under mid-game load (`benchSimTick*`).
+
+---
+
 ## [0.2.2] – 2026-09-04
 
 ### Added

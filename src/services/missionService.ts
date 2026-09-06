@@ -29,13 +29,14 @@ import {
   TargetRefSpec,
   TaskStatus,
 } from '../types/mission';
-import { GameEventRecord, GameEventType } from '../types/narrativeEvent';
+import { GameEventPayloadMap, GameEventRecord, GameEventType } from '../types/narrativeEvent';
 import {
   RadioResponseOption,
   RadioTransmission,
   TransmissionDefinition,
 } from '../types/radioDirective';
 import { SettlementState } from '../types/settlement';
+import { HiddenSurvivorGroup } from '../types/population';
 import { GameClockState } from '../types/combat';
 import { MapData, BuildingPolygon } from '../types/map';
 import { TradeCaravan } from '../types/caravan';
@@ -175,10 +176,10 @@ export function applyFactionEffects(
 // World snapshot + derived events
 // ---------------------------------------------------------------------------
 
-function hiddenGroupsList(settlement: SettlementState): any[] {
+function hiddenGroupsList(settlement: SettlementState): HiddenSurvivorGroup[] {
   const hg = settlement.hiddenGroups;
   if (hg instanceof Map) return Array.from(hg.values());
-  if (hg && typeof hg === 'object') return Object.values(hg);
+  if (hg && typeof hg === 'object') return Object.values(hg) as HiddenSurvivorGroup[];
   return [];
 }
 
@@ -658,6 +659,21 @@ export function bindMissionTasks(
 // Task evaluation (authoritative state reads + domain events)
 // ---------------------------------------------------------------------------
 
+/**
+ * Narrow a journal event's payload to the declared shape of ONE event type.
+ * Returns undefined unless the event is exactly `type`, so callers keep their
+ * existing `e.type === X` guards and read typed fields instead of casting
+ * `e.payload as any` inline. The single cast lives here, at the type boundary.
+ */
+function payloadOf<T extends GameEventType>(
+  e: GameEventRecord,
+  type: T
+): (T extends keyof GameEventPayloadMap ? GameEventPayloadMap[T] : Record<string, unknown>) | undefined {
+  return e.type === type
+    ? (e.payload as T extends keyof GameEventPayloadMap ? GameEventPayloadMap[T] | undefined : Record<string, unknown> | undefined)
+    : undefined;
+}
+
 export interface TaskEvaluation {
   current: number;
   complete: boolean;
@@ -685,7 +701,7 @@ export function evaluateTask(
       // Count survivors actually recruited AFTER task activation (never discovery).
       const eventRecruits = events
         .filter((e) => e.type === 'SURVIVOR_RECRUITED')
-        .reduce((acc, e) => acc + (Number((e.payload as any)?.count) || 1), 0);
+        .reduce((acc, e) => acc + (Number(payloadOf(e, 'SURVIVOR_RECRUITED')?.count) || 1), 0);
       const baseline = task.startProgressBaseline ?? 0;
       const totalRecruits = s.lifetimeStats?.survivorsRecruited ?? 0;
       const snapshotDelta = Math.max(0, totalRecruits - baseline);
@@ -696,7 +712,10 @@ export function evaluateTask(
       // Count survivors actually rescued AFTER task activation.
       const eventRescues = events
         .filter((e) => e.type === 'SURVIVOR_RESCUED' || e.type === 'SURVIVOR_RECRUITED')
-        .reduce((acc, e) => acc + (Number((e.payload as any)?.count) || 1), 0);
+        .reduce((acc, e) => {
+          const p = e.type === 'SURVIVOR_RESCUED' ? payloadOf(e, 'SURVIVOR_RESCUED') : payloadOf(e, 'SURVIVOR_RECRUITED');
+          return acc + (Number(p?.count) || 1);
+        }, 0);
       const total = Math.max(task.current || 0, eventRescues);
       return { current: Math.min(task.target, total), complete: total >= task.target };
     }
@@ -707,7 +726,7 @@ export function evaluateTask(
           ? bs.get(task.boundTargetId)
           : (bs as any)?.[task.boundTargetId];
         const done = Boolean(rec && rec.searched) ||
-          events.some((e) => e.type === 'BUILDING_SCAVENGED' && String((e.payload as any)?.buildingId) === String(task.boundTargetId));
+          events.some((e) => e.type === 'BUILDING_SCAVENGED' && String(payloadOf(e, 'BUILDING_SCAVENGED')?.buildingId) === String(task.boundTargetId));
         return { current: done ? 1 : 0, complete: done };
       }
       const scavengedEvents = events.filter((e) => e.type === 'BUILDING_SCAVENGED').length;
@@ -720,7 +739,7 @@ export function evaluateTask(
     case 'travel_to_location': {
       if (task.boundTargetId !== undefined) {
         const reachedEvent = events.some(
-          (e) => e.type === 'LOCATION_REACHED' && (String((e.payload as any)?.buildingId) === String(task.boundTargetId) || String((e.payload as any)?.locationId) === String(task.boundTargetId))
+          (e) => e.type === 'LOCATION_REACHED' && (String(payloadOf(e, 'LOCATION_REACHED')?.buildingId) === String(task.boundTargetId) || String(payloadOf(e, 'LOCATION_REACHED')?.locationId) === String(task.boundTargetId))
         );
         let inside = false;
         if (!reachedEvent && ctx.mapData && s.squads) {
@@ -739,7 +758,7 @@ export function evaluateTask(
     case 'discover_location': {
       if (task.boundTargetId !== undefined) {
         const discoveredEvent = events.some(
-          (e) => e.type === 'LOCATION_DISCOVERED' && String((e.payload as any)?.locationId ?? (e.payload as any)?.buildingId) === String(task.boundTargetId)
+          (e) => e.type === 'LOCATION_DISCOVERED' && String(payloadOf(e, 'LOCATION_DISCOVERED')?.locationId ?? payloadOf(e, 'LOCATION_DISCOVERED')?.buildingId) === String(task.boundTargetId)
         );
         const done = discoveredEvent || (task.current >= 1);
         return { current: done ? 1 : 0, complete: done };
@@ -752,12 +771,12 @@ export function evaluateTask(
       // Must track resources scavenged AFTER task activation.
       const scavengedFromEvents = events
         .filter((e) =>
-          (e.type === 'RESOURCE_ACQUIRED' && (e.payload as any)?.source === 'scavenge' && (e.payload as any)?.resourceType === task.resourceType) ||
-          (e.type === 'BUILDING_SCAVENGED' && (e.payload as any)?.loot && (e.payload as any)?.loot[task.resourceType || ''])
+          (e.type === 'RESOURCE_ACQUIRED' && payloadOf(e, 'RESOURCE_ACQUIRED')?.source === 'scavenge' && payloadOf(e, 'RESOURCE_ACQUIRED')?.resourceType === task.resourceType) ||
+          (e.type === 'BUILDING_SCAVENGED' && payloadOf(e, 'BUILDING_SCAVENGED')?.loot?.[task.resourceType || ''])
         )
         .reduce((acc, e) => {
-          if (e.type === 'RESOURCE_ACQUIRED') return acc + (Number((e.payload as any)?.amount) || 0);
-          if (e.type === 'BUILDING_SCAVENGED') return acc + (Number((e.payload as any)?.loot?.[task.resourceType || '']) || 0);
+          if (e.type === 'RESOURCE_ACQUIRED') return acc + (Number(payloadOf(e, 'RESOURCE_ACQUIRED')?.amount) || 0);
+          if (e.type === 'BUILDING_SCAVENGED') return acc + (Number(payloadOf(e, 'BUILDING_SCAVENGED')?.loot?.[task.resourceType || '']) || 0);
           return acc;
         }, 0);
       const have = readResource(s, task.resourceType || '');
@@ -780,11 +799,15 @@ export function evaluateTask(
       // journal), so progress is the tally delta since the task's baseline.
       // Domain events remain a secondary signal for content that emits them.
       const eventTotal = events
-        .filter((e) =>
-          e.type === 'ITEM_MANUFACTURED' &&
-          ((e.payload as any)?.resourceType === task.resourceType || (e.payload as any)?.itemId === task.resourceType)
-        )
-        .reduce((acc, e) => acc + (Number((e.payload as any)?.amount ?? (e.payload as any)?.quantity) || 1), 0);
+        .filter((e) => {
+          if (e.type !== 'ITEM_MANUFACTURED') return false;
+          const p = payloadOf(e, 'ITEM_MANUFACTURED');
+          return p?.resourceType === task.resourceType || p?.itemId === task.resourceType;
+        })
+        .reduce((acc, e) => {
+          const p = payloadOf(e, 'ITEM_MANUFACTURED');
+          return acc + (Number(p?.amount ?? p?.quantity) || 1);
+        }, 0);
       const produced = s.lifetimeStats?.itemsProduced?.[task.resourceType || ''] ?? 0;
       const baseline = task.startProgressBaseline ?? 0;
       const tallyDelta = Math.max(0, produced - baseline);
@@ -799,7 +822,7 @@ export function evaluateTask(
     case 'build_facility': {
       if (task.completionMode === 'action') {
         const constructedEvents = events.filter(
-          (e) => e.type === 'BUILDING_CONSTRUCTED' && (!task.buildingType || (e.payload as any)?.buildingType === task.buildingType)
+          (e) => e.type === 'BUILDING_CONSTRUCTED' && (!task.buildingType || payloadOf(e, 'BUILDING_CONSTRUCTED')?.buildingType === task.buildingType)
         ).length;
         const currentCount = (s.freestandingBuildings || []).filter(
           (b: any) => b && (!task.buildingType || b.type === task.buildingType)
@@ -817,7 +840,7 @@ export function evaluateTask(
     case 'adapt_building': {
       if (task.completionMode === 'action') {
         const adaptedEvents = events.filter(
-          (e) => e.type === 'BUILDING_ADAPTED' && (!task.buildingType || (e.payload as any)?.buildingType === task.buildingType)
+          (e) => e.type === 'BUILDING_ADAPTED' && (!task.buildingType || payloadOf(e, 'BUILDING_ADAPTED')?.buildingType === task.buildingType)
         ).length;
         const currentCount = s.adaptedBuildings instanceof Map
           ? Array.from(s.adaptedBuildings.values()).filter((b: any) => b && (!task.buildingType || b.type === task.buildingType)).length
@@ -837,7 +860,7 @@ export function evaluateTask(
     case 'research_technology': {
       if (task.completionMode === 'action') {
         const researchDone = events.some(
-          (e) => e.type === 'RESEARCH_COMPLETED' && (!task.researchId || (e.payload as any)?.nodeId === task.researchId)
+          (e) => e.type === 'RESEARCH_COMPLETED' && (!task.researchId || payloadOf(e, 'RESEARCH_COMPLETED')?.nodeId === task.researchId)
         );
         const isDone = researchDone || (task.current >= 1);
         return { current: isDone ? 1 : 0, complete: isDone };
@@ -853,7 +876,7 @@ export function evaluateTask(
         const lairs = s.zombieLairs;
         const lair = lairs instanceof Map ? lairs.get(lairId) : (lairs as any)?.[String(lairId)];
         const clearedEvent = events.some(
-          (e) => e.type === 'LAIR_CLEARED' && String((e.payload as any)?.lairId) === String(lairId)
+          (e) => e.type === 'LAIR_CLEARED' && String(payloadOf(e, 'LAIR_CLEARED')?.lairId) === String(lairId)
         );
         const done = Boolean(clearedEvent || (lair && (lair.isCleared || (lair.population || 0) <= 0)));
         return { current: done ? task.target : 0, complete: done };
@@ -891,7 +914,8 @@ export function evaluateTask(
       // Verify destination, cargo, quantity, and arrival after activation
       const matchingArrivalEvents = events.filter((e) => {
         if (e.type !== 'CARAVAN_ARRIVED') return false;
-        const p = e.payload as any;
+        const p = payloadOf(e, 'CARAVAN_ARRIVED');
+        if (!p) return false;
         if (task.destinationSettlementId && p.destinationSettlementId !== task.destinationSettlementId) return false;
         if (task.originSettlementId && p.originSettlementId !== task.originSettlementId) return false;
         if (task.boundCaravanId && p.caravanId !== task.boundCaravanId) return false;
@@ -903,7 +927,8 @@ export function evaluateTask(
       });
 
       const deliveredAmount = matchingArrivalEvents.reduce((acc, e) => {
-        const p = e.payload as any;
+        const p = payloadOf(e, 'CARAVAN_ARRIVED');
+        if (!p) return acc;
         const cargoAmount = task.resourceType ? (Number(p.cargo?.[task.resourceType]) || 0) : 1;
         return acc + cargoAmount;
       }, 0);
@@ -934,7 +959,7 @@ export function evaluateTask(
     case 'contact_faction': {
       const targetFactionId = task.factionId;
       const contactedEvent = events.some(
-        (e) => e.type === 'FACTION_CONTACTED' && (!targetFactionId || (e.payload as any)?.factionId === targetFactionId)
+        (e) => e.type === 'FACTION_CONTACTED' && (!targetFactionId || payloadOf(e, 'FACTION_CONTACTED')?.factionId === targetFactionId)
       );
       const isContacted = contactedEvent || (targetFactionId
         ? Boolean(state?.contactedFactionIds?.includes(targetFactionId))
@@ -1106,8 +1131,9 @@ export function updateMissionSystem(
 
   // Track faction contacts from domain events
   for (const e of journalEvents) {
-    if (e.type === 'FACTION_CONTACTED' && (e.payload as any)?.factionId) {
-      const fId = (e.payload as any).factionId;
+    const contactedPayload = payloadOf(e, 'FACTION_CONTACTED');
+    if (e.type === 'FACTION_CONTACTED' && contactedPayload?.factionId) {
+      const fId = contactedPayload.factionId;
       if (!newState.contactedFactionIds.includes(fId)) {
         newState.contactedFactionIds = [...newState.contactedFactionIds, fId];
       }

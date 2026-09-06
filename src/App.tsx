@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useGameState } from './hooks/useGameState';
 import { useSimulationLoop } from './hooks/useSimulationLoop';
 import { useMapLoading } from './hooks/useMapLoading';
@@ -76,6 +77,7 @@ export default function App() {
     showStreetLabels, setShowStreetLabels, showSatelliteOverlay, setShowSatelliteOverlay,
     showPowerGrid, setShowPowerGrid,
     satelliteQuality, setSatelliteQuality,
+    graphicsQuality, setGraphicsQuality,
     labelDetailMode, setLabelDetailMode, isHideUi, setIsHideUi,
     isExpeditionViewActive, setIsExpeditionViewActive,
     // Alarm
@@ -84,6 +86,33 @@ export default function App() {
     // Scene & refs
     sceneRef, abortControllerRef, settlementRef, mapDataRef, gameClockRef, zombiesRef,
   } = useGameState();
+
+  // Tutorial/mission feedback: TRUE while an active task asks the player to
+  // muster their first squad (mission `form_squad` task, or the DIR-02
+  // tutorial directive). Drives the glowing '+' form-squad button.
+  const squadMusterActive = useMemo(() => {
+    const missionAsk = (missionState?.activeMissions || []).some((m) =>
+      m.tasks.some(
+        (t) =>
+          t.status === 'active' &&
+          (t.type === 'form_squad' || t.focusAction === 'open_squad_panel' || t.focusAction === 'muster_squad')
+      )
+    );
+    const directiveAsk = (radioDirectiveState?.activeDirectives || []).some(
+      (d) =>
+        d.status === 'active' &&
+        (d.conditionType === 'form_squad' || d.actionType === 'muster_squad' || d.actionType === 'open_squad_panel')
+    );
+    return Boolean(missionAsk || directiveAsk);
+  }, [missionState, radioDirectiveState]);
+
+  // Suppress the world-space tutorial arrow while any full-screen modal covers
+  // the world — pointing at a button the player can't see is worse than no hint.
+  const isTutorialTargetObscured =
+    isRadioModalOpen || isResearchModalOpen || isSaveLoadModalOpen || isCodexModalOpen ||
+    isSettingsModalOpen || isCreditsModalOpen || isCaravansModalOpen || isFreestandingModalOpen ||
+    isPopulationModalOpen || isSquadModalOpen || isMedbayModalOpen || isVehicleModalOpen ||
+    isMoraleModalOpen || isWeatherModalOpen || isCelebrationModalOpen;
 
   settlementRef.current = settlement;
   // mapDataRef is synced inside useGameState only when the map state identity
@@ -192,6 +221,7 @@ export default function App() {
     currentPreset,
     caravans,
     radioDirectiveState,
+    missionState,
     dangerLevel,
     showSatelliteOverlay,
     satelliteQuality,
@@ -353,6 +383,7 @@ export default function App() {
     setDisableElevation,
     setShowTerrainWireframe,
     setShowBuildingEdges,
+    setGraphicsQuality,
     setShowSatelliteOverlay,
     setSatelliteQuality,
     setSelectedBuilding,
@@ -512,6 +543,7 @@ export default function App() {
     setIsRadioModalOpen,
     setIsResearchModalOpen,
     setIsMedbayModalOpen,
+    setIsSquadModalOpen,
     addTacticalAlert,
     handleOrderSquadMove,
   });
@@ -537,7 +569,7 @@ export default function App() {
 
       {viewMode === 'world' && (
         <TacticalWorldScene
-      activeGatherType={activeGatherType} activeRansomHideoutId={activeRansomHideoutId} activeRecruitmentGroup={activeRecruitmentGroup}
+      squadMusterActive={squadMusterActive} isTutorialTargetObscured={isTutorialTargetObscured} activeGatherType={activeGatherType} activeRansomHideoutId={activeRansomHideoutId} activeRecruitmentGroup={activeRecruitmentGroup}
       activeSidebarTab={activeSidebarTab} activeSettlementId={activeSettlementId} alerts={alerts} caravans={caravans}
       combatSquads={combatSquads} combatSquadsRef={combatSquadsRef} contactedSurvivorGroupIdsRef={contactedSurvivorGroupIdsRef}
       dangerLevel={dangerLevel} disableElevation={disableElevation} elevationExaggeration={elevationExaggeration}
@@ -585,7 +617,7 @@ export default function App() {
       setShowStreetLabels={setShowStreetLabels} setToastMessage={setToastMessage}
       setToasts={setToasts} setViewMode={setViewMode} settlement={settlement}
       settlementRef={settlementRef} settlements={settlements} showBricks={showBricks}
-      showBuildingEdges={showBuildingEdges} showBuildings={showBuildings} showLanduse={showLanduse}
+      showBuildingEdges={showBuildingEdges} graphicsQuality={graphicsQuality} showBuildings={showBuildings} showLanduse={showLanduse}
       showMetal={showMetal} showPowerGrid={showPowerGrid} showRoads={showRoads} showSatelliteOverlay={showSatelliteOverlay}
       satelliteQuality={satelliteQuality}
       showStreetLabels={showStreetLabels} showTerrainWireframe={showTerrainWireframe} showWood={showWood}

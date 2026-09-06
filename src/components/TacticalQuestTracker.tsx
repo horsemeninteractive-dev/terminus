@@ -72,9 +72,11 @@ export const TacticalQuestTracker: React.FC<TacticalQuestTrackerProps> = ({
   const activeMissions = missionState?.activeMissions || [];
   const pendingMissions = missionState?.pendingMissions || [];
 
-  // Faction standing rows (registry order) with posture derived from standing
-  // and the persistent cutoff marker set when a faction broke contact.
-  const factionRows = Object.keys(missionState?.factionRelations || {})
+  // Faction standing rows — ONLY factions the player has actually contacted
+  // (spec §6/§7). `factionRelations` internally holds standings for factions
+  // the player has never heard of; those must never render. Unknown factions
+  // don't exist as far as the player is concerned.
+  const factionRows = (missionState?.contactedFactionIds || [])
     .filter((id) => getFactionDefinition(id))
     .map((id) => {
       const standing = (missionState?.factionRelations || {})[id] ?? 0;

@@ -635,8 +635,21 @@ export function stepAlongPath(
       // two-point segment from the current position. A single-point [{x,z}]
       // path would be a dead route that never advances, freezing the unit.
       st.path = [{ x, z }, { x: goalX, z: goalZ }];
+    } else if (path && path.length === 0) {
+      // Obstructed, but start and goal share a cell: the unit is already as
+      // close as pathfinding can get. Report arrival instead of wedging on a
+      // dead one-point path — construction crews target a structure's centre,
+      // which always sits inside the structure's own blocked footprint cells,
+      // so a crew that ends up in that cell must count as on-site.
+      return {
+        x, z,
+        rotation: Math.atan2(goalX - x, goalZ - z),
+        state: st,
+        arrived: true,
+        isIndoor: true,
+      };
     } else {
-      // Obstructed but the search failed (e.g. goal pinned behind a wall with
+      // Obstructed and the search failed (e.g. goal pinned behind a wall with
       // no route). Stay put on a dead one-point path rather than phasing
       // through construction.
       st.path = [{ x, z }];
