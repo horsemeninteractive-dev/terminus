@@ -1,0 +1,59 @@
+name: Release
+
+# Publishes a GitHub release whenever a version tag (vX.Y.Z) is pushed.
+# Release notes are extracted from the matching `## [X.Y.Z]` section of
+# CHANGELOG.md. If the section is missing, the release falls back to
+# auto-generated notes instead of failing.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Extract changelog section for the tagged version
+        id: changelog
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          SECTION=$(awk -v ver="$VERSION" '
+            index($0, "## [" ver "]") == 1 { flag = 1; next }
+            /^## \[/ && flag { exit }
+            flag
+          ' CHANGELOG.md)
+          if [ -z "$SECTION" ]; then
+            echo "::warning::No '## [$VERSION]' section found in CHANGELOG.md — falling back to auto-generated notes."
+            echo "has_notes=false" >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "has_notes=true"
+              echo "notes<<CHANGELOG_EOF"
+              printf '%s\n' "$SECTION"
+              echo "CHANGELOG_EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTES: ${{ steps.changelog.outputs.notes }}
+        run: |
+          if [ "${{ steps.changelog.outputs.has_notes }}" = "true" ]; then
+            gh release create "$GITHUB_REF_NAME" \
+              --title "Terminus $GITHUB_REF_NAME" \
+              --notes "$NOTES" \
+              --verify-tag
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "Terminus $GITHUB_REF_NAME" \
+              --generate-notes \
+              --verify-tag
+          fi
