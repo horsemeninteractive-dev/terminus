@@ -158,7 +158,7 @@ export function runSimulationPipeline(args: {
   const gathering = gatheringResult.newState;
   const combat = tickCombatSimulation(zombies, squads, gathering.adaptedBuildings, noiseEvents, clock, getPrimaryHQ(gathering)?.center || null, deltaSeconds, gathering, droppedItems, hostileHumans, pathGrid, alarmActive, mapData.elevation || null);
   const infection = tickInfectionSimulation(gathering, deltaSeconds, clock.speed, clock.day);
-  const vehicles = updateVehiclesTick(gathering.vehicles || [], combat.updatedSquads, combat.updatedZombies, deltaSeconds * clock.speed, Date.now(), mapData, roadGraph, gathering.freestandingBuildings || [], 0);
+  const vehicles = updateVehiclesTick(gathering.vehicles || [], combat.updatedSquads, combat.updatedZombies, deltaSeconds * clock.speed, Date.now(), mapData, roadGraph, gathering.freestandingBuildings || [], 0, undefined, pathGrid);
   let nextSquads = vehicles.updatedSquads;
   const nextZombies = vehicles.updatedZombies;
   // §8 Vehicle Workshops — fabrication / time-repair / dismantling orders on

@@ -20,6 +20,8 @@ import {
 import { SettlementState } from '../types/settlement';
 import { VEHICLE_DEFINITIONS, WorldVehicle } from '../types/vehicle';
 import { getVehicleInventoryCapacity } from '../services/vehicleService';
+import { formatLootLabel } from '../services/scavengingService';
+import { lootIconForItem } from './lootIcons';
 import {
  dismountSquadFromVehicle,
  pickFuelCarrierSquad,
@@ -461,22 +463,12 @@ export const VehicleTacticalDrawer: React.FC<VehicleTacticalDrawerProps> = ({
  <div className="grid grid-cols-5 gap-1">
  {Array.from({ length: getVehicleInventoryCapacity(vehicle) }, (_, index) => {
  const item = (vehicle.inventory || [])[index];
- const icon = item
- ? item.kind === 'weapon'
- ? <Crosshair className="w-3 h-3 text-rose-300" />
- : item.kind === 'armor'
- ? <Shield className="w-3 h-3 text-sky-300" />
- : (item.label || '').includes('water')
- ? <Droplets className="w-3 h-3 text-cyan-300" />
- : (item.label || '').includes('food') || (item.label || '').includes('ration') || (item.label || '').includes('canned')
- ? <Apple className="w-3 h-3 text-emerald-300" />
- : <Package className="w-3 h-3 text-amber-300" />
- : null;
+ const icon = lootIconForItem(item, 'w-3 h-3');
  return (
  <div
  key={index}
  className={`h-6 flex items-center justify-center border ${item ? 'bg-[#10141C] border-[#10B981]/60' : 'bg-[#0A0D12] border-[#222c3a]'}`}
- title={item ? `${item.label || 'Loot'} ×${item.quantity}` : `Empty cargo slot ${index + 1}`}
+ title={item ? `${formatLootLabel(item.label || '') || 'Loot'} ×${item.quantity}` : `Empty cargo slot ${index + 1}`}
  >
  {icon}
  </div>

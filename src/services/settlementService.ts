@@ -196,7 +196,7 @@ export function createInitialSettlementState(
       fuelType: 'diesel',
       currentFuel: 60,
       maxFuel: 75,
-      fuelConsumptionPer100m: 1.4,
+      fuelConsumptionPer100m: 0.14, // matches VEHICLE_DEFINITIONS.armed_truck
       assignedSquadId: null,
       isMoving: false,
       roadPathWaypoints: [],

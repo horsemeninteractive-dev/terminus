@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { sampleElevation } from '../services/elevationService';
+import { clusterZombies } from '../services/zombieClusterService';
 import {
   ARMOR_CATALOG,
   CombatVisualFx,
@@ -24,6 +25,9 @@ import {
   RigPoseMode,
 } from './HumanoidRig';
 
+/** Default billboard tint for zombies not belonging to any cluster. */
+const WALKER_TINT = new THREE.Color().setHSL(0.28, 0.22, 0.42);
+
 export class CombatRenderer {
   public group = new THREE.Group();
   public squadGroup = new THREE.Group();
@@ -37,6 +41,26 @@ export class CombatRenderer {
   // Terrain elevation
   private currentElevation: ElevationGrid | null = null;
   private currentExaggeration = 1.0;
+
+  /**
+   * Terrain surface sampler injected by WorldScene: height of the terrain AS
+   * RENDERED (piecewise-linear mesh) or null outside the mesh. Units must
+   * stand on the same surface the terrain draws — the smooth analytic
+   * elevation can sit meters below the rendered triangles on slopes.
+   */
+  private terrainSurfaceSampler: ((x: number, z: number) => number | null) | null = null;
+
+  public setTerrainSurfaceSampler(sampler: ((x: number, z: number) => number | null) | null) {
+    this.terrainSurfaceSampler = sampler;
+  }
+
+  /** Rendered-terrain height when available, else the smooth analytic surface. */
+  private terrainSample(x: number, z: number, exaggeration: number): number {
+    return (
+      this.terrainSurfaceSampler?.(x, z) ??
+      sampleElevation(this.currentElevation, x, z, exaggeration)
+    );
+  }
 
   // Mesh caches
   private squadMeshes = new Map<string, THREE.Group>();
@@ -68,6 +92,232 @@ export class CombatRenderer {
   // When true, per-frame interpolation is frozen at each unit's latest sim position
   // so nothing keeps sliding after the player pauses.
   private paused = false;
+
+  // Rig-pose distance LOD: per-limb rig posing is the most expensive per-entity
+  // CPU work in the frame loop, and zombie/hostile populations scale into the
+  // hundreds. Beyond RIG_LOD_FAR entities keep their last pose entirely;
+  // between NEAR and FAR they re-pose every 3rd frame, staggered per-entity so
+  // the work spreads across frames. Squads and workers are always posed (few
+  // of them, and they are the gameplay focus). Position interpolation still
+  // runs for every entity — only limb posing is LOD'd.
+  private cameraRef: THREE.Camera | null = null;
+  private frameIndex = 0;
+  private static readonly RIG_LOD_NEAR = 140;
+  private static readonly RIG_LOD_FAR = 320;
+  /** Rig pose updates skipped by the distance LOD this frame (perf HUD metric). */
+  public rigLodSkips = 0;
+
+  // ---- Billboard LOD (distant zombies) ------------------------------------
+  // Beyond BILLBOARD_ON meters a zombie's multi-mesh humanoid rig is replaced
+  // by one instance in a SINGLE shared InstancedMesh of yaw-billboarded
+  // silhouette quads — hundreds of rigs collapse into one draw call. The swap
+  // uses hysteresis (rig back below BILLBOARD_OFF) so panning along the
+  // frontier doesn't thrash rig creation. Horde-cluster identity is preserved
+  // via per-cluster tinting (clusterZombies), and attacks flash red.
+  private static readonly BILLBOARD_ON = 220;
+  private static readonly BILLBOARD_OFF = 170;
+  private static readonly BILLBOARD_ON_SQ = CombatRenderer.BILLBOARD_ON * CombatRenderer.BILLBOARD_ON;
+  private static readonly BILLBOARD_OFF_SQ = CombatRenderer.BILLBOARD_OFF * CombatRenderer.BILLBOARD_OFF;
+  private static readonly BILLBOARD_HALF_H = 1.05; // geometry height 2.1 / 2
+  private billboardPool: THREE.InstancedMesh | null = null;
+  private billboardCapacity = 0;
+  private billboardMaterial: THREE.MeshBasicMaterial | null = null;
+  private billboardEntries = new Map<
+    string,
+    { id: string; slot: number; scale: number; tint: THREE.Color }
+  >();
+  /** instanceId → zombie id for raycasting the shared instanced mesh. */
+  private billboardIds: string[] = [];
+  private clusterTintCache = new Map<string, THREE.Color>();
+  // Scratch objects for the per-frame billboard matrix pass (no GC churn).
+  private bbMatrix = new THREE.Matrix4();
+  private bbQuat = new THREE.Quaternion();
+  private bbPos = new THREE.Vector3();
+  private bbScale = new THREE.Vector3();
+  private bbUp = new THREE.Vector3(0, 1, 0);
+
+  /** How many zombies are currently rendered as billboards (perf HUD). */
+  public get billboardCount() {
+    return this.billboardEntries.size;
+  }
+
+  /** Classic shambler silhouette on transparent background; white so instanceColor tints it. */
+  private createBillboardTexture(): THREE.CanvasTexture {
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 96;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.fillStyle = '#ffffff';
+      // Head (tilted — it is a zombie, after all)
+      ctx.save();
+      ctx.translate(34, 13);
+      ctx.rotate(0.18);
+      ctx.beginPath();
+      ctx.arc(0, 0, 9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      // Torso
+      ctx.fillRect(23, 22, 19, 32);
+      // Arms: one raised forward (classic lurch), one hanging
+      ctx.save();
+      ctx.translate(24, 26);
+      ctx.rotate(-0.9);
+      ctx.fillRect(-3, 0, 6, 26);
+      ctx.restore();
+      ctx.save();
+      ctx.translate(41, 26);
+      ctx.rotate(0.35);
+      ctx.fillRect(-3, 0, 6, 26);
+      ctx.restore();
+      // Legs (one dragging)
+      ctx.fillRect(24, 54, 8, 38);
+      ctx.save();
+      ctx.translate(36, 54);
+      ctx.rotate(0.12);
+      ctx.fillRect(-3, 0, 7, 36);
+      ctx.restore();
+    }
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  /** Create (or grow) the shared billboard instanced mesh. */
+  private ensureBillboardCapacity(minCapacity: number) {
+    if (this.billboardPool && this.billboardCapacity >= minCapacity) return;
+    const capacity = Math.max(64, minCapacity * 2);
+    if (!this.billboardMaterial) {
+      this.billboardMaterial = new THREE.MeshBasicMaterial({
+        map: this.createBillboardTexture(),
+        transparent: true,
+        alphaTest: 0.4,
+        side: THREE.DoubleSide,
+      });
+    }
+    const old = this.billboardPool;
+    if (old) {
+      this.zombieGroup.remove(old);
+      old.geometry.dispose();
+    }
+    const pool = new THREE.InstancedMesh(
+      new THREE.PlaneGeometry(1.3, CombatRenderer.BILLBOARD_HALF_H * 2),
+      this.billboardMaterial,
+      capacity
+    );
+    pool.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    // Instances span the whole map — frustum-culling the whole batch would
+    // pop every distant horde out of view at once.
+    pool.frustumCulled = false;
+    pool.count = 0;
+    this.billboardPool = pool;
+    this.billboardCapacity = capacity;
+    this.zombieGroup.add(pool);
+  }
+
+  /** Deterministic sickly green→olive tint per horde cluster key. */
+  private clusterTint(key: string): THREE.Color {
+    let color = this.clusterTintCache.get(key);
+    if (!color) {
+      let hash = 0;
+      for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) | 0;
+      const hue = 0.28 + (((hash >>> 8) % 100) / 100) * 0.14 - 0.07;
+      color = new THREE.Color().setHSL(hue, 0.28, 0.42);
+      this.clusterTintCache.set(key, color);
+      // Cluster keys are first-member zombie ids and churn as hordes merge —
+      // keep the cache bounded.
+      if (this.clusterTintCache.size > 512) this.clusterTintCache.clear();
+    }
+    return color;
+  }
+
+  /**
+   * Reassign billboard slots (map iteration order), refresh per-cluster/attack
+   * tints, and rewrite the raycast id table. Called per sim tick, not per frame.
+   */
+  private rebuildBillboards(zombieById: Map<string, ZombieUnit>, clusterByZombie: Map<string, string> | null) {
+    const pool = this.billboardPool;
+    if (!pool) return;
+    this.billboardIds.length = this.billboardEntries.size;
+    let slot = 0;
+    for (const entry of this.billboardEntries.values()) {
+      entry.slot = slot;
+      this.billboardIds[slot] = entry.id;
+      const zombie = zombieById.get(entry.id);
+      if (zombie && (zombie.state === 'attacking_unit' || zombie.state === 'attacking_building')) {
+        entry.tint.setHex(0xff5a3d);
+      } else {
+        const clusterKey = clusterByZombie?.get(entry.id);
+        entry.tint.copy(clusterKey ? this.clusterTint(clusterKey) : WALKER_TINT);
+      }
+      pool.setColorAt(slot, entry.tint);
+      slot++;
+    }
+    pool.count = slot;
+    if (pool.instanceColor) pool.instanceColor.needsUpdate = true;
+  }
+
+  /** Per-frame: glide billboarded zombies between sim ticks, yaw-facing the camera. */
+  private updateBillboards(now: number) {
+    const pool = this.billboardPool;
+    if (!pool) return;
+    const cam = this.cameraRef?.position;
+    const camX = cam?.x ?? 0;
+    const camZ = cam?.z ?? 0;
+    for (const entry of this.billboardEntries.values()) {
+      const sm = this.zombieSmoothers.get(entry.id);
+      if (!sm || entry.slot < 0) continue;
+      const p = sm.sample(now);
+      const elev = this.terrainSample(p.x, p.z, this.currentExaggeration);
+      this.bbQuat.setFromAxisAngle(this.bbUp, Math.atan2(camX - p.x, camZ - p.z));
+      this.bbPos.set(p.x, elev + CombatRenderer.BILLBOARD_HALF_H * entry.scale, p.z);
+      this.bbScale.setScalar(entry.scale);
+      this.bbMatrix.compose(this.bbPos, this.bbQuat, this.bbScale);
+      pool.setMatrixAt(entry.slot, this.bbMatrix);
+    }
+    pool.instanceMatrix.needsUpdate = true;
+  }
+
+  /** Live entity mesh counts for the perf HUD. */
+  public getEntityCounts() {
+    return {
+      squads: this.squadMeshes.size,
+      workers: this.workerMeshes.size,
+      zombies: this.zombieMeshes.size,
+      hostiles: this.hostileHumanMeshes.size,
+    };
+  }
+
+  /** Give the renderer a camera reference so rig posing can be distance-LOD'd. */
+  public setCamera(camera: THREE.Camera) {
+    this.cameraRef = camera;
+  }
+
+  /**
+   * True when this entity's rig should be re-posed this frame given its
+   * squared 2D distance from the camera. Always true when no camera is set.
+   */
+  private shouldPoseRig(id: string, distSq: number): boolean {
+    if (!this.cameraRef) return true;
+    const nearSq = CombatRenderer.RIG_LOD_NEAR * CombatRenderer.RIG_LOD_NEAR;
+    if (distSq <= nearSq) return true;
+    const farSq = CombatRenderer.RIG_LOD_FAR * CombatRenderer.RIG_LOD_FAR;
+    if (distSq >= farSq) return false;
+    // Mid band: re-pose every 3rd frame, staggered by id so nearby entities
+    // don't all refresh on the same frame.
+    let hash = 0;
+    for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0;
+    return (this.frameIndex + (hash % 3) + 3) % 3 === 0;
+  }
+
+  // Night flashlights: each deployed squad carries a handheld torch on the
+  // leader — a real SpotLight that illuminates the ground ahead, plus a small
+  // visible torch model so the beam reads as coming from the soldier.
+  private flashlights = new Map<string, THREE.SpotLight>();
+  private flashlightTorches = new Map<string, THREE.Mesh>();
+  private flashlightsOn = false;
+  /** Eased night factor (0 day .. 1 deep night) driving beam brightness. */
+  private flashlightNightFactor = 0;
 
   // Character meshes are articulated HumanoidRigs (shared geometries and
   // materials owned by HumanoidRig.ts) — nothing character-shaped lives here.
@@ -227,6 +477,9 @@ export class CombatRenderer {
 
   public update(delta: number, nowSec: number) {
     const now = performance.now();
+    this.frameIndex++;
+    this.rigLodSkips = 0;
+    const camPos = this.cameraRef?.position;
 
     // When paused, skip interpolation so units hold exactly where the simulation
     // left them (the smoothers were frozen to their targets on pause).
@@ -241,7 +494,7 @@ export class CombatRenderer {
       const sm = this.squadSmoothers.get(id);
       if (!sm) continue;
       const p = sm.sample(now);
-      const elev = sampleElevation(this.currentElevation, p.x, p.z, this.currentExaggeration);
+      const elev = this.terrainSample(p.x, p.z, this.currentExaggeration);
       container.position.set(p.x, elev, p.z);
       if (p.rot !== null) container.rotation.y = p.rot;
 
@@ -259,7 +512,7 @@ export class CombatRenderer {
       const sm = this.workerSmoothers.get(id);
       if (!sm) continue;
       const p = sm.sample(now);
-      const elev = sampleElevation(this.currentElevation, p.x, p.z, this.currentExaggeration);
+      const elev = this.terrainSample(p.x, p.z, this.currentExaggeration);
       mesh.position.set(p.x, elev, p.z);
       const anim = this.workerAnimState.get(id);
       // Rigs animate whenever a work action is underway or the worker is on the
@@ -281,12 +534,22 @@ export class CombatRenderer {
       const sm = this.zombieSmoothers.get(id);
       if (!sm) continue;
       const p = sm.sample(now);
-      const elev = sampleElevation(this.currentElevation, p.x, p.z, this.currentExaggeration);
+      const elev = this.terrainSample(p.x, p.z, this.currentExaggeration);
       mesh.position.set(p.x, elev, p.z);
       if (p.rot !== null) mesh.rotation.y = p.rot;
 
       const rig: HumanoidRig | undefined = mesh.userData?.rig;
       if (rig) {
+        // Distance LOD: distant zombies glide between ticks but their limbs
+        // stop being re-posed (frozen mid-shamble reads fine at that range).
+        if (camPos) {
+          const dx = p.x - camPos.x;
+          const dz = p.z - camPos.z;
+          if (!this.shouldPoseRig(id, dx * dx + dz * dz)) {
+            this.rigLodSkips++;
+            continue;
+          }
+        }
         const attacking = this.zombieAttacking.has(id);
         const moving = this.trackMotion(`zombie:${id}`, p.x, p.z);
         let mode: RigPoseMode;
@@ -306,18 +569,33 @@ export class CombatRenderer {
       const sm = this.hostileHumanSmoothers.get(id);
       if (!sm) continue;
       const p = sm.sample(now);
-      const elev = sampleElevation(this.currentElevation, p.x, p.z, this.currentExaggeration);
+      const elev = this.terrainSample(p.x, p.z, this.currentExaggeration);
       mesh.position.set(p.x, elev, p.z);
       if (p.rot !== null) mesh.rotation.y = p.rot;
 
       const rig: HumanoidRig | undefined = mesh.userData?.rig;
       if (rig) {
+        // Same distance LOD as zombies — hostile defenders spawn in waves and
+        // pile up far from the camera during hideout sieges.
+        if (camPos) {
+          const dx = p.x - camPos.x;
+          const dz = p.z - camPos.z;
+          if (!this.shouldPoseRig(id, dx * dx + dz * dz)) {
+            this.rigLodSkips++;
+            continue;
+          }
+        }
         const moving = this.trackMotion(`hostile:${id}`, p.x, p.z);
         const combat = this.hostileCombatIds.has(id);
         const mode: RigPoseMode = combat && !moving ? 'aim' : moving ? 'walk' : 'idle';
         const t = this.advanceClock(`hostile:${id}`, delta, combat && !moving ? 0.5 : moving ? 1 : 0.4);
         applyRigPose(rig, mode, t + rig.anim.workPhase);
       }
+    }
+
+    // Billboarded distant zombies: glide between sim ticks, yaw-face camera.
+    if (this.billboardPool && this.billboardEntries.size > 0) {
+      this.updateBillboards(now);
     }
   }
 
@@ -327,7 +605,7 @@ export class CombatRenderer {
       const sm = this.squadSmoothers.get(id);
       if (!sm) continue;
       const pos = sm.targetPosition();
-      const elev = sampleElevation(this.currentElevation, pos.x, pos.z, this.currentExaggeration);
+      const elev = this.terrainSample(pos.x, pos.z, this.currentExaggeration);
       container.position.set(pos.x, elev, pos.z);
       const r = sm.targetRotation();
       if (r !== null) container.rotation.y = r;
@@ -336,14 +614,14 @@ export class CombatRenderer {
       const sm = this.workerSmoothers.get(id);
       if (!sm) continue;
       const pos = sm.targetPosition();
-      const elev = sampleElevation(this.currentElevation, pos.x, pos.z, this.currentExaggeration);
+      const elev = this.terrainSample(pos.x, pos.z, this.currentExaggeration);
       mesh.position.set(pos.x, elev, pos.z);
     }
     for (const [id, mesh] of this.zombieMeshes.entries()) {
       const sm = this.zombieSmoothers.get(id);
       if (!sm) continue;
       const pos = sm.targetPosition();
-      const elev = sampleElevation(this.currentElevation, pos.x, pos.z, this.currentExaggeration);
+      const elev = this.terrainSample(pos.x, pos.z, this.currentExaggeration);
       mesh.position.set(pos.x, elev, pos.z);
       const r = sm.targetRotation();
       if (r !== null) mesh.rotation.y = r;
@@ -352,7 +630,7 @@ export class CombatRenderer {
       const sm = this.hostileHumanSmoothers.get(id);
       if (!sm) continue;
       const pos = sm.targetPosition();
-      const elev = sampleElevation(this.currentElevation, pos.x, pos.z, this.currentExaggeration);
+      const elev = this.terrainSample(pos.x, pos.z, this.currentExaggeration);
       mesh.position.set(pos.x, elev, pos.z);
       const r = sm.targetRotation();
       if (r !== null) mesh.rotation.y = r;
@@ -406,6 +684,7 @@ export class CombatRenderer {
       let smoother = this.squadSmoothers.get(squad.squadId);
       if (!squadContainer) {
         squadContainer = this.createSquad3DMesh(squad);
+        this.attachFlashlight(squad.squadId, squadContainer);
         this.squadMeshes.set(squad.squadId, squadContainer);
         this.squadGroup.add(squadContainer);
       }
@@ -414,7 +693,7 @@ export class CombatRenderer {
         smoother = new PositionSmoother();
         this.squadSmoothers.set(squad.squadId, smoother);
         smoother.snap(squad.x, squad.z, squad.rotation);
-        const elev = sampleElevation(this.currentElevation, squad.x, squad.z, this.currentExaggeration);
+        const elev = this.terrainSample(squad.x, squad.z, this.currentExaggeration);
         squadContainer.position.set(squad.x, elev, squad.z);
         squadContainer.rotation.y = squad.rotation;
       } else {
@@ -440,7 +719,7 @@ export class CombatRenderer {
 
       // UI overlays (range ring / waypoint line) track the state position; the
       // 3D mesh itself is interpolated per-frame by update().
-      const elev = sampleElevation(this.currentElevation, squad.x, squad.z, this.currentExaggeration);
+      const elev = this.terrainSample(squad.x, squad.z, this.currentExaggeration);
 
       // Update Weapon Attack Range circle for selected squad
       if (squad.squadId === this.selectedSquadId && this.rangeRadiusMesh) {
@@ -462,7 +741,7 @@ export class CombatRenderer {
         const isAttackOrder = squad.state === 'combat' || Boolean(squad.targetZombieId);
         const targetColor = isAttackOrder ? 0xef4444 : 0x10b981;
 
-        const targetElev = sampleElevation(this.currentElevation, squad.targetPos.x, squad.targetPos.z, this.currentExaggeration);
+        const targetElev = this.terrainSample(squad.targetPos.x, squad.targetPos.z, this.currentExaggeration);
         if (this.moveWaypointMesh) {
           this.moveWaypointMesh.position.set(squad.targetPos.x, targetElev + 0.15, squad.targetPos.z);
           (this.moveWaypointMesh.material as THREE.MeshBasicMaterial).color.setHex(targetColor);
@@ -474,7 +753,7 @@ export class CombatRenderer {
             : [{ x: squad.x, z: squad.z }, squad.targetPos];
           const points = pathPoints.map((point: { x: number; z: number }) => new THREE.Vector3(
             point.x,
-            sampleElevation(this.currentElevation, point.x, point.z, this.currentExaggeration) + 0.35,
+            this.terrainSample(point.x, point.z, this.currentExaggeration) + 0.35,
             point.z
           ));
           const positions = new Float32Array(points.flatMap((point) => [point.x, point.y, point.z]));
@@ -519,8 +798,61 @@ export class CombatRenderer {
         this.squadCombatIds.delete(id);
         this.animClocks.delete(`squad:${id}`);
         this.lastSample.delete(`squad:${id}`);
+        this.flashlights.delete(id);
+        this.flashlightTorches.delete(id);
       }
     }
+  }
+
+  /**
+   * Drives flashlight intensity from the day/night cycle (called every frame
+   * from the lighting update). Also enables/disables the lights so daytime
+   * squads carry no extra render cost; intensity 0 would still cost shadow/
+   * light passes in some pipelines.
+   */
+  public setFlashlightIntensity(nightFactor: number) {
+    this.flashlightNightFactor = nightFactor;
+    const enabled = nightFactor > 0.02;
+    if (this.flashlightsOn !== enabled) {
+      this.flashlightsOn = enabled;
+      for (const light of this.flashlights.values()) light.visible = enabled;
+      for (const torch of this.flashlightTorches.values()) torch.visible = enabled;
+    }
+    if (enabled) {
+      const intensity = 40 + 160 * nightFactor;
+      for (const light of this.flashlights.values()) light.intensity = intensity;
+    }
+  }
+
+  /**
+   * Attaches the leader's flashlight to a squad container: a warm SpotLight
+   * throwing a cone of light onto the ground ~2–20m ahead (the container faces
+   * travel direction, rigs face +Z, so the beam tracks facing automatically)
+   * and a small visible torch body with a glowing lens tip.
+   */
+  private attachFlashlight(squadId: string, container: THREE.Group) {
+    const light = new THREE.SpotLight(0xffe9b8, 0, 30, Math.PI / 7, 0.55, 1.2);
+    light.position.set(0.28, 1.35, 0.3);
+    light.target.position.set(0, 0, 20);
+    light.visible = this.flashlightsOn;
+    container.add(light);
+    container.add(light.target);
+    this.flashlights.set(squadId, light);
+
+    const torchGeo = new THREE.CylinderGeometry(0.045, 0.055, 0.26, 8);
+    const torchMat = new THREE.MeshStandardMaterial({
+      color: 0x1f2937,
+      roughness: 0.5,
+      metalness: 0.6,
+      emissive: 0xfff3c4,
+      emissiveIntensity: 1.6,
+    });
+    const torch = new THREE.Mesh(torchGeo, torchMat);
+    torch.position.set(0.28, 1.32, 0.34);
+    torch.rotation.x = Math.PI / 2 - 0.08; // cylinder axis -> forward (+Z)
+    torch.visible = this.flashlightsOn;
+    container.add(torch);
+    this.flashlightTorches.set(squadId, torch);
   }
 
   private createSquad3DMesh(squad: TacticalSquadUnit): THREE.Group {
@@ -602,7 +934,7 @@ export class CombatRenderer {
         smoother.setTickWindow(500);
         this.workerSmoothers.set(worker.id, smoother);
         smoother.snap(worker.position.x, worker.position.z);
-        const elev = sampleElevation(this.currentElevation, worker.position.x, worker.position.z, this.currentExaggeration);
+        const elev = this.terrainSample(worker.position.x, worker.position.z, this.currentExaggeration);
         mesh.position.set(worker.position.x, elev, worker.position.z);
       } else {
         smoother.setTarget(worker.position.x, worker.position.z, performance.now());
@@ -626,7 +958,7 @@ export class CombatRenderer {
           smoother.setTickWindow(500);
           this.workerSmoothers.set(order.id, smoother);
           smoother.snap(order.position.x, order.position.z);
-          const elev = sampleElevation(this.currentElevation, order.position.x, order.position.z, this.currentExaggeration);
+          const elev = this.terrainSample(order.position.x, order.position.z, this.currentExaggeration);
           mesh.position.set(order.position.x, elev, order.position.z);
         } else {
           smoother.setTarget(order.position.x, order.position.z, performance.now());
@@ -692,7 +1024,7 @@ export class CombatRenderer {
         this.droppedItemMeshes.set(item.id, marker);
         this.droppedItemsGroup.add(marker);
       }
-      const elev = sampleElevation(this.currentElevation, item.x, item.z, this.currentExaggeration);
+      const elev = this.terrainSample(item.x, item.z, this.currentExaggeration);
       marker.position.set(item.x, elev + 0.18, item.z);
     }
 
@@ -749,6 +1081,7 @@ export class CombatRenderer {
   public updateZombies(zombies: ZombieUnit[]) {
     this.zombieAttacking.clear();
     const activeIds = new Set<string>();
+    const camPos = this.cameraRef?.position;
 
     for (const zombie of zombies) {
       if (zombie.state === 'dead' || zombie.currentHp <= 0) continue;
@@ -756,6 +1089,54 @@ export class CombatRenderer {
       if (zombie.state === 'attacking_unit' || zombie.state === 'attacking_building') {
         this.zombieAttacking.add(zombie.id);
       }
+
+      // ---- Billboard LOD classification (hysteresis) ----
+      // Far zombies render as one instanced billboard silhouette instead of a
+      // full humanoid rig; see the billboard LOD block above.
+      let isFar = this.billboardEntries.has(zombie.id);
+      if (camPos) {
+        const dx = zombie.x - camPos.x;
+        const dz = zombie.z - camPos.z;
+        const distSq = dx * dx + dz * dz;
+        if (isFar) {
+          if (distSq < CombatRenderer.BILLBOARD_OFF_SQ) isFar = false;
+        } else if (distSq > CombatRenderer.BILLBOARD_ON_SQ) {
+          isFar = true;
+        }
+      }
+
+      if (isFar) {
+        let entry = this.billboardEntries.get(zombie.id);
+        if (!entry) {
+          // rig → billboard: free the multi-mesh rig, keep the smoother so the
+          // silhouette keeps gliding from the exact same spot (no snap).
+          const mesh = this.zombieMeshes.get(zombie.id);
+          if (mesh) {
+            this.zombieGroup.remove(mesh);
+            this.zombieMeshes.delete(zombie.id);
+          }
+          entry = {
+            id: zombie.id,
+            slot: -1,
+            scale: zombie.variant === 'brute' ? 1.45 : zombie.variant === 'runner' ? 0.95 : 1,
+            tint: new THREE.Color(),
+          };
+          this.billboardEntries.set(zombie.id, entry);
+        }
+        let smoother = this.zombieSmoothers.get(zombie.id);
+        if (!smoother) {
+          smoother = new PositionSmoother();
+          this.zombieSmoothers.set(zombie.id, smoother);
+          smoother.snap(zombie.x, zombie.z, zombie.rotation);
+        } else {
+          smoother.setTarget(zombie.x, zombie.z, performance.now(), zombie.rotation);
+        }
+        continue;
+      }
+
+      // billboard → rig transition: entry drops, the rig path below recreates
+      // the full humanoid (smoother is shared, so position continuity holds).
+      this.billboardEntries.delete(zombie.id);
 
       let mesh = this.zombieMeshes.get(zombie.id);
       let smoother = this.zombieSmoothers.get(zombie.id);
@@ -768,7 +1149,7 @@ export class CombatRenderer {
         smoother = new PositionSmoother();
         this.zombieSmoothers.set(zombie.id, smoother);
         smoother.snap(zombie.x, zombie.z, zombie.rotation);
-        const elev = sampleElevation(this.currentElevation, zombie.x, zombie.z, this.currentExaggeration);
+        const elev = this.terrainSample(zombie.x, zombie.z, this.currentExaggeration);
         mesh.position.set(zombie.x, elev, zombie.z);
         mesh.rotation.y = zombie.rotation;
       } else {
@@ -779,7 +1160,14 @@ export class CombatRenderer {
       // health is surfaced on the clustered skull pin's radial meter instead.
     }
 
-    // Cleanup dead zombies
+    // Cleanup dead zombies — including billboarded ones
+    for (const id of this.billboardEntries.keys()) {
+      if (!activeIds.has(id)) {
+        this.billboardEntries.delete(id);
+        this.zombieSmoothers.delete(id);
+        this.zombieAttacking.delete(id);
+      }
+    }
     for (const [id, mesh] of this.zombieMeshes.entries()) {
       if (!activeIds.has(id)) {
         this.zombieGroup.remove(mesh);
@@ -789,6 +1177,23 @@ export class CombatRenderer {
         this.animClocks.delete(`zombie:${id}`);
         this.lastSample.delete(`zombie:${id}`);
       }
+    }
+
+    // Refresh the billboard batch: capacity, slots, cluster tints. Only pays
+    // for the clustering pass when at least one zombie is billboarded.
+    if (this.billboardEntries.size > 0 && camPos) {
+      this.ensureBillboardCapacity(this.billboardEntries.size);
+      let clusterByZombie: Map<string, string> | null = null;
+      if (this.billboardEntries.size > 1) {
+        clusterByZombie = new Map();
+        for (const cluster of clusterZombies(zombies)) {
+          for (const member of cluster.members) clusterByZombie.set(member.id, cluster.key);
+        }
+      }
+      const zombieById = new Map(zombies.map((z) => [z.id, z]));
+      this.rebuildBillboards(zombieById, clusterByZombie);
+    } else if (this.billboardPool) {
+      this.billboardPool.count = 0;
     }
   }
 
@@ -835,7 +1240,7 @@ export class CombatRenderer {
         smoother = new PositionSmoother();
         this.hostileHumanSmoothers.set(human.id, smoother);
         smoother.snap(human.x, human.z, human.rotation);
-        const elev = sampleElevation(this.currentElevation, human.x, human.z, this.currentExaggeration);
+        const elev = this.terrainSample(human.x, human.z, this.currentExaggeration);
         mesh.position.set(human.x, elev, human.z);
         mesh.rotation.y = human.rotation;
       } else {
@@ -953,17 +1358,17 @@ export class CombatRenderer {
       side: THREE.DoubleSide,
     });
     const mesh = new THREE.Mesh(geo, mat);
-    const elev = sampleElevation(this.currentElevation, fx.startX, fx.startZ, this.currentExaggeration);
+    const elev = this.terrainSample(fx.startX, fx.startZ, this.currentExaggeration);
     mesh.position.set(fx.startX, elev + 0.2, fx.startZ);
     mesh.scale.set(1, 1, 1);
     return mesh;
   }
 
   private createTracerMesh(fx: CombatVisualFx): THREE.Line {
-    const startElev = sampleElevation(this.currentElevation, fx.startX, fx.startZ, this.currentExaggeration);
+    const startElev = this.terrainSample(fx.startX, fx.startZ, this.currentExaggeration);
     const endX = fx.endX || fx.startX;
     const endZ = fx.endZ || fx.startZ;
-    const endElev = sampleElevation(this.currentElevation, endX, endZ, this.currentExaggeration);
+    const endElev = this.terrainSample(endX, endZ, this.currentExaggeration);
     const points = [
       new THREE.Vector3(fx.startX, fx.startY + startElev, fx.startZ),
       new THREE.Vector3(endX, (fx.endY || 1.0) + endElev, endZ),
@@ -975,7 +1380,7 @@ export class CombatRenderer {
 
   private createMuzzleFlashMesh(fx: CombatVisualFx): THREE.PointLight {
     const light = new THREE.PointLight(0xfde047, 3.0, 8);
-    const elev = sampleElevation(this.currentElevation, fx.startX, fx.startZ, this.currentExaggeration);
+    const elev = this.terrainSample(fx.startX, fx.startZ, this.currentExaggeration);
     light.position.set(fx.startX, fx.startY + elev, fx.startZ);
     return light;
   }
@@ -990,7 +1395,7 @@ export class CombatRenderer {
       opacity: 0.9,
     });
     const mesh = new THREE.Mesh(geo, mat);
-    const elev = sampleElevation(this.currentElevation, fx.startX, fx.startZ, this.currentExaggeration);
+    const elev = this.terrainSample(fx.startX, fx.startZ, this.currentExaggeration);
     mesh.position.set(fx.startX, fx.startY + elev, fx.startZ);
     return mesh;
   }
@@ -1032,10 +1437,16 @@ export class CombatRenderer {
   }
 
   public raycastZombie(raycaster: THREE.Raycaster): string | null {
-    // 1. Raycast zombies
+    // 1. Raycast zombies. The shared billboard InstancedMesh resolves through
+    // its id table instead of parent-chain userData.
     const intersects = raycaster.intersectObjects(this.zombieGroup.children, true);
     if (intersects.length > 0) {
-      let cur: THREE.Object3D | null = intersects[0].object;
+      const first = intersects[0];
+      if (first.instanceId !== undefined && first.object === this.billboardPool) {
+        const id = this.billboardIds[first.instanceId];
+        if (id) return id;
+      }
+      let cur: THREE.Object3D | null = first.object;
       while (cur && cur !== this.zombieGroup) {
         if (cur.userData?.zombieId) {
           return cur.userData.zombieId;
@@ -1062,6 +1473,14 @@ export class CombatRenderer {
     // HumanoidRig.ts and live for the whole app session — nothing to free here.
     this.tracerMat.dispose();
     this.waypointLineMaterial?.dispose();
+    if (this.billboardPool) {
+      this.billboardPool.geometry.dispose();
+    }
+    this.billboardMaterial?.map?.dispose();
+    this.billboardMaterial?.dispose();
+    this.billboardPool = null;
+    this.billboardEntries.clear();
+    this.clusterTintCache.clear();
     if (this.waypointEndMesh) {
       this.waypointEndMesh.traverse((object) => {
         if (object instanceof THREE.BufferGeometry) object.dispose();

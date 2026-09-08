@@ -30,6 +30,7 @@ import { VehicleRenderer } from './VehicleRenderer';
 import { VisionSource } from '../services/fogOfWarService';
 import type { SatelliteQuality } from '../types/saveGame';
 import { SkyAtmosphere } from './SkyAtmosphere';
+import { clusterZombies } from '../services/zombieClusterService';
 import { WeatherFX } from './WeatherFX';
 import type { WeatherType, MoonPhase } from '../types/weather';
 
@@ -124,13 +125,13 @@ interface DayNightKeyframe {
 }
 
 const DAY_NIGHT_KEYFRAMES: DayNightKeyframe[] = [
-  // Midnight (0h / 24h): Genuinely dark, desaturated nocturnal visibility —
-  // cool dim blue-grey ambient (~45% of noon) plus faint moonlight so building
-  // colours mute instead of reading as full daylight. Lit windows, floodlights
-  // and the moon carry the scene.
-  { hour: 0, skyTop: 0x101826, horizon: 0x2c3a4e, fog: 0x2c3a4e, fogDensity: 0.0007, ambient: 0x5f6f82, ambientIntensity: 0.34, hemiSky: 0x6d7f96, hemiGround: 0x232c3a, hemiIntensity: 0.30, sunColor: 0xb9c9de, sunIntensity: 0.30, sunElevation: -0.15, sunAzimuth: -1.2 },
+  // Midnight (0h / 24h): Dark but readable — cool desaturated blue-grey
+  // ambient (~60% of noon) plus soft moonlight. Colours mute at night yet the
+  // map stays legible; lit windows, floodlights and squad flashlights carry
+  // the scene.
+  { hour: 0, skyTop: 0x15202f, horizon: 0x33415a, fog: 0x33415a, fogDensity: 0.0006, ambient: 0x6b7c92, ambientIntensity: 0.46, hemiSky: 0x7789a2, hemiGround: 0x2a3444, hemiIntensity: 0.40, sunColor: 0xb9c9de, sunIntensity: 0.42, sunElevation: -0.15, sunAzimuth: -1.2 },
   // Late night / Pre-dawn (5h): Still dark, a hint of coming light
-  { hour: 5, skyTop: 0x141d2c, horizon: 0x33415a, fog: 0x33415a, fogDensity: 0.0008, ambient: 0x64748a, ambientIntensity: 0.38, hemiSky: 0x7284a0, hemiGround: 0x28313f, hemiIntensity: 0.32, sunColor: 0xbccadd, sunIntensity: 0.34, sunElevation: -0.05, sunAzimuth: -1.9 },
+  { hour: 5, skyTop: 0x182234, horizon: 0x3a4860, fog: 0x3a4860, fogDensity: 0.0007, ambient: 0x71829a, ambientIntensity: 0.50, hemiSky: 0x7c8eaa, hemiGround: 0x2f3846, hemiIntensity: 0.42, sunColor: 0xbccadd, sunIntensity: 0.46, sunElevation: -0.05, sunAzimuth: -1.9 },
   // Dawn (6.5h): Golden sunrise break
   { hour: 6.5, skyTop: 0x485a78, horizon: 0xd2bea0, fog: 0xada598, fogDensity: 0.0009, ambient: 0xaec6e2, ambientIntensity: 0.68, hemiSky: 0x9bc0e4, hemiGround: 0x2e3846, hemiIntensity: 0.52, sunColor: 0xffe2b8, sunIntensity: 1.15, sunElevation: 0.04, sunAzimuth: -1.55 },
   // Morning (9h): Crisp morning daylight
@@ -142,9 +143,9 @@ const DAY_NIGHT_KEYFRAMES: DayNightKeyframe[] = [
   // Dusk (19h): Amber dusk sunset
   { hour: 19, skyTop: 0x342a3a, horizon: 0xd0805e, fog: 0xaa7866, fogDensity: 0.0009, ambient: 0xd08c6c, ambientIntensity: 0.60, hemiSky: 0xe0866c, hemiGround: 0x362422, hemiIntensity: 0.48, sunColor: 0xff8555, sunIntensity: 1.10, sunElevation: 0.04, sunAzimuth: 1.55 },
   // Nightfall (20.5h): Smooth transition into dark nocturnal greyscale
-  { hour: 20.5, skyTop: 0x141c2b, horizon: 0x303e52, fog: 0x303e52, fogDensity: 0.0008, ambient: 0x62728a, ambientIntensity: 0.38, hemiSky: 0x70829c, hemiGround: 0x273040, hemiIntensity: 0.32, sunColor: 0xbccadd, sunIntensity: 0.34, sunElevation: -0.05, sunAzimuth: 1.9 },
+  { hour: 20.5, skyTop: 0x182234, horizon: 0x37455c, fog: 0x37455c, fogDensity: 0.0007, ambient: 0x71829a, ambientIntensity: 0.50, hemiSky: 0x7c8eaa, hemiGround: 0x2f3846, hemiIntensity: 0.42, sunColor: 0xbccadd, sunIntensity: 0.46, sunElevation: -0.05, sunAzimuth: 1.9 },
   // Midnight (24h)
-  { hour: 24, skyTop: 0x101826, horizon: 0x2c3a4e, fog: 0x2c3a4e, fogDensity: 0.0007, ambient: 0x5f6f82, ambientIntensity: 0.34, hemiSky: 0x6d7f96, hemiGround: 0x232c3a, hemiIntensity: 0.30, sunColor: 0xb9c9de, sunIntensity: 0.30, sunElevation: -0.15, sunAzimuth: -1.2 },
+  { hour: 24, skyTop: 0x15202f, horizon: 0x33415a, fog: 0x33415a, fogDensity: 0.0006, ambient: 0x6b7c92, ambientIntensity: 0.46, hemiSky: 0x7789a2, hemiGround: 0x2a3444, hemiIntensity: 0.40, sunColor: 0xb9c9de, sunIntensity: 0.42, sunElevation: -0.15, sunAzimuth: -1.2 },
 ];
 
 const TIME_OF_DAY_HOURS: Record<TimeOfDay, number> = {
@@ -166,6 +167,13 @@ export interface FreestandingPlacementPoint {
 
 export interface WorldSceneOptions {
   container: HTMLElement;
+  /**
+   * Initial graphics quality preset. Applied at context creation: 'low' starts
+   * without MSAA antialiasing (the largest single GPU saving) and with pixel
+   * ratio capped at 1. Runtime quality changes can only alter pixel ratio,
+   * shadows and culling — MSAA is fixed for the life of the GL context.
+   */
+  graphicsQuality?: import('../types/saveGame').GraphicsQuality;
   onSelectBuilding?: (building: BuildingPolygon | null) => void;
   onHoverBuilding?: (building: BuildingPolygon | null) => void;
   onSelectPosition?: (pos: Point2D) => void;
@@ -174,6 +182,10 @@ export interface WorldSceneOptions {
   onSelectSquads?: (squadIds: string[]) => void;
   onSelectResourceNode?: (node: import('../types/map').ResourceNode | null) => void;
   onSelectVehicle?: (vehicleId: string | null) => void;
+  /** Clicking a discovered hidden-survivor group's '?' / HOSTILE marker. */
+  onSelectSurvivorGroup?: (groupId: string | null) => void;
+  /** Clicking a zombie cluster marker (or any zombie body) selects its cluster. */
+  onSelectZombieCluster?: (clusterKey: string | null) => void;
   onOrderSquadMove?: (squadId: string, pos: Point2D, targetBuildingId?: string | number, targetBuildingName?: string) => void;
   onOrderSquadAttack?: (squadId: string, zombieId: string) => void;
   onMountVehicle?: (squadId: string, vehicleId: string) => void;
@@ -261,6 +273,8 @@ export class WorldScene {
   private onSelectSquads?: (squadIds: string[]) => void;
   private onSelectResourceNode?: (node: import('../types/map').ResourceNode | null) => void;
   private onSelectVehicle?: (vehicleId: string | null) => void;
+  private onSelectSurvivorGroup?: (groupId: string | null) => void;
+  private onSelectZombieCluster?: (clusterKey: string | null) => void;
   private onOrderSquadMove?: (squadId: string, pos: Point2D, targetBuildingId?: string | number, targetBuildingName?: string, queue?: boolean) => void;
   private onOrderSquadAttack?: (squadId: string, zombieId: string) => void;
   private onMountVehicle?: (squadId: string, vehicleId: string) => void;
@@ -298,6 +312,8 @@ export class WorldScene {
   private selectedVehicleId: string | null = null;
   /** Latest squad list from updateCombat — used to resolve box-selection hits. */
   private liveSquads: TacticalSquadUnit[] = [];
+  /** null = follow the day/night cycle; true/false = HUD flashlight toggle override. */
+  private flashlightOverride: boolean | null = null;
   private isRunning = false;
   private animationFrameId = 0;
   private lastTime = 0;
@@ -326,6 +342,8 @@ export class WorldScene {
   private adaptedBuildings: Map<string | number, AdaptedBuilding> = new Map();
   private freestandingBuildings: AdaptedBuilding[] = [];
   private hiddenGroups: Map<string | number, HiddenSurvivorGroup> = new Map();
+  /** Latest sim zombie list — clicked bodies/clusters resolve against this. */
+  private latestZombies: ZombieUnit[] = [];
   private rivalHideouts: Map<string | number, RivalHideout> = new Map();
   private zombieLairs: Map<string | number, ZombieLair> = new Map();
   private occupiedBuildings: Map<string | number, BuildingOccupation> = new Map();
@@ -394,6 +412,45 @@ export class WorldScene {
   private frameCount = 0;
   private fpsLastTime = 0;
 
+  // Lightweight perf HUD: a plain DOM overlay updated once per second (no
+  // React involvement, so measuring costs nothing). Toggle with F9 or
+  // `__terminusScene.togglePerfHud()` in the console. Hidden by default.
+  private perfHud: HTMLDivElement | null = null;
+  private perfHudVisible = false;
+  private msaaEnabled = true;
+  private frameMsAccum = 0;
+  private frameMsSamples = 0;
+  private frameMsAvg = 16.7;
+
+  private onKeyDown = (e: KeyboardEvent) => {
+    if (e.code === 'F9') {
+      e.preventDefault();
+      this.togglePerfHud();
+    }
+  };
+
+  /** Show/hide the FPS / draw-call / triangle profiler overlay. */
+  public togglePerfHud(force?: boolean) {
+    this.perfHudVisible = force ?? !this.perfHudVisible;
+    if (this.perfHud) this.perfHud.style.display = this.perfHudVisible ? 'block' : 'none';
+    if (this.perfHudVisible) this.updatePerfHud();
+  }
+
+  /** Refreshes the perf HUD text (called ~1 Hz from animate, never per frame). */
+  private updatePerfHud() {
+    if (!this.perfHudVisible || !this.perfHud) return;
+    const info = this.renderer.info;
+    const counts = this.combatRenderer.getEntityCounts();
+    const lines = [
+      `FPS ${this.fps}   frame ${this.frameMsAvg.toFixed(1)}ms`,
+      `calls ${info.render.calls}   tris ${info.render.triangles.toLocaleString()}`,
+      `geo ${info.memory.geometries}   tex ${info.memory.textures}   prog ${info.programs?.length ?? 0}`,
+      `dpr ${this.renderer.getPixelRatio().toFixed(2)}   quality ${this.graphicsQuality}   msaa ${this.msaaEnabled ? 'on' : 'off'}`,
+      `units ${counts.squads}s/${counts.workers}w/${counts.zombies}z/${counts.hostiles}h   bb ${this.combatRenderer.billboardCount}   rigLodSkips/f ${this.combatRenderer.rigLodSkips}`,
+    ];
+    this.perfHud.textContent = lines.join('\n');
+  }
+
   // Bumped on every loadMapData so a stale progressive build (triggered before a
   // newer map payload arrived) can detect it aborted and stop adding meshes.
   private loadGeneration = 0;
@@ -432,6 +489,8 @@ export class WorldScene {
     this.onSelectSquads = options.onSelectSquads;
     this.onSelectResourceNode = options.onSelectResourceNode;
     this.onSelectVehicle = options.onSelectVehicle;
+    this.onSelectSurvivorGroup = options.onSelectSurvivorGroup;
+    this.onSelectZombieCluster = options.onSelectZombieCluster;
     this.onOrderSquadMove = options.onOrderSquadMove;
     this.onOrderSquadAttack = options.onOrderSquadAttack;
     this.onMountVehicle = options.onMountVehicle;
@@ -451,20 +510,50 @@ export class WorldScene {
     this.camera = new THREE.PerspectiveCamera(45, width / height, 0.5, 14000);
     this.cameraController = new CameraController(this.camera, this.container);
 
-    // 3. Renderer
+    // 3. Renderer. Antialias is fixed at context creation and keyed off the
+    // initial quality preset — 'low' runs without MSAA. Later quality switches
+    // can only change pixel ratio, shadows and culling (see setGraphicsQuality).
+    this.graphicsQuality = options.graphicsQuality ?? 'high';
     this.renderer = new THREE.WebGLRenderer({
-      antialias: true,
+      antialias: this.graphicsQuality !== 'low',
       powerPreference: 'high-performance',
       logarithmicDepthBuffer: true,
     });
     this.renderer.setSize(width, height);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.applyQualityPixelRatio();
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.1;
+    this.msaaEnabled = this.graphicsQuality !== 'low';
+
+    // Perf HUD overlay (hidden by default, F9 toggles). Plain DOM element —
+    // deliberately outside React so its cost is a 1 Hz textContent write.
+    this.perfHud = document.createElement('div');
+    this.perfHud.style.cssText = [
+      'position:absolute',
+      'top:8px',
+      'left:8px',
+      'z-index:60',
+      'display:none',
+      'pointer-events:none',
+      'white-space:pre',
+      'font:11px/1.5 ui-monospace,Consolas,monospace',
+      'color:#7df0c0',
+      'background:rgba(6,10,12,0.78)',
+      'border:1px solid rgba(125,240,192,0.25)',
+      'border-radius:4px',
+      'padding:6px 9px',
+      'text-shadow:0 1px 2px rgba(0,0,0,0.8)',
+    ].join(';');
+    this.container.appendChild(this.perfHud);
+    window.addEventListener('keydown', this.onKeyDown);
 
     this.container.appendChild(this.renderer.domElement);
+
+    // Debug/perf handle: lets tooling and the console read renderer stats
+    // (draw calls, triangles) and toggle quality knobs live.
+    (window as unknown as Record<string, unknown>).__terminusScene = this;
 
     // 4. Lights
     this.ambientLight = new THREE.AmbientLight(0xd4d8e0, 0.6);
@@ -500,14 +589,28 @@ export class WorldScene {
 
     // 5. Initialize Sub-renderers
     this.groundRenderer = new GroundRenderer();
+    // One authoritative "terrain as rendered" sampler shared by every layer
+    // that must sit ON the visible ground. The terrain draws linear triangles
+    // between ~20m vertices; the smooth analytic elevation can sit meters
+    // BELOW those chords on slopes, which buried building bottoms, floated
+    // landuse over walls and sank roads/resources/units.
+    const terrainSurfaceSampler = (x: number, z: number) =>
+      this.groundRenderer.sampleTerrainSurface(x, z);
     this.roadRenderer = new RoadRenderer();
+    this.roadRenderer.setTerrainSurfaceSampler(terrainSurfaceSampler);
     this.buildingRenderer = new BuildingRenderer();
+    this.buildingRenderer.setTerrainSurfaceSampler(terrainSurfaceSampler);
     this.resourceRenderer = new ResourceRenderer();
     this.fogOfWarRenderer = new FogOfWarRenderer();
     this.smokeSystem = new SmokeParticleSystem();
     this.combatRenderer = new CombatRenderer();
+    // Rig-pose distance LOD needs the camera to cull far-entity limb updates.
+    this.combatRenderer.setCamera(this.camera);
+    this.combatRenderer.setTerrainSurfaceSampler(terrainSurfaceSampler);
     this.vehicleRenderer = new VehicleRenderer();
+    this.vehicleRenderer.setTerrainSurfaceSampler(terrainSurfaceSampler);
     this.markerRenderer = new EntityMarkerRenderer();
+    this.resourceRenderer.setTerrainSurfaceSampler(terrainSurfaceSampler);
 
     this.scene.add(this.groundRenderer.group);
     this.scene.add(this.roadRenderer.group);
@@ -903,6 +1006,26 @@ export class WorldScene {
    * thins out. Toggling this at runtime is safe: culled meshes keep their
    * state and `restoreAllDetailVisibility()` un-hides everything on upgrade.
    */
+  /**
+   * Applies the quality preset's device-pixel-ratio cap. Called at context
+   * creation (so the initial preset takes effect before GameCanvas's effect
+   * runs) and on every runtime quality switch.
+   */
+  private applyQualityPixelRatio() {
+    switch (this.graphicsQuality) {
+      case 'low':
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1));
+        break;
+      case 'medium':
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+        break;
+      case 'high':
+      default:
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        break;
+    }
+  }
+
   public setGraphicsQuality(quality: import('../types/saveGame').GraphicsQuality) {
     if (this.graphicsQuality === quality) return;
     this.graphicsQuality = quality;
@@ -911,14 +1034,12 @@ export class WorldScene {
       case 'low':
         this.qualityLodScale = 0.45;
         this.detailCullRadius = 1.7;
-        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1));
         this.sunLight.castShadow = false;
         this.buildingRenderer.setEdgesVisible(false);
         break;
       case 'medium':
         this.qualityLodScale = 0.72;
         this.detailCullRadius = 2.6;
-        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
         this.sunLight.castShadow = true;
         this.buildingRenderer.setEdgesVisible(this.showBuildingEdges);
         break;
@@ -926,11 +1047,11 @@ export class WorldScene {
       default:
         this.qualityLodScale = 1.0;
         this.detailCullRadius = 0;
-        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         this.sunLight.castShadow = true;
         this.buildingRenderer.setEdgesVisible(this.showBuildingEdges);
         break;
     }
+    this.applyQualityPixelRatio();
   }
 
   /**
@@ -1143,6 +1264,17 @@ export class WorldScene {
     // mid-afternoon so lit windows ramp in at dusk and out at dawn.
     const nightGlow = Math.max(0, Math.cos(((h / 24) * Math.PI * 2)));
     this.buildingRenderer.setNightGlow(nightGlow > 0.08 ? (nightGlow - 0.08) / 0.92 : 0);
+
+    // Squad flashlights ramp on as night falls and off after dawn; the eased
+    // factor scales the beam so torches fade in rather than snapping on. The
+    // HUD toggle overrides the automatic behaviour (forced on = min 50% beam,
+    // forced off = dark).
+    const nightFactor = Math.max(0, (nightGlow - 0.08) / 0.92);
+    let flashFactor = nightFactor;
+    if (this.flashlightOverride !== null) {
+      flashFactor = this.flashlightOverride ? Math.max(0.5, nightFactor) : 0;
+    }
+    this.combatRenderer.setFlashlightIntensity(flashFactor);
   }
 
   private spawnTapFeedback(x: number, y: number, z: number, color = 0xe2e8f0) {
@@ -2037,12 +2169,27 @@ export class WorldScene {
         this.selectSquadInternal(markerHit.id, ctrl);
         return;
       }
+      if (markerHit.kind === 'survivor') {
+        this.onSelectSurvivorGroup?.(markerHit.id);
+        return;
+      }
+      if (markerHit.kind === 'zombie') {
+        this.onSelectZombieCluster?.(markerHit.id);
+        return;
+      }
     }
 
     // 1. Check if a Tactical Squad unit was clicked
     const squadHit = this.combatRenderer.raycastSquad(this.raycaster);
     if (squadHit) {
       this.selectSquadInternal(squadHit, ctrl);
+      return;
+    }
+
+    // 1b. A zombie body clicked directly selects its cluster.
+    const zombieHit = this.combatRenderer.raycastZombie(this.raycaster);
+    if (zombieHit) {
+      this.onSelectZombieCluster?.(zombieHit);
       return;
     }
 
@@ -2479,6 +2626,15 @@ export class WorldScene {
     this.groundRenderer.setLanduseVisible(!this.satelliteOverlayActive);
   }
 
+  /**
+   * HUD flashlight toggle: null restores the automatic day/night behaviour,
+   * true forces torches on (fading to at-least-half strength in daylight),
+   * false forces them off even at night.
+   */
+  public setFlashlightOverride(enabled: boolean | null) {
+    this.flashlightOverride = enabled;
+  }
+
   public updateCombat(
     zombies: ZombieUnit[],
     squads: TacticalSquadUnit[],
@@ -2512,11 +2668,13 @@ export class WorldScene {
 
   public updateVehicles(
     vehicles: WorldVehicle[],
-    selectedVehicleId: string | null
+    selectedVehicleId: string | null,
+    nightFactor = 0
   ) {
     this.selectedVehicleId = selectedVehicleId;
     this.gateTriggerVehicles = vehicles.map((v) => ({ x: v.position.x, z: v.position.z }));
     this.vehicleRenderer.setSelectedVehicle(selectedVehicleId);
+    this.vehicleRenderer.setHeadlightIntensity(nightFactor);
     const activeElevation = this.disableElevation ? null : this.currentMapData?.elevation;
     this.vehicleRenderer.updateVehicles(
       vehicles,
@@ -2585,6 +2743,7 @@ export class WorldScene {
     strandedPiles: import('../types/settlement').FieldLootPile[] = []
   ) {
     this.strandedPiles = strandedPiles;
+    this.latestZombies = zombies;
     const safeHidden = toSafeMap<string | number, HiddenSurvivorGroup>(hiddenGroups);
     this.hiddenGroups = safeHidden;
     if (rivalHideouts) this.rivalHideouts = toSafeMap<string | number, RivalHideout>(rivalHideouts);
@@ -3172,43 +3331,8 @@ export class WorldScene {
     return 8;
   }
 
-  private clusterZombies(zombies: ZombieUnit[]): {
-    key: string;
-    x: number;
-    z: number;
-    size: number;
-    damageRatio: number;
-  }[] {
-    const alive = zombies.filter((z) => z.state !== 'dead' && z.currentHp > 0);
-    if (alive.length === 0) return [];
-
-    const CLUSTER_RADIUS = 26;
-    const clusters: { key: string; members: ZombieUnit[]; sumX: number; sumZ: number }[] = [];
-
-    for (const z of alive) {
-      let target = clusters.find(
-        (c) => Math.hypot(c.sumX / c.members.length - z.x, c.sumZ / c.members.length - z.z) <= CLUSTER_RADIUS
-      );
-      if (!target) {
-        target = { key: z.id, members: [], sumX: 0, sumZ: 0 };
-        clusters.push(target);
-      }
-      target.members.push(z);
-      target.sumX += z.x;
-      target.sumZ += z.z;
-    }
-
-    return clusters.map((c) => {
-      const totalHp = c.members.reduce((s, z) => s + z.currentHp, 0);
-      const totalMaxHp = c.members.reduce((s, z) => s + z.maxHp, 0);
-      return {
-        key: c.key,
-        x: c.sumX / c.members.length,
-        z: c.sumZ / c.members.length,
-        size: c.members.length,
-        damageRatio: totalMaxHp > 0 ? Math.max(0, Math.min(1, totalHp / totalMaxHp)) : 1,
-      };
-    });
+  private clusterZombies(zombies: ZombieUnit[]) {
+    return clusterZombies(zombies);
   }
 
   public onWindowResize = () => {
@@ -3240,10 +3364,16 @@ export class WorldScene {
 
     // FPS calculation
     this.frameCount++;
+    this.frameMsAccum += delta * 1000;
+    this.frameMsSamples++;
     if (now - this.fpsLastTime >= 1000) {
       this.fps = Math.round((this.frameCount * 1000) / (now - this.fpsLastTime));
+      this.frameMsAvg = this.frameMsAccum / Math.max(1, this.frameMsSamples);
       this.frameCount = 0;
+      this.frameMsAccum = 0;
+      this.frameMsSamples = 0;
       this.fpsLastTime = now;
+      this.updatePerfHud();
     }
 
     // Update Camera and smoothly approach the latest simulation clock. This
@@ -3352,6 +3482,9 @@ export class WorldScene {
   public dispose() {
     this.isRunning = false;
     cancelAnimationFrame(this.animationFrameId);
+    window.removeEventListener('keydown', this.onKeyDown);
+    this.perfHud?.remove();
+    this.perfHud = null;
     this.weatherFX.dispose();
 
     this.container.removeEventListener('pointerdown', this.onPointerDown);

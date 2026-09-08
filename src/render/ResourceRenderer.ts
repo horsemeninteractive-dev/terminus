@@ -26,6 +26,28 @@ interface DepletionAnimation {
 export class ResourceRenderer {
   public group = new THREE.Group();
 
+  /**
+   * Terrain surface sampler injected by WorldScene: height of the terrain AS
+   * RENDERED (piecewise-linear mesh) or null outside the mesh. Resource nodes
+   * must sit ON the visible terrain — the smooth analytic elevation can sit
+   * meters below the rendered triangles on slopes.
+   */
+  private terrainSurfaceSampler: ((x: number, z: number) => number | null) | null = null;
+
+  public setTerrainSurfaceSampler(sampler: ((x: number, z: number) => number | null) | null) {
+    this.terrainSurfaceSampler = sampler;
+  }
+
+  /** Rendered-terrain height when available, else the smooth analytic surface. */
+  private terrainY(
+    elevation: ElevationGrid | null | undefined,
+    x: number,
+    z: number,
+    exaggeration: number
+  ): number {
+    return this.terrainSurfaceSampler?.(x, z) ?? sampleElevation(elevation, x, z, exaggeration);
+  }
+
   private nodes: ResourceNode[] = [];
   private instancedMeshes: THREE.InstancedMesh[] = [];
   private nodeLookup: Map<number, ResourceNode> = new Map(); // instanceId -> node
@@ -166,7 +188,7 @@ export class ResourceRenderer {
     // consistent between gaming sessions.
     for (const n of nodes) {
       if ((n.subType === 'tree' || n.subType === 'tree_large') && n.amount <= 0) {
-        const y = sampleElevation(this.elevation, n.position.x, n.position.z, this.exaggeration);
+        const y = this.terrainY(this.elevation, n.position.x, n.position.z, this.exaggeration);
         this.addStump(n, y);
       }
     }
@@ -249,7 +271,7 @@ export class ResourceRenderer {
 
     const dummy = new THREE.Object3D();
     nodes.forEach((node, idx) => {
-      const terrainY = sampleElevation(elevation, node.position.x, node.position.z, exaggeration);
+      const terrainY = this.terrainY(elevation, node.position.x, node.position.z, exaggeration);
       dummy.position.set(node.position.x, terrainY, node.position.z);
       dummy.rotation.set(0, node.rotation, 0);
       dummy.scale.set(node.scale, node.scale, node.scale);
@@ -355,7 +377,7 @@ export class ResourceRenderer {
     const upVector = new THREE.Vector3(0, 1, 0);
 
     nodes.forEach((node, idx) => {
-      const terrainY = sampleElevation(elevation, node.position.x, node.position.z, exaggeration);
+      const terrainY = this.terrainY(elevation, node.position.x, node.position.z, exaggeration);
       const normal = sampleElevationNormal(elevation, node.position.x, node.position.z, exaggeration);
 
       dummy.position.set(node.position.x, terrainY, node.position.z);
@@ -415,7 +437,7 @@ export class ResourceRenderer {
 
     const dummy = new THREE.Object3D();
     nodes.forEach((node, idx) => {
-      const terrainY = sampleElevation(elevation, node.position.x, node.position.z, exaggeration);
+      const terrainY = this.terrainY(elevation, node.position.x, node.position.z, exaggeration);
       dummy.position.set(node.position.x, terrainY, node.position.z);
       dummy.rotation.set(0, node.rotation, 0);
       dummy.scale.set(node.scale, node.scale, node.scale);
@@ -451,7 +473,7 @@ export class ResourceRenderer {
 
     const dummy = new THREE.Object3D();
     nodes.forEach((node, idx) => {
-      const terrainY = sampleElevation(elevation, node.position.x, node.position.z, exaggeration);
+      const terrainY = this.terrainY(elevation, node.position.x, node.position.z, exaggeration);
       dummy.position.set(node.position.x, terrainY, node.position.z);
       dummy.rotation.set(0, node.rotation, 0);
       dummy.scale.set(node.scale, node.scale, node.scale);
@@ -649,7 +671,7 @@ export class ResourceRenderer {
     const dummyCol = new THREE.Object3D();
 
     nodes.forEach((node, idx) => {
-      const terrainY = sampleElevation(elevation, node.position.x, node.position.z, exaggeration);
+      const terrainY = this.terrainY(elevation, node.position.x, node.position.z, exaggeration);
       const scale = node.scale || 1.0;
 
       dummyRing.position.set(node.position.x, terrainY + 0.15, node.position.z);

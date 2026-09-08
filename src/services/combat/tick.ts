@@ -929,7 +929,7 @@ export function tickCombatSimulation(
         }
       }
 
-      return {
+      const nextZombie = {
         ...zombie,
         x,
         z,
@@ -944,6 +944,32 @@ export function tickCombatSimulation(
         isDormant,
         pathState: zombiePathState,
       };
+      // Identity preservation: when this tick changed nothing observable
+      // (dormant zombie, no target, no attack, no detection), return the
+      // ORIGINAL object. Upstream no-op commit guards compare element
+      // identity to skip React re-renders entirely — a per-tick clone would
+      // defeat that and re-render the whole HUD 10×/s for nothing.
+      const prevTp = zombie.targetPos;
+      const sameTargetPos =
+        targetPos === prevTp ||
+        (!!targetPos && !!prevTp && targetPos.x === prevTp.x && targetPos.z === prevTp.z);
+      if (
+        nextZombie.x === zombie.x &&
+        nextZombie.y === zombie.y &&
+        nextZombie.z === zombie.z &&
+        nextZombie.rotation === zombie.rotation &&
+        nextZombie.state === zombie.state &&
+        sameTargetPos &&
+        nextZombie.targetUnitId === zombie.targetUnitId &&
+        nextZombie.targetBuildingId === zombie.targetBuildingId &&
+        nextZombie.alertLevel === zombie.alertLevel &&
+        nextZombie.lastAttackTime === zombie.lastAttackTime &&
+        nextZombie.isDormant === zombie.isDormant &&
+        nextZombie.pathState === zombie.pathState
+      ) {
+        return zombie;
+      }
+      return nextZombie;
     })
     .filter((z) => z.state !== 'dead' || now - z.spawnedAt < 10000); // Clean dead after 10s
 

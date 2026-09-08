@@ -43,7 +43,11 @@ export const VEHICLE_DEFINITIONS: Record<VehicleType, VehicleDefinition> = {
     description: 'Nimble civilian vehicle. High road cruising speed and fuel efficiency, perfect for rapid recon, scouting, and swift squad relocation.',
     fuelType: 'gasoline',
     maxFuel: 50,
-    fuelConsumptionPer100m: 0.8, // 0.8 L per 100m
+    // Real-world-scale economy (~8 L/100 km). The previous 0.8 L/100m was 10x
+    // reality: a tank lasted one or two cross-map drives, draining the whole
+    // motor pool within a game day. 0.08 gives ~60 km per tank — several
+    // expeditions before a refuel run is needed.
+    fuelConsumptionPer100m: 0.08, // 8 L per 100 km
     maxHp: 220,
     speedMps: 18.0, // ~65 km/h
     cargoBonus: 25,
@@ -61,7 +65,7 @@ export const VEHICLE_DEFINITIONS: Record<VehicleType, VehicleDefinition> = {
     description: 'Reinforced 4x4 pickup equipped with a mounted .50 cal heavy machine gun turret. Heavy armor and overwhelming fire support against hordes and brutes.',
     fuelType: 'diesel',
     maxFuel: 75,
-    fuelConsumptionPer100m: 1.4, // 1.4 L per 100m
+    fuelConsumptionPer100m: 0.14, // 14 L per 100 km (heavy 4x4)
     maxHp: 520,
     speedMps: 14.5, // ~52 km/h
     cargoBonus: 50,
@@ -82,7 +86,7 @@ export const VEHICLE_DEFINITIONS: Record<VehicleType, VehicleDefinition> = {
     description: 'Heavy panel van outfitted with reinforced suspension and high-volume cargo racks. Substantially increases scavenging loot yield from expeditions.',
     fuelType: 'diesel',
     maxFuel: 70,
-    fuelConsumptionPer100m: 1.1,
+    fuelConsumptionPer100m: 0.11, // 11 L per 100 km (loaded panel van)
     maxHp: 360,
     speedMps: 13.0, // ~47 km/h
     cargoBonus: 140, // High payload capacity!

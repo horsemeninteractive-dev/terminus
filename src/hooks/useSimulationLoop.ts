@@ -51,6 +51,37 @@ import type { PathGrid } from '../services/pathfindingService';
 import { runSimulationPipeline } from '../services/simulationPipeline';
 
 /**
+ * Cheap no-op guard for the 10 Hz sim commits: every setter that receives a
+ * new array identity re-renders the whole App subtree, even when the tick
+ * changed nothing visible. Skips the commit when the next array has the same
+ * length and the same element identities as the last committed one — which
+ * the combat tick now guarantees for untouched entities (identity
+ * preservation in combat/tick.ts), so dormant/idle stretches commit nothing.
+ */
+function sameCommittedArray<T>(prev: T[] | null, next: T[]): boolean {
+  if (!prev || prev.length !== next.length) return false;
+  for (let i = 0; i < next.length; i++) {
+    if (prev[i] !== next[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * Cheap change-detector for fog-of-war vision sources: kind + radius +
+ * position quantized to 12 m buckets. Sources wandering within a bucket don't
+ * change the visible-cell set enough to justify a full grid recompute.
+ */
+function fogSourceSignature(
+  sources: Array<{ x: number; z: number; radius: number; kind: string }>
+): string {
+  let sig = '';
+  for (const s of sources) {
+    sig += `${s.kind}:${s.radius}:${Math.round(s.x / 12)}:${Math.round(s.z / 12)};`;
+  }
+  return sig;
+}
+
+/**
  * Everything the 100ms game loop reads or writes that is owned by <App/>.
  * Passed explicitly so the hook has no hidden coupling to the component tree.
  */
@@ -129,6 +160,26 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
   // One warning per squad per storage-full hold episode (cleared when the squad
   // starts returning to deposit again).
   const heldHaulWarnedRef = useRef(new Set<string>());
+  // Last values actually committed to React state this session, used by the
+  // no-op guards below to skip setX calls when a tick changed nothing.
+  const lastCommittedRef = useRef({
+    zombies: null as ZombieUnit[] | null,
+    squads: null as TacticalSquadUnit[] | null,
+    droppedItems: null as DroppedItem[] | null,
+    noiseEvents: null as NoiseEvent[] | null,
+    hostileHumans: null as HostileHumanUnit[] | null,
+    dangerLevel: NaN as number,
+  });
+  // Fog-of-war throttle: the expensive vision→visible-cells grid pass runs at
+  // most every FOG_RECOMPUTE_INTERVAL_MS, or immediately when a vision source
+  // crosses a signature bucket (12 m). Entity markers still refresh every tick
+  // from the scene's cached fog state.
+  const FOG_RECOMPUTE_INTERVAL_MS = 500;
+  const fogThrottleRef = useRef({
+    recomputedAt: -Infinity,
+    signature: '',
+    fog: null as unknown as object | null,
+  });
   const {
     viewMode,
     isDescentActive,
@@ -348,9 +399,20 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
 
       let workingZombies = combatResult.updatedZombies;
 
-      setDroppedItems(combatResult.droppedItems);
-      setNoiseEvents(combatResult.activeNoiseEvents);
-      setHostileHumans(combatResult.updatedHostileHumans);
+      // No-op guards: only commit when the tick actually produced something
+      // new. Identity comparison is O(n) with zero allocation.
+      if (!sameCommittedArray(lastCommittedRef.current.droppedItems, combatResult.droppedItems)) {
+        lastCommittedRef.current.droppedItems = combatResult.droppedItems;
+        setDroppedItems(combatResult.droppedItems);
+      }
+      if (!sameCommittedArray(lastCommittedRef.current.noiseEvents, combatResult.activeNoiseEvents)) {
+        lastCommittedRef.current.noiseEvents = combatResult.activeNoiseEvents;
+        setNoiseEvents(combatResult.activeNoiseEvents);
+      }
+      if (!sameCommittedArray(lastCommittedRef.current.hostileHumans, combatResult.updatedHostileHumans)) {
+        lastCommittedRef.current.hostileHumans = combatResult.updatedHostileHumans;
+        setHostileHumans(combatResult.updatedHostileHumans);
+      }
       if (combatResult.ammoConsumed > 0) {
         workingSettlement = {
           ...workingSettlement,
@@ -688,7 +750,10 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
       // authoritative logistics stage inside the simulation pipeline.
       // Commit fully resolved squad updates (combat, scavenging, and depot dropoffs)
       combatSquadsRef.current = combatResult.updatedSquads;
-      setCombatSquads(combatResult.updatedSquads);
+      if (!sameCommittedArray(lastCommittedRef.current.squads, combatResult.updatedSquads)) {
+        lastCommittedRef.current.squads = combatResult.updatedSquads;
+        setCombatSquads(combatResult.updatedSquads);
+      }
 
       // Settlement commit is deferred to the END of this tick: the sim step
       // below consumes `workingSettlement` synchronously (the same state the
@@ -982,7 +1047,10 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
         setHostileHumans((prev) => [...prev, ...freshDefenders]);
       }
       workingZombies = simFx.finalZombies.length > 0 ? simFx.finalZombies : workingZombies;
-      setZombies(workingZombies);
+      if (!sameCommittedArray(lastCommittedRef.current.zombies, workingZombies)) {
+        lastCommittedRef.current.zombies = workingZombies;
+        setZombies(workingZombies);
+      }
 
       // Automatically make contact with survivors when a squad enters a smoke-marked
       // survivor building. Read the ref, not the interval's render closure: this
@@ -1031,7 +1099,12 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
       const outbreakThreat = activeOutbreaksCount > 0 ? 0.3 : 0.0;
       const totalDanger = Math.min(1.0, baseThreat + aggroThreat + outbreakThreat);
 
-      setDangerLevel(totalDanger);
+      // Danger level changes in tiny increments every tick — only commit when
+      // it actually moved, otherwise the HUD re-renders 10×/s for nothing.
+      if (!(Math.abs(totalDanger - lastCommittedRef.current.dangerLevel) < 0.005)) {
+        lastCommittedRef.current.dangerLevel = totalDanger;
+        setDangerLevel(totalDanger);
+      }
       soundService.updateAmbient(nextClock.phase, nextClock.isNight, totalDanger);
 
       // Forward combat entities & visual FX to Three.js WorldScene
@@ -1050,7 +1123,10 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
 
         sceneRef.current.updateVehicles(
           settlement.vehicles || [],
-          selectedVehicleId
+          selectedVehicleId,
+          // Headlights follow the same eased night curve the scene uses for
+          // window glow — full beam in deep night, off through daylight.
+          Math.max(0, (Math.cos(((nextClock.hour / 24) * Math.PI * 2)) - 0.08) / 0.92)
         );
 
         // Fog of war + faction entity markers (§3.5, §5.0). The shroud is live
@@ -1067,10 +1143,27 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
                 settlement.vehicles || []
               )
             : [];
-          const visibleCells = computeVisibleCells(fog, visionSources);
-          fogVisibleCellsRef.current = visibleCells;
 
-          sceneRef.current.updateFogOfWar(fog, visibleCells, fogEnabled, visionSources);
+          // Throttled recompute: full vision→cells pass at most 2 Hz, and only
+          // when the quantized source signature changed or the fog grid itself
+          // was swapped (map load). Squads walking inside a 12 m bucket don't
+          // redo the grid pass; crossing a bucket reveals fog immediately.
+          const signature = fogSourceSignature(visionSources);
+          const lastFog = fogThrottleRef.current;
+          const nowMs = performance.now();
+          if (
+            nowMs - lastFog.recomputedAt >= FOG_RECOMPUTE_INTERVAL_MS ||
+            signature !== lastFog.signature ||
+            lastFog.fog !== fog
+          ) {
+            lastFog.recomputedAt = nowMs;
+            lastFog.signature = signature;
+            lastFog.fog = fog;
+            const visibleCells = computeVisibleCells(fog, visionSources);
+            fogVisibleCellsRef.current = visibleCells;
+            sceneRef.current.updateFogOfWar(fog, visibleCells, fogEnabled, visionSources);
+          }
+
           sceneRef.current.updateEntityMarkers(
             combatResult.updatedSquads,
             settlement.vehicles || [],

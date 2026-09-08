@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import type { WorldScene } from '../render/WorldScene';
 import {
   Car,
   ChevronDown,
@@ -26,13 +27,13 @@ import {
   UserMinus,
   Users,
   X,
-  Apple,
   Droplets,
-  Crosshair as CrosshairIcon,
   Zap,
 } from 'lucide-react';
 import { WorldVehicle } from '../types/vehicle';
 import { getVehicleInventoryCapacity } from '../services/vehicleService';
+import { formatLootLabel } from '../services/scavengingService';
+import { lootIconForItem } from './lootIcons';
 import {
   ArmorItemId,
   CombatStance,
@@ -65,6 +66,8 @@ interface TacticalSquadHUDProps {
   isScavengeAreaActive?: boolean;
   /** §IFZ CTRL+drag multi-select: >1 means orders from this panel apply to all. */
   selectedCount?: number;
+  /** Live WorldScene ref — used to drive the real 3D flashlight beams. */
+  sceneRef?: React.MutableRefObject<WorldScene | null>;
 }
 
 // Survivor portrait faces are stored per squad member (assigned at creation) and
@@ -87,6 +90,7 @@ export const TacticalSquadHUD: React.FC<TacticalSquadHUDProps> = ({
   onStartScavengeArea,
   isScavengeAreaActive = false,
   selectedCount = 1,
+  sceneRef,
 }) => {
   const [isEditingName, setIsEditingName] = useState(false);
   const [squadName, setSquadName] = useState(squad?.name || 'SQUAD 1');
@@ -406,20 +410,9 @@ export const TacticalSquadHUD: React.FC<TacticalSquadHUDProps> = ({
         <div className="grid grid-cols-4 gap-2">
           {Array.from({ length: totalSlots }, (_, index) => {
             const item = inventory?.items?.[index];
-            const label = item?.label || '';
-            const icon = item?.kind === 'weapon'
-              ? <CrosshairIcon className="w-4 h-4 text-rose-300" />
-              : item?.kind === 'armor'
-              ? <Shield className="w-4 h-4 text-sky-300" />
-              : label.includes('water')
-              ? <Droplets className="w-4 h-4 text-cyan-300" />
-              : label.includes('food') || label.includes('ration') || label.includes('canned')
-              ? <Apple className="w-4 h-4 text-emerald-300" />
-              : item
-              ? <Package className="w-4 h-4 text-amber-300" />
-              : null;
+            const icon = lootIconForItem(item, 'w-4 h-4');
             return (
-              <div key={index} className={`h-10 flex items-center justify-center border ${item ? 'bg-[#10141C] border-[#10B981]/70' : 'bg-[#0A0D12] border-[#1E293B]'}`} title={item ? `${item.label || 'Loot'} ×${item.quantity}` : `Empty slot ${index + 1}`}>
+              <div key={index} className={`h-10 flex items-center justify-center border ${item ? 'bg-[#10141C] border-[#10B981]/70' : 'bg-[#0A0D12] border-[#1E293B]'}`} title={item ? `${formatLootLabel(item.label || '') || 'Loot'} ×${item.quantity}` : `Empty slot ${index + 1}`}>
                 {icon}
               </div>
             );
@@ -447,7 +440,10 @@ export const TacticalSquadHUD: React.FC<TacticalSquadHUDProps> = ({
           </button>
           <button
             onClick={() => {
-              setIsFlashlightActive(!isFlashlightActive);
+              const next = !isFlashlightActive;
+              setIsFlashlightActive(next);
+              // Drive the real 3D torches: force-on / force-off override.
+              sceneRef?.current?.setFlashlightOverride(next);
               soundEngine.playClick();
             }}
             title="Toggle Tactical Flashlights / Night Flares"
@@ -588,22 +584,12 @@ export const TacticalSquadHUD: React.FC<TacticalSquadHUDProps> = ({
               <div className="grid grid-cols-5 gap-1">
                 {Array.from({ length: vehCargoCap }, (_, index) => {
                   const item = vehCargo[index];
-                  const icon = item
-                    ? item.kind === 'weapon'
-                      ? <CrosshairIcon className="w-3 h-3 text-rose-300" />
-                      : item.kind === 'armor'
-                      ? <Shield className="w-3 h-3 text-sky-300" />
-                      : (item.label || '').includes('water')
-                      ? <Droplets className="w-3 h-3 text-cyan-300" />
-                      : (item.label || '').includes('food') || (item.label || '').includes('ration') || (item.label || '').includes('canned')
-                      ? <Apple className="w-3 h-3 text-emerald-300" />
-                      : <Package className="w-3 h-3 text-amber-300" />
-                    : null;
+                  const icon = lootIconForItem(item, 'w-3 h-3');
                   return (
                     <div
                       key={index}
                       className={`h-6 flex items-center justify-center border ${item ? 'bg-[#10141C] border-[#10B981]/60' : 'bg-[#0A0D12] border-[#1E293B]'}`}
-                      title={item ? `${item.label || 'Loot'} ×${item.quantity}` : `Empty cargo slot ${index + 1}`}
+                      title={item ? `${formatLootLabel(item.label || '') || 'Loot'} ×${item.quantity}` : `Empty cargo slot ${index + 1}`}
                     >
                       {icon}
                     </div>

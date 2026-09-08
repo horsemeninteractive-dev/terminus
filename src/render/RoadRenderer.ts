@@ -11,6 +11,28 @@ export class RoadRenderer {
   public group = new THREE.Group();
   public labelGroup = new THREE.Group();
 
+  /**
+   * Terrain surface sampler injected by WorldScene: height of the terrain AS
+   * RENDERED (piecewise-linear mesh) or null outside the mesh. Roads must lie
+   * ON the visible terrain — the smooth analytic elevation can sit meters
+   * below the rendered triangles on slopes, sinking roads into hillsides.
+   */
+  private terrainSurfaceSampler: ((x: number, z: number) => number | null) | null = null;
+
+  public setTerrainSurfaceSampler(sampler: ((x: number, z: number) => number | null) | null) {
+    this.terrainSurfaceSampler = sampler;
+  }
+
+  /** Rendered-terrain height when available, else the smooth analytic surface. */
+  private terrainY(
+    elevation: ElevationGrid | null | undefined,
+    x: number,
+    z: number,
+    exaggeration: number
+  ): number {
+    return this.terrainSurfaceSampler?.(x, z) ?? sampleElevation(elevation, x, z, exaggeration);
+  }
+
   // Realistic procedural textures
   private asphaltTexture = createRealisticAsphaltTexture();
   private pedestrianTexture = createRealisticPathTexture(true);
@@ -85,9 +107,18 @@ export class RoadRenderer {
   }
 
   /**
-   * Subdivides road segments smoothly along undulating terrain without excess vertex bloat
+   * Subdivides road segments adaptively: dense sampling only where the polyline
+   * actually curves or the sampled terrain slopes, coarse sampling on straight,
+   * flat stretches. The old fixed 1.4m step produced millions of vertices on
+   * city-scale maps (the single largest FPS cost) for detail the terrain grid
+   * cannot express anyway.
    */
-  private subdivideRoadPoints(points: Point2D[], maxSegLength = 3.5): Point2D[] {
+  private subdivideRoadPoints(
+    points: Point2D[],
+    maxSegLength = 3.5,
+    elevation?: ElevationGrid | null,
+    exaggeration = 1.0
+  ): Point2D[] {
     if (points.length <= 1) return points;
     const result: Point2D[] = [points[0]];
 
@@ -95,16 +126,41 @@ export class RoadRenderer {
       const p1 = points[i];
       const p2 = points[i + 1];
       const dist = Math.hypot(p2.x - p1.x, p2.z - p1.z);
+      if (dist <= maxSegLength) {
+        result.push(p2);
+        continue;
+      }
 
-      if (dist > maxSegLength) {
-        const steps = Math.ceil(dist / maxSegLength);
-        for (let s = 1; s < steps; s++) {
-          const t = s / steps;
-          result.push({
-            x: p1.x + (p2.x - p1.x) * t,
-            z: p1.z + (p2.z - p1.z) * t,
-          });
-        }
+      // Direction change vs the previous segment (curvature driver).
+      const prev = points[i - 1] ?? p1;
+      const dir1x = (p1.x - prev.x) / (Math.hypot(p1.x - prev.x, p1.z - prev.z) || 1);
+      const dir1z = (p1.z - prev.z) / (Math.hypot(p1.x - prev.x, p1.z - prev.z) || 1);
+      const len2 = Math.hypot(p2.x - p1.x, p2.z - p1.z) || 1;
+      const dir2x = (p2.x - p1.x) / len2;
+      const dir2z = (p2.z - p1.z) / len2;
+      const turn = Math.abs(dir1x * dir2z - dir1z * dir2x); // |sin(theta)|
+
+      // Terrain slope across the segment (elevation driver).
+      let slope = 0;
+      if (elevation) {
+        const e1 = this.terrainY(elevation, p1.x, p1.z, exaggeration);
+        const e2 = this.terrainY(elevation, p2.x, p2.z, exaggeration);
+        slope = Math.abs(e2 - e1) / Math.max(dist, 1);
+      }
+
+      // Density: straight+flat stretches clamp to 12m; curvy or sloped
+      // stretches keep the old fine 1.4m sampling. Intermediate values ease
+      // smoothly so ribbons never show tessellation seams.
+      const curveFactor = Math.min(1, turn * 14 + slope * 6);
+      const step = maxSegLength + (12 - maxSegLength) * (1 - curveFactor);
+
+      const steps = Math.ceil(dist / step);
+      for (let s = 1; s < steps; s++) {
+        const t = s / steps;
+        result.push({
+          x: p1.x + (p2.x - p1.x) * t,
+          z: p1.z + (p2.z - p1.z) * t,
+        });
       }
       result.push(p2);
     }
@@ -313,7 +369,7 @@ export class RoadRenderer {
       if (junc.branches.length < 2) continue;
 
       const yOffset = junc.isPedestrianOnly ? 0.05 : 0.08;
-      const centerY = sampleElevation(elevation, junc.x, junc.z, exaggeration) + yOffset;
+      const centerY = this.terrainY(elevation, junc.x, junc.z, exaggeration) + yOffset;
       const radius = junc.radius;
       const numSegments = 16;
 
@@ -329,7 +385,7 @@ export class RoadRenderer {
         const theta = (s * Math.PI * 2) / numSegments;
         const px = junc.x + Math.cos(theta) * radius;
         const pz = junc.z + Math.sin(theta) * radius;
-        const py = sampleElevation(elevation, px, pz, exaggeration) + yOffset;
+        const py = this.terrainY(elevation, px, pz, exaggeration) + yOffset;
 
         juncVerts.push(px, py, pz);
         juncUvs.push(px * 0.15, pz * 0.15);
@@ -358,7 +414,7 @@ export class RoadRenderer {
       if (!road.points || road.points.length < 2) continue;
 
       const rawPts = road.points;
-      const pts = this.subdivideRoadPoints(rawPts, 1.4);
+      const pts = this.subdivideRoadPoints(rawPts, 1.4, elevation, exaggeration);
       const width = road.width || 6;
       const halfW = width / 2;
       const curbW = 0.28;
@@ -439,9 +495,9 @@ export class RoadRenderer {
         const rightZ = pts[i].z - nz * halfW;
 
         // Conformal elevation sampling - all heights follow terrain uniformly
-        const leftTerrainY = sampleElevation(elevation, leftX, leftZ, exaggeration);
-        const centerTerrainY = sampleElevation(elevation, centerX, centerZ, exaggeration);
-        const rightTerrainY = sampleElevation(elevation, rightX, rightZ, exaggeration);
+        const leftTerrainY = this.terrainY(elevation, leftX, leftZ, exaggeration);
+        const centerTerrainY = this.terrainY(elevation, centerX, centerZ, exaggeration);
+        const rightTerrainY = this.terrainY(elevation, rightX, rightZ, exaggeration);
 
         const leftSurfaceY = leftTerrainY + yOffset;
         const centerSurfaceY = centerTerrainY + yOffset;
@@ -756,7 +812,7 @@ export class RoadRenderer {
       if (rawPts.length < 2) continue;
 
       // Subdivide points smoothly so the ribbon follows road curves without excess vertex count
-      const pts = this.subdivideRoadPoints(rawPts, 2.5);
+      const pts = this.subdivideRoadPoints(rawPts, 2.5, elevation, exaggeration);
       if (pts.length < 2) continue;
 
       // Calculate cumulative distances along the road
@@ -889,8 +945,8 @@ export class RoadRenderer {
           const rightX = samplePts[i].x - nx * textHalfWidth;
           const rightZ = samplePts[i].z - nz * textHalfWidth;
 
-          const leftY = sampleElevation(elevation, leftX, leftZ, exaggeration) + yOffset;
-          const rightY = sampleElevation(elevation, rightX, rightZ, exaggeration) + yOffset;
+          const leftY = this.terrainY(elevation, leftX, leftZ, exaggeration) + yOffset;
+          const rightY = this.terrainY(elevation, rightX, rightZ, exaggeration) + yOffset;
 
           // The canvas texture is drawn upright in screen space. On this ground
           // ribbon, the cross-track axis is the texture's vertical axis; use the

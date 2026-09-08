@@ -39,6 +39,7 @@ export interface SquadActionsRuntime {
   settlementRef: MutableRefObject<SettlementState>;
   combatSquadsRef: MutableRefObject<TacticalSquadUnit[]>;
   roadGraphRef: MutableRefObject<RoadNetworkGraph | null>;
+  pathGridRef?: MutableRefObject<import('../services/pathfindingService').PathGrid | null>;
   setSettlement: Dispatch<SetStateAction<SettlementState>>;
   setCombatSquads: Dispatch<SetStateAction<TacticalSquadUnit[]>>;
   setSelectedSquadId: Dispatch<SetStateAction<string | null>>;
@@ -78,6 +79,7 @@ export function useSquadActions(runtime: SquadActionsRuntime) {
     settlementRef,
     combatSquadsRef,
     roadGraphRef,
+    pathGridRef,
     setSettlement,
     setCombatSquads,
     setSelectedSquadId,
@@ -369,7 +371,7 @@ export function useSquadActions(runtime: SquadActionsRuntime) {
         });
         return;
       }
-      let updatedVeh = orderVehicleRoadTravel(directVeh, pos, roadGraphRef.current);
+      let updatedVeh = orderVehicleRoadTravel(directVeh, pos, roadGraphRef.current, undefined, mapData ?? undefined, pathGridRef?.current ?? null);
       if (targetBuildingId && !isStorageDropoffTarget) {
         updatedVeh = {
           ...updatedVeh,
@@ -411,7 +413,7 @@ export function useSquadActions(runtime: SquadActionsRuntime) {
     const mountedVeh = settlement.vehicles?.find((v) => v.assignedSquadId === squadId);
     const orderSquad = combatSquadsRef.current.find((s) => s.squadId === squadId);
     if (mountedVeh && roadGraphRef.current && orderSquad?.mountedVehicleId === mountedVeh.id) {
-      let updatedVeh = orderVehicleRoadTravel(mountedVeh, pos, roadGraphRef.current);
+      let updatedVeh = orderVehicleRoadTravel(mountedVeh, pos, roadGraphRef.current, undefined, mapData ?? undefined, pathGridRef?.current ?? null);
       if (targetBuildingId && !isStorageDropoffTarget) {
         updatedVeh = {
           ...updatedVeh,

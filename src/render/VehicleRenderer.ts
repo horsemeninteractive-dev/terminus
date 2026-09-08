@@ -6,6 +6,28 @@ import { PositionSmoother } from './movementSmoothing';
 
 export class VehicleRenderer {
   public group = new THREE.Group();
+
+  /**
+   * Terrain surface sampler injected by WorldScene: height of the terrain AS
+   * RENDERED (piecewise-linear mesh) or null outside the mesh. Vehicles must
+   * drive ON the visible terrain — the smooth analytic elevation can sit
+   * meters below the rendered triangles on slopes.
+   */
+  private terrainSurfaceSampler: ((x: number, z: number) => number | null) | null = null;
+
+  public setTerrainSurfaceSampler(sampler: ((x: number, z: number) => number | null) | null) {
+    this.terrainSurfaceSampler = sampler;
+  }
+
+  /** Rendered-terrain height when available, else the smooth analytic surface. */
+  private terrainY(
+    elevation: ElevationGrid | null | undefined,
+    x: number,
+    z: number,
+    exaggeration: number
+  ): number {
+    return this.terrainSurfaceSampler?.(x, z) ?? sampleElevation(elevation, x, z, exaggeration);
+  }
   private vehicleMeshes = new Map<string, THREE.Group>();
   private vehicleSmoothers = new Map<string, PositionSmoother>();
   private selectedVehicleId: string | null = null;
@@ -16,6 +38,22 @@ export class VehicleRenderer {
   // When true, per-frame interpolation is frozen at each vehicle's latest sim
   // position so nothing keeps sliding after the player pauses.
   private paused = false;
+
+  // Night headlights: two SpotLights per operational vehicle (one per headlamp)
+  // throwing a wide warm beam onto the road ahead. Wrecked (salvageable)
+  // vehicles stay dark. Intensity follows the day/night cycle.
+  private headlights = new Map<string, THREE.SpotLight[]>();
+  private headlightsOn = false;
+
+  // Night taillights: red lamp meshes + faint backward red SpotLights per
+  // operational vehicle — convoy columns read from behind. Lamps glow dim red
+  // (running lights) and flare brighter while the vehicle is moving or has an
+  // active destination (throttle/brake). Wrecks stay dark.
+  private tailLampMats = new Map<string, THREE.MeshStandardMaterial[]>();
+  private tailLights = new Map<string, THREE.SpotLight[]>();
+  private tailNightFactor = 0;
+  private static readonly TAIL_RUNNING = 1.2;
+  private static readonly TAIL_ACTIVE = 4.0;
 
   // Terrain elevation (kept from the last updateVehicles call so the per-frame
   // interpolation can sample the ground under the smoothed position).
@@ -33,6 +71,8 @@ export class VehicleRenderer {
   private turretMat: THREE.MeshStandardMaterial;
   private lightMat: THREE.MeshBasicMaterial;
   private selectionRingMat: THREE.MeshBasicMaterial;
+
+
 
   constructor() {
     this.group.name = 'VehiclesGroup';
@@ -150,6 +190,10 @@ export class VehicleRenderer {
       if (!vehGroup) {
         vehGroup = this.buildVehicleModel(veh);
         vehGroup.name = `Vehicle_${veh.id}`;
+        if (!VehicleRenderer.isWrecked(veh)) {
+          this.attachHeadlights(veh.id, vehGroup);
+          this.attachTailLights(veh.id, vehGroup);
+        }
         this.group.add(vehGroup);
         this.vehicleMeshes.set(veh.id, vehGroup);
       }
@@ -160,7 +204,7 @@ export class VehicleRenderer {
         smoother = new PositionSmoother();
         this.vehicleSmoothers.set(veh.id, smoother);
         smoother.snap(veh.position.x, veh.position.z, veh.rotation);
-        const groundY = sampleElevation(elevation, veh.position.x, veh.position.z, exaggeration);
+        const groundY = this.terrainY(elevation, veh.position.x, veh.position.z, exaggeration);
         vehGroup.position.set(veh.position.x, groundY + 0.1, veh.position.z);
         vehGroup.rotation.y = veh.rotation;
       } else {
@@ -177,14 +221,26 @@ export class VehicleRenderer {
       }
 
       if (this.selectedVehicleId === veh.id && veh.targetPos && this.pathLine && this.pathEnd) {
-        const route = veh.roadPathWaypoints.length > 0
-          ? [{ ...veh.position }, ...veh.roadPathWaypoints.slice(veh.currentWaypointIndex)]
-          : [{ ...veh.position }, { ...veh.targetPos }];
-        const points = route.map((p) => new THREE.Vector3(p.x, sampleElevation(elevation, p.x, p.z, exaggeration) + 0.4, p.z));
-        this.pathLine.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(points.flatMap((p) => [p.x, p.y, p.z])), 3));
+        // Squad-style route preview: one dashed green line sampled over the
+        // terrain from the vehicle through every remaining waypoint to the
+        // destination, so it hugs hills exactly like the squad waypoint line.
+        const remaining = veh.roadPathWaypoints.slice(veh.currentWaypointIndex);
+        const elevAt = (p: { x: number; z: number }) => this.terrainY(elevation, p.x, p.z, exaggeration) + 0.35;
+        const pts: { x: number; z: number }[] = [{ ...veh.position }, ...remaining];
+        if (!remaining.length ||
+            Math.hypot(remaining[remaining.length - 1].x - veh.targetPos.x, remaining[remaining.length - 1].z - veh.targetPos.z) > 1) {
+          pts.push({ ...veh.targetPos });
+        }
+        const positions = new Float32Array(pts.flatMap((p) => [p.x, elevAt(p), p.z]));
+        this.pathLine.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        const lineMat = this.pathLine.material as THREE.LineDashedMaterial;
+        lineMat.depthTest = false;
+        lineMat.dashSize = 1.2;
+        lineMat.gapSize = 0.8;
         this.pathLine.computeLineDistances();
         this.pathLine.visible = true;
-        this.pathEnd.position.set(veh.targetPos.x, sampleElevation(elevation, veh.targetPos.x, veh.targetPos.z, exaggeration) + 0.45, veh.targetPos.z);
+
+        this.pathEnd.position.set(veh.targetPos.x, this.terrainY(elevation, veh.targetPos.x, veh.targetPos.z, exaggeration) + 0.4, veh.targetPos.z);
         this.pathEnd.visible = true;
       }
 
@@ -193,11 +249,22 @@ export class VehicleRenderer {
       if (selRing) {
         selRing.visible = this.selectedVehicleId === veh.id || this.hoveredVehicleId === veh.id;
       }
+
+      // Taillight state: dim running lights when parked, flare up while the
+      // vehicle is under way or braking toward a destination. Scaled by the
+      // night factor here (assignment time) so lamps are fully dark through
+      // daylight and fade in with dusk — never glowing in full sun.
+      const active = veh.isMoving || veh.targetPos !== null;
+      const glow = (active ? VehicleRenderer.TAIL_ACTIVE : VehicleRenderer.TAIL_RUNNING) * this.tailNightFactor;
+      const tailMats = this.tailLampMats.get(veh.id);
+      if (tailMats) {
+        for (const m of tailMats) m.emissiveIntensity = glow;
+      }
     }
 
-    if (!vehicles.some((v) => v.id === this.selectedVehicleId && v.targetPos) && this.pathLine && this.pathEnd) {
-      this.pathLine.visible = false;
-      this.pathEnd.visible = false;
+    if (!vehicles.some((v) => v.id === this.selectedVehicleId && v.targetPos)) {
+      if (this.pathLine) this.pathLine.visible = false;
+      if (this.pathEnd) this.pathEnd.visible = false;
     }
 
     // Clean up removed vehicles
@@ -206,8 +273,100 @@ export class VehicleRenderer {
         this.group.remove(mesh);
         this.vehicleMeshes.delete(id);
         this.vehicleSmoothers.delete(id);
+        this.headlights.delete(id);
+        this.tailLampMats.delete(id);
+        this.tailLights.delete(id);
       }
     }
+  }
+
+  /**
+   * Night headlight beams: each operational vehicle gets a SpotLight per
+   * headlamp aimed ~25m down the road (vehicles face +Z, so the beams track
+   * steering automatically). Wrecks are never given lights (see attach guard).
+   */
+  private attachHeadlights(vehicleId: string, container: THREE.Group) {
+    const lights: THREE.SpotLight[] = [];
+    for (const x of [0.7, -0.7]) {
+      const light = new THREE.SpotLight(0xfff3d0, 0, 45, Math.PI / 5.5, 0.5, 1.2);
+      light.position.set(x, 0.95, 2.8);
+      light.target.position.set(x * 2, 0, 26);
+      light.visible = this.headlightsOn;
+      container.add(light);
+      container.add(light.target);
+      lights.push(light);
+    }
+    this.headlights.set(vehicleId, lights);
+  }
+
+  /** Drives beam brightness from the day/night cycle (0 = day, 1 = deep night). */
+  public setHeadlightIntensity(nightFactor: number) {
+    const enabled = nightFactor > 0.02;
+    if (this.headlightsOn !== enabled) {
+      this.headlightsOn = enabled;
+      for (const lights of this.headlights.values()) {
+        for (const l of lights) l.visible = enabled;
+      }
+      for (const lights of this.tailLights.values()) {
+        for (const l of lights) l.visible = enabled;
+      }
+    }
+    if (enabled) {
+      const intensity = 60 + 240 * nightFactor;
+      for (const lights of this.headlights.values()) {
+        for (const l of lights) l.intensity = intensity;
+      }
+      const tailIntensity = 6 + 18 * nightFactor;
+      for (const lights of this.tailLights.values()) {
+        for (const l of lights) l.intensity = tailIntensity;
+      }
+    }
+    // Emissive lamp meshes are scaled at their per-frame assignment site
+    // (updateVehicles) — scaling here too would double-apply or be overwritten
+    // by the same-frame assignment right after this call.
+    this.tailNightFactor = nightFactor;
+  }
+
+  /**
+   * Red taillights: two glowing lamp meshes at the rear plus faint backward
+   * red SpotLights so a following vehicle's cab picks up red light. Lamps use
+   * per-vehicle emissive materials (running vs. brake glow set in
+   * updateVehicles); emissive intensity scales with night so they read only
+   * after dusk instead of glowing in daylight.
+   */
+  private attachTailLights(vehicleId: string, container: THREE.Group) {
+    const mats: THREE.MeshStandardMaterial[] = [];
+    for (const x of [0.65, -0.65]) {
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0x3d0608,
+        roughness: 0.4,
+        emissive: 0xff1a1a,
+        emissiveIntensity: 0,
+      });
+      const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.14, 0.08), mat);
+      lamp.position.set(x, 0.9, -2.85);
+      container.add(lamp);
+      mats.push(mat);
+    }
+    this.tailLampMats.set(vehicleId, mats);
+
+    const lights: THREE.SpotLight[] = [];
+    for (const x of [0.65, -0.65]) {
+      const light = new THREE.SpotLight(0xff2020, 0, 14, Math.PI / 4, 0.7, 1.4);
+      light.position.set(x, 0.9, -2.9);
+      light.target.position.set(x, 0, -10);
+      light.visible = this.headlightsOn;
+      container.add(light);
+      container.add(light.target);
+      lights.push(light);
+    }
+    this.tailLights.set(vehicleId, lights);
+  }
+
+  /** Lamp emissive = per-vehicle state glow scaled by the night factor. */
+  /** Only operational vehicles light up — wrecks and rusted hulls stay dark. */
+  private static isWrecked(veh: WorldVehicle): boolean {
+    return veh.condition !== 'operational';
   }
 
   /**
@@ -234,7 +393,7 @@ export class VehicleRenderer {
         const p = sm.sample(now);
         px = p.x; pz = p.z; prot = p.rot;
       }
-      const groundY = sampleElevation(this.currentElevation, px, pz, this.currentExaggeration);
+      const groundY = this.terrainY(this.currentElevation, px, pz, this.currentExaggeration);
       mesh.position.set(px, groundY + 0.1, pz);
       if (prot !== null) mesh.rotation.y = prot;
     }

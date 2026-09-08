@@ -63,6 +63,11 @@ export class GroundRenderer {
   private currentCenter: GeoPoint | null = null;
   private currentRadius = 1200;
   private currentTerrainSize = 2600;
+  // Displaced terrain-mesh height cache for sampleTerrainSurface (see above).
+  private terrainHeights: Float32Array | null = null;
+  private terrainGridN = 0;
+  private terrainOrigin = 0;
+  private terrainStep = 0;
   private currentSatelliteQuality: import('../types/saveGame').SatelliteQuality = 'balanced';
   private satelliteCameraTracking = false;
 
@@ -266,6 +271,18 @@ export class GroundRenderer {
       pos.needsUpdate = true;
       geom.computeVertexNormals();
 
+      // Cache the displaced vertex heights so other renderers can query the
+      // terrain surface AS RENDERED (piecewise-linear triangles), not the
+      // smooth analytic elevation — building foundations must sit on the mesh
+      // or hillside chords bury their walls.
+      const gridN = segments + 1;
+      const heights = new Float32Array(gridN * gridN);
+      for (let i = 0; i < pos.count; i++) heights[i] = pos.getY(i);
+      this.terrainHeights = heights;
+      this.terrainGridN = gridN;
+      this.terrainOrigin = -size / 2;
+      this.terrainStep = size / segments;
+
       this.terrainMesh.geometry = geom;
       if (this.terrainWireframeMesh) {
         this.terrainWireframeMesh.geometry = geom;
@@ -275,6 +292,47 @@ export class GroundRenderer {
     if (this.isSatelliteActive && this.currentCenter) {
       this.setSatelliteOverlay(true, this.currentSatelliteQuality, this.currentCenter, this.currentRadius);
     }
+  }
+
+  /**
+   * Height of the terrain surface AS RENDERED at world (x, z): triangle-accurate
+   * interpolation over the displaced terrain mesh (matching PlaneGeometry's
+   * anti-diagonal quad split). Returns null when no displaced terrain exists
+   * (pre-load, elevation disabled builds a flat grid so this still returns 0).
+   * This is the authoritative ground height for anything that must sit ON the
+   * visible terrain — the smooth `sampleElevation` surface can sit several
+   * meters BELOW the rendered triangles on slopes, burying building bases.
+   */
+  public sampleTerrainSurface(x: number, z: number): number | null {
+    const heights = this.terrainHeights;
+    if (!heights) return null;
+    const n = this.terrainGridN;
+    const gx = (x - this.terrainOrigin) / this.terrainStep;
+    const gz = (z - this.terrainOrigin) / this.terrainStep;
+    const col = Math.floor(gx);
+    const row = Math.floor(gz);
+    if (col < 0 || row < 0 || col >= n - 1 || row >= n - 1) return null;
+    const u = gx - col;
+    const v = gz - row;
+    const hA = heights[row * n + col];       // (u=0, v=0)
+    const hB = heights[(row + 1) * n + col]; // (u=0, v=1)
+    const hC = heights[(row + 1) * n + col + 1]; // (u=1, v=1)
+    const hD = heights[row * n + col + 1];   // (u=1, v=0)
+    // PlaneGeometry splits each quad along the b–d diagonal (u + v = 1).
+    return u + v <= 1
+      ? hA + v * (hB - hA) + u * (hD - hA)
+      : hC + (1 - u) * (hB - hC) + (1 - v) * (hD - hC);
+  }
+
+  /**
+   * Rendered-mesh height with smooth-surface fallback — the height any draped
+   * layer (landuse, roads, …) must use to stay coplanar with the visible
+   * terrain. Layers draped on the smooth surface float above / cut through
+   * the chorded terrain mesh on slopes.
+   */
+  private terrainSurfaceAt(x: number, z: number, elevation: ElevationGrid | null | undefined, exaggeration: number): number {
+    const meshHeight = this.sampleTerrainSurface(x, z);
+    return meshHeight ?? sampleElevation(elevation, x, z, exaggeration);
   }
 
   /**
@@ -411,7 +469,7 @@ export class GroundRenderer {
           const vz = pts[i].z;
 
           // Directly sample 3D terrain elevation so waterways follow riverbeds and valleys perfectly
-          const vy = sampleElevation(elevation, vx, vz, exaggeration);
+          const vy = this.terrainSurfaceAt(vx, vz, elevation, exaggeration);
 
           positions[i * 3] = vx;
           positions[i * 3 + 1] = vy + yBaseOffset;

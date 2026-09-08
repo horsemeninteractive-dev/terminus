@@ -63,6 +63,7 @@ export interface ThreatActionsRuntime {
   combatSquadsRef: MutableRefObject<TacticalSquadUnit[]>;
   sceneRef: MutableRefObject<WorldScene | null>;
   roadGraphRef: MutableRefObject<RoadNetworkGraph | null>;
+  pathGridRef?: MutableRefObject<import('../services/pathfindingService').PathGrid | null>;
   radioDirectiveState: RadioDirectiveState;
   setSettlement: Dispatch<SetStateAction<SettlementState>>;
   setCombatSquads: Dispatch<SetStateAction<TacticalSquadUnit[]>>;
@@ -114,6 +115,7 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
     combatSquadsRef,
     sceneRef,
     roadGraphRef,
+    pathGridRef,
     radioDirectiveState,
     setSettlement,
     setCombatSquads,
@@ -327,7 +329,7 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
       return;
     }
     const hqPos = getPrimaryHQ(settlement)?.center || { x: 0, z: 0 };
-    const updatedVeh = orderVehicleRoadTravel(vehicle, hqPos, roadGraphRef.current);
+    const updatedVeh = orderVehicleRoadTravel(vehicle, hqPos, roadGraphRef.current, undefined, mapData ?? undefined, pathGridRef?.current ?? null);
     setSettlement((prev) => ({
       ...prev,
       vehicles: prev.vehicles.map((v) => (v.id === updatedVeh.id ? updatedVeh : v)),
@@ -352,7 +354,7 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
       });
       return;
     }
-    const updatedVeh = orderVehicleRoadTravel(vehicle, targetPos, roadGraphRef.current);
+    const updatedVeh = orderVehicleRoadTravel(vehicle, targetPos, roadGraphRef.current, undefined, mapData ?? undefined, pathGridRef?.current ?? null);
     setSettlement((prev) => ({
       ...prev,
       vehicles: prev.vehicles.map((v) => (v.id === updatedVeh.id ? updatedVeh : v)),

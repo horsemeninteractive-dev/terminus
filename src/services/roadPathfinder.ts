@@ -4,7 +4,43 @@ interface GraphNode {
   id: string;
   x: number;
   z: number;
-  neighbors: Array<{ nodeId: string; dist: number }>;
+  neighbors: Array<{ nodeId: string; dist: number; cost: number }>;
+}
+
+/**
+ * Driving cost multiplier per OSM highway class. Vehicles PREFER bigger roads:
+ * A* minimises cost, not distance, so a slightly longer trip along a main road
+ * beats a shortcut through alleys and footpaths. Footways/steps remain drivable
+ * (post-apocalypse) but are priced so they are only used when they are the
+ * only connection. Order matters: first match wins in edgeCost().
+ */
+const ROAD_CLASS_COST: Array<{ types: string[]; cost: number }> = [
+  { types: ['motorway', 'motorway_link', 'trunk', 'trunk_link'], cost: 0.55 },
+  { types: ['primary', 'primary_link'], cost: 0.7 },
+  { types: ['secondary', 'secondary_link'], cost: 0.85 },
+  { types: ['tertiary', 'tertiary_link', 'unclassified'], cost: 1.0 },
+  { types: ['residential', 'living_street', 'service'], cost: 1.35 },
+  // Pedestrian classes: legal-ish for a 4x4 but slow and cramped — a big
+  // penalty so genuine roads always win when available.
+  { types: ['pedestrian', 'footway', 'cycleway', 'path', 'track', 'bridleway'], cost: 3.5 },
+  { types: ['steps'], cost: 8 },
+];
+
+/** A* edge cost for a road segment: distance × class weight. */
+function edgeCost(road: RoadSegment): number {
+  const t = road.highwayType || 'unclassified';
+  for (const tier of ROAD_CLASS_COST) {
+    if (tier.types.includes(t)) return tier.cost;
+  }
+  return 1.0;
+}
+
+/**
+ * Snap cost multiplier when choosing which road point to enter/leave the
+ * network through: main roads are the preferred on/off ramps.
+ */
+function snapCost(road: RoadSegment): number {
+  return edgeCost(road);
 }
 
 export class RoadNetworkGraph {
@@ -56,16 +92,56 @@ export class RoadNetworkGraph {
 
             // Post-apocalypse driving: ignore OSM one-way restrictions — vehicles
             // may travel either direction on any road, path or track.
+            const segCost = edgeCost(road);
             if (!node0.neighbors.some((n) => n.nodeId === key1)) {
-              node0.neighbors.push({ nodeId: key1, dist });
+              node0.neighbors.push({ nodeId: key1, dist, cost: segCost });
             }
             if (!node1.neighbors.some((n) => n.nodeId === key0)) {
-              node1.neighbors.push({ nodeId: key0, dist });
+              node1.neighbors.push({ nodeId: key0, dist, cost: segCost });
             }
           }
         }
       }
     }
+  }
+
+  /**
+   * Best point to enter/leave the road network from `pos`. Unlike a pure
+   * nearest-point projection this is cost-aware: given several candidate roads
+   * within a comparable detour, a main road wins over a footway (driving costs
+   * per class), so vehicles ramp onto main roads rather than ducking down a
+   * path just because it's a metre closer. `snapRadius` caps how far we're
+   * willing to detour to reach a better road class.
+   */
+  public findBestSnapPoint(
+    pos: Point2D,
+    snapRadius = 60
+  ): { point: Point2D; road: RoadSegment | null; distance: number } {
+    let bestPoint: Point2D = { ...pos };
+    let bestRoad: RoadSegment | null = null;
+    let bestScore = Infinity;
+
+    for (const road of this.roads) {
+      const classCost = snapCost(road);
+      const pts = road.points;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const proj = projectPointOnSegment(pos, pts[i], pts[i + 1]);
+        const d = Math.hypot(pos.x - proj.x, pos.z - proj.z);
+        if (d > snapRadius) continue;
+        // Score = drive distance to the ramp × class cost. A main road 30m
+        // away (30 × 0.7 = 21) beats a footway 10m away (10 × 3.5 = 35).
+        const score = d * classCost;
+        if (score < bestScore) {
+          bestScore = score;
+          bestPoint = proj;
+          bestRoad = road;
+        }
+      }
+    }
+
+    // Nothing inside the snap radius: fall back to the plain nearest point.
+    if (!bestRoad) return this.findClosestPointOnRoad(pos);
+    return { point: bestPoint, road: bestRoad, distance: Math.hypot(pos.x - bestPoint.x, pos.z - bestPoint.z) };
   }
 
   /**
@@ -131,8 +207,8 @@ export class RoadNetworkGraph {
     blockedPolys?: Point2D[][],
     edgeSize = 3.0
   ): Point2D[] {
-    const roadStart = this.findClosestPointOnRoad(startPos);
-    const roadEnd = this.findClosestPointOnRoad(targetPos);
+    const roadStart = this.findBestSnapPoint(startPos);
+    const roadEnd = this.findBestSnapPoint(targetPos);
 
     if (!roadStart.road || !roadEnd.road || this.nodes.size === 0) {
       return [roadStart.point, roadEnd.point];
@@ -177,18 +253,23 @@ export class RoadNetworkGraph {
       return [roadStart.point, roadEnd.point];
     }
 
-    // A* Search on Road Graph
+    // A* Search on Road Graph. Cost = distance × road-class weight, so the
+    // search naturally prefers main roads over alleys/footways even when the
+    // shortcut is geometrically shorter. Heuristic stays pure distance (it's a
+    // lower bound since every class cost is ≥ 0.55... actually can be < 1 for
+    // main roads, so scale it by the cheapest possible class cost).
+    const MIN_CLASS_COST = 0.55;
     const openSet = new Set<string>([startNode.id]);
     const cameFrom = new Map<string, string>();
 
     const gScore = new Map<string, number>();
     gScore.set(startNode.id, 0);
 
+    const heuristic = (node: GraphNode) =>
+      Math.hypot(endNode.x - node.x, endNode.z - node.z) * MIN_CLASS_COST;
+
     const fScore = new Map<string, number>();
-    fScore.set(
-      startNode.id,
-      Math.hypot(endNode.x - startNode.x, endNode.z - startNode.z)
-    );
+    fScore.set(startNode.id, heuristic(startNode));
 
     let found = false;
 
@@ -223,18 +304,14 @@ export class RoadNetworkGraph {
         if (isBlockedSegment(currentNode.x, currentNode.z, neighborNode.x, neighborNode.z)) {
           continue;
         }
-        const tentativeG = currentG + neighbor.dist;
+        const tentativeG = currentG + neighbor.dist * neighbor.cost;
         const neighborG = gScore.get(neighbor.nodeId) ?? Infinity;
 
         if (tentativeG < neighborG) {
           cameFrom.set(neighbor.nodeId, currentId);
           gScore.set(neighbor.nodeId, tentativeG);
 
-          const h = Math.hypot(
-            endNode.x - neighborNode.x,
-            endNode.z - neighborNode.z
-          );
-          fScore.set(neighbor.nodeId, tentativeG + h);
+          fScore.set(neighbor.nodeId, tentativeG + heuristic(neighborNode));
 
           openSet.add(neighbor.nodeId);
         }

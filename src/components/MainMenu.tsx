@@ -369,8 +369,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
 
  {/* 2. Top Right Telemetry Bar */}
  <div className="absolute top-4 right-6 z-30 flex items-center gap-3">
- <span className="text-xs font-tech font-bold tracking-widest text-[#E8E8E8]">
- VER {typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.2.2'} BETA+
+ <span className="text-xs font-tech font-bold tracking-widest text-[#E8E8E8]">        VER {typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''} BETA+
  </span>
 
  {/* Red exclamation alert box */}

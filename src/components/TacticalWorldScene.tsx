@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layers, Footprints, Building2, Car } from 'lucide-react';
+import { Layers, Footprints, Building2, Car, Users } from 'lucide-react';
 import { GameCanvas } from './GameCanvas';
 import { TacticalHeaderStrip } from './TacticalHeaderStrip';
 import { AudioSettingsModal } from './AudioSettingsModal';
@@ -9,6 +9,9 @@ import { SquadManagementModal } from './SquadManagementModal';
 import { LawPolicyModal } from './LawPolicyModal';
 import { ExpeditionModal } from './ExpeditionModal';
 import { TacticalSquadHUD } from './TacticalSquadHUD';
+import { EntityInfoPanel } from './EntityInfoPanel';
+import type { EntityInfoSelection } from './EntityInfoPanel';
+import { clusterZombies } from '../services/zombieClusterService';
 import { BuildingAdaptationDrawer } from './BuildingAdaptationDrawer';
 import { VehicleTacticalDrawer } from './VehicleTacticalDrawer';
 import { AreaGatherOverlay } from './AreaGatherOverlay';
@@ -373,7 +376,13 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
   // shown at a time; a tab strip appears when several entities are selected.
   // The active tab follows the MOST RECENT selection, so clicking a squad then
   // a building surfaces the building panel while the squad stays one tab away.
-  const [dockActiveTab, setDockActiveTab] = React.useState<'squad' | 'building' | 'vehicle'>('squad');
+  const [dockActiveTab, setDockActiveTab] = React.useState<'squad' | 'building' | 'vehicle' | 'entity'>('squad');
+  // Clicked survivor-group / zombie-cluster info card (same dock slot as the
+  // squad panel; the 3D scene fires onEntityInfoSelect for marker clicks).
+  const [entityInfo, setEntityInfo] = React.useState<EntityInfoSelection | null>(null);
+  // Shared cluster computation — WorldScene marker layer and this panel agree
+  // on cluster membership, so a clicked badge resolves to the same members.
+  const zombieClusters = React.useMemo(() => clusterZombies(zombies), [zombies]);
   const prevDockSelRef = React.useRef<{ s: string | null; b: string | number | null; v: string | null }>({
     s: null,
     b: null,
@@ -547,6 +556,16 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                 onOrderSquadMove={handleOrderSquadMove}
                 onOrderSquadAttack={handleOrderSquadAttack}
                 onSelectVehicle={handleSelectVehicle}
+                onSelectSurvivorGroup={(groupId) => {
+                  if (!groupId) return;
+                  setEntityInfo({ kind: 'survivor', id: groupId });
+                  setDockActiveTab('entity');
+                }}
+                onSelectZombieCluster={(clusterKey) => {
+                  if (!clusterKey) return;
+                  setEntityInfo({ kind: 'zombie', id: clusterKey });
+                  setDockActiveTab('entity');
+                }}
                 onMountVehicle={handleMountVehicle}
                 onSceneReady={(s) => {
                   sceneRef.current = s;
@@ -702,7 +721,7 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                   {/* Selection Info Dock — squad / building / vehicle panels share one
                       slot; only one panel is shown at a time, and a tab strip
                       switches between whichever entities are currently selected. */}
-                  {(selectedSquadId || selectedBuilding || selectedVehicleId) && (() => {
+                  {(selectedSquadId || selectedBuilding || selectedVehicleId || entityInfo) && (() => {
                     const selectedSquadObj = combatSquads.find((s) => s.squadId === selectedSquadId) || null;
                     const selectedMountedVehicle = (() => {
                       if (!selectedSquadId) return null;
@@ -724,10 +743,17 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                     // Rebuild the strip from the CURRENT selections every render so
                     // closing one panel never leaves a dead tab behind.
                     const dockTabs: {
-                      kind: 'squad' | 'building' | 'vehicle';
+                      kind: 'squad' | 'building' | 'vehicle' | 'entity';
                       label: string;
                       icon: React.ElementType;
                     }[] = [];
+                    if (entityInfo) {
+                      dockTabs.push({
+                        kind: 'entity',
+                        label: entityInfo.kind === 'zombie' ? 'Infected' : 'Survivors',
+                        icon: entityInfo.kind === 'zombie' ? Layers : Users,
+                      });
+                    }
                     if (selectedSquadObj) {
                       dockTabs.push({ kind: 'squad', label: selectedSquadObj.name || 'Squad', icon: Footprints });
                     }
@@ -806,6 +832,7 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                         allSquads={combatSquads}
                         onSelectSquad={handleSelectSquad}
                         onDisbandSquad={handleDisbandSquad}
+                        sceneRef={sceneRef}
                       />
                       )}
     
@@ -950,6 +977,15 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                         />
                       )}
     
+                      {activeDockTab === 'entity' && entityInfo && (
+                        <EntityInfoPanel
+                          selection={entityInfo}
+                          hiddenGroups={settlement.hiddenGroups}
+                          zombieClusters={zombieClusters}
+                          onClose={() => setEntityInfo(null)}
+                        />
+                      )}
+
                       {activeDockTab === 'vehicle' && selectedVehicleId && (
                         <VehicleTacticalDrawer
                           vehicle={settlement.vehicles?.find((v) => v.id === selectedVehicleId) || null}

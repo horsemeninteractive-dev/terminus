@@ -562,6 +562,30 @@ export class BuildingRenderer {
   private barrierRain = 0; // 0..1 wetness (puddle grime, mud splash)
   private barrierSnow = 0; // 0..1 snow accumulation (caps along the top)
   private lastBarrierElevation?: ElevationGrid | null = null;
+
+  /**
+   * Terrain surface sampler injected by WorldScene: height of the terrain AS
+   * RENDERED (piecewise-linear displaced mesh) or null outside the mesh.
+   * Foundations must sit on the rendered surface — the smooth analytic
+   * elevation can sit meters below the rendered triangles on slopes, which
+   * buries building bottoms under the terrain.
+   */
+  private terrainSurfaceSampler: ((x: number, z: number) => number | null) | null = null;
+
+  public setTerrainSurfaceSampler(sampler: ((x: number, z: number) => number | null) | null) {
+    this.terrainSurfaceSampler = sampler;
+  }
+
+  /** Rendered-terrain height when available, else the smooth analytic surface. */
+  private terrainY(
+    elevation: ElevationGrid | null | undefined,
+    x: number,
+    z: number,
+    exaggeration: number
+  ): number {
+    const meshHeight = this.terrainSurfaceSampler?.(x, z);
+    return meshHeight ?? sampleElevation(elevation, x, z, exaggeration);
+  }
   private lastBarrierExaggeration = 1.0;
   /** Latest visual key of each barrier (damage tier + weather), so rebuilds
    *  happen only when the look actually changes. */
@@ -699,7 +723,11 @@ export class BuildingRenderer {
     wall.color.setHex(wallTint);
     const roof = (base[0] as THREE.MeshLambertMaterial | THREE.MeshStandardMaterial).clone();
     roof.color.setHex(roofTint);
-    return [roof, wall];
+    // Keep the gable in the set (tinted like the wall) so pitched-roof
+    // siblings can share the highlight via applyMaterialsToBuilding.
+    const gable = base[2] ? (base[2] as THREE.MeshLambertMaterial).clone() : null;
+    if (gable) gable.color.setHex(wallTint);
+    return gable ? [roof, wall, gable] : [roof, wall];
   }
 
 
@@ -753,8 +781,11 @@ export class BuildingRenderer {
       });
       const region = new THREE.Mesh(geom, mat);
       region.rotation.x = -Math.PI / 2;
-      // Sit just above the building's roof.
-      region.position.y = mesh.position.y + (bldg.height || 6) + 0.35;
+      // Sit just above the building's actual wall/eave top (stored as roofY on
+      // the mesh at build time — includes the slope compensation).
+      region.position.y = (typeof mesh.userData?.roofY === 'number'
+        ? mesh.userData.roofY
+        : mesh.position.y + (bldg.height || 6)) + 0.35;
       region.renderOrder = 5;
       this.regionOverlayGroup.add(region);
 
@@ -1261,7 +1292,10 @@ export class BuildingRenderer {
         let sampleCount = 0;
 
         const checkSample = (x: number, z: number) => {
-          const elev = sampleElevation(elevation, x, z, exaggeration);
+          // Sample the RENDERED terrain surface (mesh triangles), not the
+          // smooth analytic elevation — the mesh can ride meters above the
+          // smooth surface on slopes, which buried building bottoms.
+          const elev = this.terrainY(elevation, x, z, exaggeration);
           if (elev < minTerrainY) minTerrainY = elev;
           if (elev > maxTerrainY) maxTerrainY = elev;
           sumY += elev;
@@ -1283,7 +1317,10 @@ export class BuildingRenderer {
           checkSample(bldg.center.x, bldg.center.z);
         }
 
-        // Internal quarter points for wide buildings
+        // Internal grid for wide buildings: the terrain surface is
+        // piecewise-linear between ~20m mesh vertices, so interior peaks and
+        // dips between the perimeter samples must be scanned at a similar
+        // spacing to find the true min/max under the footprint.
         if (pts.length >= 4) {
           let bMinX = Infinity, bMaxX = -Infinity, bMinZ = Infinity, bMaxZ = -Infinity;
           for (const p of pts) {
@@ -1295,20 +1332,24 @@ export class BuildingRenderer {
           const w = bMaxX - bMinX;
           const d = bMaxZ - bMinZ;
           if (w > 12 || d > 12) {
-            checkSample(bMinX + w * 0.25, bMinZ + d * 0.25);
-            checkSample(bMinX + w * 0.75, bMinZ + d * 0.25);
-            checkSample(bMinX + w * 0.25, bMinZ + d * 0.75);
-            checkSample(bMinX + w * 0.75, bMinZ + d * 0.75);
+            const span = Math.max(w, d);
+            const stepCount = Math.min(6, Math.max(2, Math.ceil(span / 20)));
+            for (let i = 1; i < stepCount; i++) {
+              for (let j = 1; j < stepCount; j++) {
+                checkSample(bMinX + (w * i) / stepCount, bMinZ + (d * j) / stepCount);
+              }
+            }
           }
         }
 
         const avgTerrainY = sampleCount > 0 ? sumY / sampleCount : 0;
         const slopeDifference = Math.max(0, maxTerrainY - minTerrainY);
 
-        // Deep foundation skirt extending 4.0m into the earth below the lowest corner
-        // This guarantees zero floating foundations, and that the roof is at least
-        // bldg.height above the HIGHEST terrain elevation under the building.
-        const foundationDepth = slopeDifference + 4.0;
+        // Keep the building body anchored to the lowest rendered terrain point.
+        // The extrusion is extended by the footprint's terrain range so the wall
+        // top remains above the highest terrain point under the footprint
+        // (roof/eave = maxTerrainY + bldg.height). No artificial buried skirt.
+        const foundationDepth = slopeDifference;
         const totalExtrudeHeight = bldg.height + foundationDepth;
 
         // Local 2D polygon shape centered on origin coordinates
@@ -1413,10 +1454,12 @@ export class BuildingRenderer {
         const mesh = new THREE.Mesh(geom, materials);
         mesh.castShadow = true;
         mesh.receiveShadow = true;
-        // Position mesh base at lowest terrain vertex minus 4.0m skirt
-        const baseY = minTerrainY - 4.0;
+        // Position mesh base at the lowest rendered terrain point under the
+        // footprint — the building sits ON the surface, not in a buried skirt.
+        const baseY = minTerrainY;
         mesh.position.y = baseY;
-        mesh.userData = { buildingId: bldg.id, type: 'building', baseElevation: avgTerrainY, isHQ, isAdapted: !!adapted, flatRoofKey };
+        const roofY = baseY + totalExtrudeHeight;
+        mesh.userData = { buildingId: bldg.id, type: 'building', baseElevation: avgTerrainY, isHQ, isAdapted: !!adapted, flatRoofKey, roofY };
 
         this.group.add(mesh);
         this.buildingMeshes.set(bldg.id, mesh);
@@ -1447,8 +1490,6 @@ export class BuildingRenderer {
           flatRoofKey,
         };
         this.lodSources.push(lodSource);
-
-        const roofY = baseY + totalExtrudeHeight;
 
         // Render HQ beacon / banner
         if (isHQ) {
@@ -1579,17 +1620,23 @@ export class BuildingRenderer {
       const halfL = length / 2;
 
       // Sample all 4 corners and center of freestanding structure footprint
-      const centerElev = sampleElevation(elevation, free.position.x, free.position.z, exaggeration);
-      const c1 = sampleElevation(elevation, free.position.x - halfW, free.position.z - halfL, exaggeration);
-      const c2 = sampleElevation(elevation, free.position.x + halfW, free.position.z - halfL, exaggeration);
-      const c3 = sampleElevation(elevation, free.position.x + halfW, free.position.z + halfL, exaggeration);
-      const c4 = sampleElevation(elevation, free.position.x - halfW, free.position.z + halfL, exaggeration);
+      // (rendered terrain surface, not the smooth analytic elevation).
+      const centerElev = this.terrainY(elevation, free.position.x, free.position.z, exaggeration);
+      const c1 = this.terrainY(elevation, free.position.x - halfW, free.position.z - halfL, exaggeration);
+      const c2 = this.terrainY(elevation, free.position.x + halfW, free.position.z - halfL, exaggeration);
+      const c3 = this.terrainY(elevation, free.position.x + halfW, free.position.z + halfL, exaggeration);
+      const c4 = this.terrainY(elevation, free.position.x - halfW, free.position.z + halfL, exaggeration);
 
       const minElev = Math.min(centerElev, c1, c2, c3, c4);
       const maxElev = Math.max(centerElev, c1, c2, c3, c4);
       const slopeDiff = Math.max(0, maxElev - minElev);
 
-      const foundationDepth = slopeDiff + 3.0;
+      // Keep the body anchored to the lowest rendered terrain point under the
+      // footprint; the box is extended by the terrain range across it so the
+      // top stays above the highest sampled point. True-geometry barriers
+      // (palisade / fence / barbed wire) keep their own root 3m below the
+      // terrain — their pieces plant individually in that local frame.
+      const foundationDepth = slopeDiff;
       const totalH = height + foundationDepth;
 
       const isUnderConstruction =
@@ -1716,7 +1763,9 @@ export class BuildingRenderer {
       boxGeom.addGroup(24, 12, 0); // +Z, -Z sides (wall)
 
       const mesh = new THREE.Mesh(boxGeom, [wallMat, roofMat]);
-      const baseY = minElev - 3.0;
+      const isTrueGeometryBarrier =
+        isWall && !isUnderConstruction && typeId !== 'brick_wall' && typeId !== 'fortified_wall';
+      const baseY = isTrueGeometryBarrier ? minElev - 3.0 : minElev;
 
       // Timber stockades, chain-link fences and barbed wire are NOT solid
       // boxes: each barrier gets its own true geometry (vertical logs, mesh
@@ -1726,14 +1775,14 @@ export class BuildingRenderer {
       if (isWall && !isUnderConstruction && typeId !== 'brick_wall' && typeId !== 'fortified_wall') {
         // Ground-height function in the barrier's LOCAL frame (root sits at
         // baseY): pieces are planted individually so a stockade/fence follows
-        // the terrain instead of standing 3m below it on flat ground.
+        // the terrain.
         const rad0 = ((free.rotationDeg || 0) * Math.PI) / 180;
         const sinR = Math.sin(rad0);
         const cosR = Math.cos(rad0);
         const groundYAt = (localZ: number): number => {
           const wx = free.position.x + sinR * localZ;
           const wz = free.position.z + cosR * localZ;
-          const elev = sampleElevation(elevation, wx, wz, exaggeration);
+          const elev = this.terrainY(elevation, wx, wz, exaggeration);
           return Math.max(2.6, elev - baseY);
         };
         this.renderBarrierGeometry(free, typeId, length, height, baseY, centerElev, beaconColor, groundYAt);
@@ -3218,6 +3267,20 @@ export class BuildingRenderer {
   }
 
   /**
+   * Applies a (cached) material set to a building body AND its pitched-roof
+   * sibling. The roof mesh holds [roofMat, gableMat] — the same cached set's
+   * indices 0 and 2 — so state tints (HQ / adapted / under construction)
+   * recolour the roof slant and gable triangles together with the walls.
+   * Without this the roof keeps the un-tinted materials it was built with.
+   */
+  private applyMaterialsToBuilding(id: string | number, mats: THREE.Material[]) {
+    const mesh = this.buildingMeshes.get(id);
+    if (mesh) mesh.material = mats;
+    const roof = this.roofMeshes.get(id);
+    if (roof) roof.material = mats.length >= 3 ? [mats[0], mats[2]] : mats;
+  }
+
+  /**
    * Fast targeted state updates (HQ selection, adaptation, demolition) without rebuilding full 3D geometry
    */
   public updateAdaptedStates(
@@ -3240,16 +3303,19 @@ export class BuildingRenderer {
       const oldBldg = this.buildingData.get(oldHqId);
       if (oldMesh && oldBldg) {
         const oldAdapted = getPrimaryAdaptedEntry(adaptedBuildings, oldHqId);
-        oldMesh.material = this.getBuildingMaterials(
-          oldBldg.type,
-          oldBldg.isOccupied,
-          oldAdapted?.category,
-          false,
-          oldAdapted?.constructionStatus,
-          buildingVariantForId(oldBldg.id),
-          this.isBuildingPowered(oldBldg),
-          oldAdapted?.adaptationPercentage ?? 100,
-          (oldMesh.userData?.flatRoofKey as string | null) ?? null
+        this.applyMaterialsToBuilding(
+          oldHqId,
+          this.getBuildingMaterials(
+            oldBldg.type,
+            oldBldg.isOccupied,
+            oldAdapted?.category,
+            false,
+            oldAdapted?.constructionStatus,
+            buildingVariantForId(oldBldg.id),
+            this.isBuildingPowered(oldBldg),
+            oldAdapted?.adaptationPercentage ?? 100,
+            (oldMesh.userData?.flatRoofKey as string | null) ?? null
+          )
         );
       }
     }
@@ -3260,16 +3326,19 @@ export class BuildingRenderer {
       const newBldg = this.buildingData.get(hqBuildingId);
       if (newMesh && newBldg) {
         const newAdapted = getPrimaryAdaptedEntry(adaptedBuildings, hqBuildingId);
-        newMesh.material = this.getBuildingMaterials(
-          newBldg.type,
-          newBldg.isOccupied,
-          newAdapted?.category,
-          true,
-          newAdapted?.constructionStatus,
-          buildingVariantForId(newBldg.id),
-          this.isBuildingPowered(newBldg),
-          newAdapted?.adaptationPercentage ?? 100,
-          (newMesh.userData?.flatRoofKey as string | null) ?? null
+        this.applyMaterialsToBuilding(
+          hqBuildingId,
+          this.getBuildingMaterials(
+            newBldg.type,
+            newBldg.isOccupied,
+            newAdapted?.category,
+            true,
+            newAdapted?.constructionStatus,
+            buildingVariantForId(newBldg.id),
+            this.isBuildingPowered(newBldg),
+            newAdapted?.adaptationPercentage ?? 100,
+            (newMesh.userData?.flatRoofKey as string | null) ?? null
+          )
         );
       }
     }
@@ -3285,16 +3354,19 @@ export class BuildingRenderer {
       const mesh = this.buildingMeshes.get(sourceId);
       const bldg = this.buildingData.get(sourceId);
       if (mesh && bldg) {
-        mesh.material = this.getBuildingMaterials(
-          bldg.type,
-          bldg.isOccupied,
-          adapted.category,
-          false,
-          adapted.constructionStatus,
-          buildingVariantForId(bldg.id),
-          this.isBuildingPowered(bldg),
-          adapted.adaptationPercentage ?? 100,
-          (mesh.userData?.flatRoofKey as string | null) ?? null
+        this.applyMaterialsToBuilding(
+          sourceId,
+          this.getBuildingMaterials(
+            bldg.type,
+            bldg.isOccupied,
+            adapted.category,
+            false,
+            adapted.constructionStatus,
+            buildingVariantForId(bldg.id),
+            this.isBuildingPowered(bldg),
+            adapted.adaptationPercentage ?? 100,
+            (mesh.userData?.flatRoofKey as string | null) ?? null
+          )
         );
       }
     }
@@ -3447,7 +3519,10 @@ export class BuildingRenderer {
       if (prevMesh && bldg) {
         const isHQ = this.currentHqId !== null && String(bldg.id) === String(this.currentHqId);
         const adapted = this.adaptedMap.get(bldg.id);
-        prevMesh.material = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg), adapted?.adaptationPercentage ?? 100, (prevMesh.userData?.flatRoofKey as string | null) ?? null);
+        this.applyMaterialsToBuilding(
+          this.hoveredBuildingId,
+          this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg), adapted?.adaptationPercentage ?? 100, (prevMesh.userData?.flatRoofKey as string | null) ?? null)
+        );
       }
     }
 
@@ -3461,7 +3536,7 @@ export class BuildingRenderer {
         const isHQ = this.currentHqId !== null && String(bldg.id) === String(this.currentHqId);
         const adapted = this.adaptedMap.get(bldg.id);
         const base = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg), adapted?.adaptationPercentage ?? 100, (mesh.userData?.flatRoofKey as string | null) ?? null);
-        mesh.material = this.cloneWithTint(base, 0xffeec9, 0xffeec9);
+        this.applyMaterialsToBuilding(buildingId, this.cloneWithTint(base, 0xffeec9, 0xffeec9));
       }
     }
   }
@@ -3482,7 +3557,10 @@ export class BuildingRenderer {
       if (prevMesh && bldg) {
         const isHQ = this.currentHqId !== null && String(bldg.id) === String(this.currentHqId);
         const adapted = this.adaptedMap.get(bldg.id);
-        prevMesh.material = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg), adapted?.adaptationPercentage ?? 100, (prevMesh.userData?.flatRoofKey as string | null) ?? null);
+        this.applyMaterialsToBuilding(
+          this.selectedBuildingId,
+          this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg), adapted?.adaptationPercentage ?? 100, (prevMesh.userData?.flatRoofKey as string | null) ?? null)
+        );
       }
     }
 
@@ -3496,7 +3574,7 @@ export class BuildingRenderer {
         const isHQ = this.currentHqId !== null && String(bldg.id) === String(this.currentHqId);
         const adapted = this.adaptedMap.get(bldg.id);
         const base = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg), adapted?.adaptationPercentage ?? 100, (mesh.userData?.flatRoofKey as string | null) ?? null);
-        mesh.material = this.cloneWithTint(base, 0xffd27a, 0xffd27a);
+        this.applyMaterialsToBuilding(buildingId, this.cloneWithTint(base, 0xffd27a, 0xffd27a));
       }
     }
   }
@@ -3511,7 +3589,10 @@ export class BuildingRenderer {
         if (mesh && bldg) {
           const isHQ = this.currentHqId !== null && String(bldg.id) === String(this.currentHqId);
           const adapted = this.adaptedMap.get(bldg.id);
-          mesh.material = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg), adapted?.adaptationPercentage ?? 100, (mesh.userData?.flatRoofKey as string | null) ?? null);
+          this.applyMaterialsToBuilding(
+            id,
+            this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg), adapted?.adaptationPercentage ?? 100, (mesh.userData?.flatRoofKey as string | null) ?? null)
+          );
         }
       }
       this.demolishCandidateIds.clear();
@@ -3527,7 +3608,7 @@ export class BuildingRenderer {
         const isHQ = this.currentHqId !== null && String(bldg.id) === String(this.currentHqId);
         const adapted = this.adaptedMap.get(bldg.id);
         const base = this.getBuildingMaterials(bldg.type, bldg.isOccupied, adapted?.category, isHQ, adapted?.constructionStatus, buildingVariantForId(bldg.id), this.isBuildingPowered(bldg), adapted?.adaptationPercentage ?? 100, (mesh.userData?.flatRoofKey as string | null) ?? null);
-        mesh.material = this.cloneWithTint(base, 0xff9d92, 0xff9d92);
+        this.applyMaterialsToBuilding(id, this.cloneWithTint(base, 0xff9d92, 0xff9d92));
       }
     }
   }
@@ -3552,6 +3633,10 @@ export class BuildingRenderer {
     const mesh = this.buildingMeshes.get(id);
     const bldg = this.buildingData.get(id);
     if (!mesh || !bldg) return null;
+    // The actual built wall/eave top (baseY + totalExtrudeHeight, which
+    // includes the footprint's terrain range) — NOT the pitched ridge.
+    const roofY = mesh.userData?.roofY;
+    if (typeof roofY === 'number') return roofY + 0.35;
     return mesh.position.y + (bldg.height || 6) + 0.35;
   }
 

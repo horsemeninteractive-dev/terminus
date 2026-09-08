@@ -21,6 +21,127 @@ Releasing:
 
 ---
 
+## [0.2.4] – 2026-09-08
+
+### Added
+
+- **Performance profiler HUD (F9).** A zero-React DOM overlay toggled with F9
+  (or `__terminusScene.togglePerfHud()` in the console) showing live FPS +
+  average frame ms, draw calls + triangles, GPU memory counters, pixel
+  ratio / quality preset / MSAA state, live unit counts, per-frame rig-pose
+  LOD skips and the distant-zombie billboard count — so every optimization in
+  this release is measurable in-game.
+- **Entity info cards.** Clicking a clustered zombie skull badge or a hidden
+  survivor group marker opens a shared dock-slot info panel: zombie clusters
+  show variant composition with a per-member health meter (backed by the new
+  `zombieClusterService`, whose clustering the 3D marker layer and the panel
+  both consume so a clicked badge resolves to exactly the same member set),
+  and survivor groups show disposition and details.
+- **Loot icons in inventory slots.** Squad backpacks and vehicle cargo bays
+  render typed item icons (food, water, fuel, meds, weapons, armor, …) via a
+  shared icon map instead of anonymous generic slots.
+- **Squad flashlight toggle.** The squad panel's torch button now drives the
+  real 3D flashlight beams (force-on / force-off override on the scene's
+  night lighting) in addition to the HUD state.
+
+### Changed
+
+- **Render performance overhaul.** Four independent optimizations targeting
+  the frame budget, verified with the new profiler HUD:
+  - *No-op React commits skipped.* The 100 ms sim loop no longer re-renders
+    the whole App subtree when nothing changed: zombie/squad/item/noise/hostile
+    commits compare against the last committed arrays (length + element
+    identity, zero allocation), the combat tick preserves object identity for
+    untouched zombies (dormant daytime hordes no longer clone every 100 ms),
+    and `dangerLevel` only commits when it actually moves.
+  - *Quality-gated pixel ratio & MSAA.* The Low graphics preset now creates
+    the renderer without antialiasing and caps the pixel ratio at 1.0 (Medium
+    1.5, High 2.0) — up to 4× fewer shaded pixels on Low. MSAA is fixed for
+    the life of the GL context, so the preset is applied at scene creation.
+  - *Rig-pose distance LOD.* Zombie and hostile-human rigs beyond 320 m keep
+    their last pose entirely; between 140–320 m they re-pose every 3rd frame,
+    staggered per-entity so the work spreads across frames. Position
+    interpolation still runs for every entity, so distant units keep gliding.
+  - *Fog-of-war recomputation throttled.* The expensive vision→cells grid
+    pass runs at most 2 Hz instead of 10 Hz, plus an immediate recompute when
+    a vision source crosses a 12 m bucket, so moving squads still reveal fog
+    promptly while stationary colonies stop redoing the pass every tick.
+- **Distant hordes render as one instanced draw call.** Zombies farther than
+  220 m from the camera swap their multi-mesh humanoid rigs for instances in
+  a single shared billboard mesh (hundreds of rigs → one draw call), with
+  170 m hysteresis to prevent thrashing at the near/far frontier, per-horde
+  cluster tinting so hordes still read as coherent groups, attacking zombies
+  flashing red, brute/runner scale variants, and raycast mapping so clicking
+  a billboard still resolves the zombie for orders and tap feedback.
+- **Realistic vehicle fuel economy.** Consumption was 10× reality (0.8 L per
+  100 m ≈ 80 L/100 km): a tank lasted one or two cross-map drives and drained
+  the whole motor pool within a game day. Cars now burn ~8 L/100 km, panel
+  vans 11, armed trucks 14 — roughly 60 km per car tank, several expeditions
+  between refuel runs.
+- **Vehicles prefer real roads.** Road-graph pathfinding costs are weighted
+  by road class, so the A* search naturally routes along main roads over
+  footways/alleys even when the alley shortcut is geometrically shorter;
+  road snapping scores distance × class cost the same way.
+
+### Fixed
+
+- **Buildings no longer sink 3–4 m into the terrain.** The building renderer
+  deliberately buried every foundation: OSM buildings extruded from
+  `minTerrainY − 4` and freestanding bodies from `minElev − 3`. Bases now sit
+  exactly on the lowest rendered terrain point under the footprint, with the
+  extrusion extended only by the footprint's terrain range so the roof still
+  clears the highest terrain point (flat terrain ⇒ zero buried depth). Roof
+  heights for adaptation overlays are now read from the actual built geometry
+  (`userData.roofY`) instead of being reconstructed from the nominal building
+  height, and the LOD path uses the same corrected base. True-geometry
+  barriers (palisades, chain-link, barbed wire) keep their specialised
+  terrain-planting coordinate system.
+- **Everything else now stands on the same ground the GPU draws.** The
+  building fix exposed that landuse drapes, roads, resource nodes, vehicles
+  and all units still sampled the smooth analytic elevation surface while the
+  visible terrain is the chorded triangle mesh — on slopes the smooth surface
+  rides above the mesh and slices through building walls. All ground-conformant
+  layers (landuse, roads, resources, vehicles, squads/zombies/items/FX) now
+  sample the rendered terrain mesh directly, so the whole world is coplanar
+  with the visible ground.
+- **Adapted-building tints now cover pitched roofs.** The green (completed)
+  and amber (under construction) state tints — and hover/select/demolish
+  highlights — only ever swapped the body mesh's materials; the pitched-roof
+  sibling kept its build-time materials, so adapted buildings showed green
+  walls under an untouched dark roof. Roof slants and gable triangles now
+  receive the same state tint (roof at its reduced strength, gables matching
+  the walls).
+- **Fog shroud reads as fog banks, not a buried surface.** The volumetric
+  shroud's two lowest cloud decks hovered at wall height as fairly opaque
+  flat sheets, reading as a solid surface that building bottoms poked
+  through on unexplored ground. Ground mist and low rolling fog are now
+  wispy, visibly rolling banks at reduced density, so shrouded districts
+  read as fog with building silhouettes instead of sunken ruins.
+- **Vehicles no longer freeze on unreachable road snaps.** A vehicle starting
+  off-road could have its first road-graph waypoint land behind a building,
+  water or player wall — the tick validated the step, rejected it, and the
+  vehicle froze permanently before its first waypoint. Road-first is now a
+  preference: obstructed snap hops are skipped in favour of driving from
+  where the vehicle actually is, and when both the road route and the direct
+  line are blocked the vehicle takes a building-avoiding detour from the
+  shared path grid (keeping only the stretches its clearance model can
+  actually drive).
+- **Vehicles no longer spawn or park inside buildings.** Mission-spawned
+  vehicles validate their road spawn against building/water footprints and
+  spiral outward to clear ground; any existing vehicle found embedded in a
+  footprint (legacy spawn or an overhanging projection) is recovered to the
+  nearest clear position with a radio notice.
+
+### Tests
+
+- New suites: `roadClassPreference` (class-weighted routing),
+  `vehicleRoadFirst` / `vehicleOffroadDetour` (obstructed snap + grid detour
+  recovery), `vehicleFuelEconomy` (real-world consumption scale),
+  `vehicleSpawnPlacement` (blocked-spawn spiral + embedded-vehicle recovery)
+  and `zombieClusterService` (clustering shared by markers and info panel).
+
+---
+
 ## [0.2.3] – 2026-09-06
 
 ### Added

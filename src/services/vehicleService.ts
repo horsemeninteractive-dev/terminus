@@ -11,6 +11,7 @@ import {
 import { CombatVisualFx, NoiseEvent, TacticalSquadUnit, ZombieUnit, getWeaponDefinition } from '../types/combat';
 import { emitNoiseEvent } from './combatService';
 import { RoadNetworkGraph } from './roadPathfinder';
+import type { PathGrid } from './pathfindingService';
 import {
   getFreestandingCollisionPolygon,
   isFreestandingGate,
@@ -85,9 +86,22 @@ export function generateWorldVehicles(
     return { pos: { x: 0, z: 0 }, heading: 0 };
   };
 
+  // A road-snap can project into a building island or the road sample itself
+  // can sit inside an overhanging footprint (bridging segments over courtyards
+  // etc.). Reject blocked candidates and re-roll along the same road pool.
+  const getClearRoadSpawn = (preferredNearPoint?: Point2D): { pos: Point2D; heading: number } => {
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const { pos, heading } = getValidRoadSpawn(attempt === 0 ? preferredNearPoint : undefined);
+      if (!isVehiclePlacementBlocked(pos, mapData)) return { pos, heading };
+    }
+    // Spiral out from the last candidate to guarantee a clear placement.
+    const last = getValidRoadSpawn();
+    return { pos: unembedVehiclePosition(last.pos, mapData), heading: last.heading };
+  };
+
   // 1. Guaranteed 1 Armed Truck near Police / Industrial / Military Checkpoint strictly on road
   const policeTarget = policeStations.length > 0 ? policeStations[Math.floor(rand() * policeStations.length)].center : undefined;
-  const armedTruckSpawn = getValidRoadSpawn(policeTarget);
+  const armedTruckSpawn = getClearRoadSpawn(policeTarget);
 
   const armedTruck = createWorldVehicleInstance(
     `veh_armed_truck_${Date.now()}_1`,
@@ -102,7 +116,7 @@ export function generateWorldVehicles(
   // 2. Guaranteed 1-2 Cargo Vans near Warehouses / Supermarkets strictly on road
   const commPool = [...warehouses, ...commercial];
   const commTarget = commPool.length > 0 ? commPool[Math.floor(rand() * commPool.length)].center : undefined;
-  const cargoVanSpawn = getValidRoadSpawn(commTarget);
+  const cargoVanSpawn = getClearRoadSpawn(commTarget);
 
   const cargoVan = createWorldVehicleInstance(
     `veh_cargo_van_${Date.now()}_1`,
@@ -118,7 +132,7 @@ export function generateWorldVehicles(
   const carCount = 2 + Math.floor(rand() * 2);
   for (let i = 0; i < carCount; i++) {
     const gasTarget = gasStations.length > 0 && i === 0 ? gasStations[0].center : undefined;
-    const carSpawn = getValidRoadSpawn(gasTarget);
+    const carSpawn = getClearRoadSpawn(gasTarget);
 
     const car = createWorldVehicleInstance(
       `veh_car_${Date.now()}_${i + 1}`,
@@ -575,7 +589,9 @@ export function orderVehicleRoadTravel(
   vehicle: WorldVehicle,
   targetPos: Point2D,
   roadGraph: RoadNetworkGraph,
-  blockedPolys?: Point2D[][]
+  blockedPolys?: Point2D[][],
+  mapData?: MapData,
+  pathGrid?: PathGrid | null
 ): WorldVehicle {
   if (vehicle.currentFuel <= 0) {
     return vehicle;
@@ -584,10 +600,29 @@ export function orderVehicleRoadTravel(
   // Calculate route along real OSM road network, avoiding road edges that cross
   // player-built wall/tower footprints when provided.
   const route = roadGraph.findRoute(vehicle.position, targetPos, blockedPolys);
-  // Keep the final road approach outside the destination footprint. The road
-  // graph supplies the route; the simulation validates every step against map
-  // obstacles before accepting movement.
-  const baseWaypoints = route.length > 1 ? route : [roadGraph.findClosestPointOnRoad(vehicle.position).point];
+  //
+  // The graph's first waypoint is the projection of the vehicle's position onto
+  // the nearest road. When the vehicle starts OFF road that projection is often
+  // NOT reachable — a building, water or player wall can sit between the vehicle
+  // and the road (or the snap can even land inside an obstacle), and since the
+  // tick validates every step against the map, the vehicle blocked before its
+  // first waypoint and froze permanently. Road-first is a preference, not an
+  // absolute rule: if the straight line to that snap point is obstructed, skip
+  // it and drive from wherever the vehicle actually is — the road leg then
+  // starts at the first *network* node, or the vehicle goes direct if even that
+  // is unreachable.
+  const firstSnap = route[0];
+  const snapReachable =
+    !firstSnap ||
+    !isBlockedSegmentClearance(vehicle.position, firstSnap, mapData, blockedPolys);
+  const baseWaypoints =
+    route.length > 1 && snapReachable
+      ? route
+      : snapReachable
+      ? [roadGraph.findClosestPointOnRoad(vehicle.position).point]
+      : route.length > 1
+      ? route.slice(1)
+      : [];
 
   // Off-road final leg: cars stay on the road as far as they can and only leave
   // it to reach an off-road destination (e.g. a structure with no road access).
@@ -598,6 +633,49 @@ export function orderVehicleRoadTravel(
     offRoadLegDistance > 2.0
       ? [...baseWaypoints, { x: targetPos.x, z: targetPos.z }]
       : baseWaypoints;
+
+  // The road graph only routes along road segments — its "route" from an
+  // off-road vehicle is a straight hop onto the network, and when even that
+  // is obstructed the fallback above is a straight line to the destination.
+  // A building sitting between the two (mounted squad parked in a courtyard,
+  // vehicle ordered out of a walled compound) would be driven straight into:
+  // the first blocked step stops the van mid-building forever. When the road
+  // route is unusable AND the straight shot is obstructed, ask the shared
+  // PathGrid for a building-avoiding footpath-style detour. Vehicles can't
+  // cross buildings (their tick forbids it), so we keep only the clear
+  // stretches and verify every hop.
+  const straightBlocked = isBlockedSegmentClearance(vehicle.position, targetPos, mapData, blockedPolys);
+  const roadRouteUsable = waypoints.length > 0 && (
+    waypoints.length > 1 || !isBlockedSegmentClearance(vehicle.position, waypoints[0], mapData, blockedPolys)
+  );
+  if (!roadRouteUsable && straightBlocked && pathGrid && mapData) {
+    const gridPath = pathGrid.findPath(vehicle.position.x, vehicle.position.z, targetPos.x, targetPos.z, { gatesOpen: true, wallsImpassable: false });
+    if (gridPath && gridPath.length >= 2) {
+      // Verify the grid route with the vehicle's clearance model and keep the
+      // segments that are actually drivable; a purely-walled detour is worse
+      // than stopping short.
+      const drivable: Point2D[] = [];
+      let prev = vehicle.position;
+      for (const node of [...gridPath, targetPos]) {
+        if (node.x === prev.x && node.z === prev.z) continue;
+        if (!isBlockedSegmentClearance(prev, node, mapData, blockedPolys)) {
+          drivable.push({ x: node.x, z: node.z });
+          prev = node;
+        }
+      }
+      if (drivable.length >= 2) {
+        return {
+          ...vehicle,
+          isMoving: true,
+          roadPathWaypoints: drivable,
+          currentWaypointIndex: 0,
+          targetPos,
+          offRoadLegDistance: 0,
+          reachBlocked: false,
+        };
+      }
+    }
+  }
 
   return {
     ...vehicle,
@@ -644,6 +722,100 @@ function isBlockedByMap(
   return false;
 }
 
+// Vehicle body half-width — segment reachability checks keep this much clearance
+// so a route that "fits" geometrically doesn't clip a building corner mid-drive.
+const VEHICLE_HALF_WIDTH = 1.6;
+
+/**
+ * True when a vehicle body centred at `point` overlaps nothing it can't occupy:
+ * buildings, water, or player-built walls/towers. Used both to validate spawn
+ * placements and to recover vehicles that ended up embedded in a footprint.
+ */
+export function isVehiclePlacementBlocked(
+  point: Point2D,
+  mapData?: MapData,
+  freestandingPolys?: Point2D[][]
+): boolean {
+  const nx = 0, nz = 1; // orientation-agnostic: check a small square around centre
+  const off = VEHICLE_HALF_WIDTH * 0.8;
+  const probes: Point2D[] = [
+    point,
+    { x: point.x + off, z: point.z },
+    { x: point.x - off, z: point.z },
+    { x: point.x, z: point.z + off },
+    { x: point.x, z: point.z - off },
+    { x: point.x + nx * off, z: point.z + nz * off },
+  ];
+  return probes.some((p) => isBlockedByMap(p, mapData, freestandingPolys));
+}
+
+/**
+ * Nudges an embedded vehicle out of any footprint it overlaps: walks outward
+ * along a spiral until it finds a clear spot (or gives up after 12m and just
+ * returns the last candidate, which is always better than deep-embedded).
+ * Mounted-squad sync copies position from the vehicle on the next tick, so the
+ * squad comes along automatically.
+ */
+export function unembedVehiclePosition(
+  pos: Point2D,
+  mapData?: MapData,
+  freestandingPolys?: Point2D[][]
+): Point2D {
+  if (!isVehiclePlacementBlocked(pos, mapData, freestandingPolys)) return pos;
+  const step = 1.5;
+  for (let ring = 1; ring <= 8; ring++) {
+    const radius = step * ring;
+    const probes = Math.max(8, ring * 6);
+    for (let i = 0; i < probes; i++) {
+      const ang = (i / probes) * Math.PI * 2 + ring * 0.35;
+      const candidate = { x: pos.x + Math.cos(ang) * radius, z: pos.z + Math.sin(ang) * radius };
+      if (!isVehiclePlacementBlocked(candidate, mapData, freestandingPolys)) return candidate;
+    }
+  }
+  // Even the fallback beats staying embedded: the tick's blocked-step check
+  // wipes movement orders and leaves such a vehicle permanently unreachable.
+  return pos;
+}
+
+/**
+ * True when the straight line from `a` to `b` is obstructed for a vehicle: any
+ * sampled point along it (plus lateral clearance offsets) hits a building,
+ * water or player-built footprint. Used to decide whether a road-graph snap
+ * point is actually drivable from the vehicle's position — roads are preferred,
+ * never mandatory.
+ */
+function isBlockedSegmentClearance(
+  a: Point2D,
+  b: Point2D,
+  mapData?: MapData,
+  freestandingPolys?: Point2D[][]
+): boolean {
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  const len = Math.hypot(dx, dz);
+  if (len < 0.01) return isBlockedByMap(b, mapData, freestandingPolys);
+
+  // Lateral unit vector for the clearance offsets.
+  const nx = -dz / len;
+  const nz = dx / len;
+
+  const samples = Math.max(2, Math.ceil(len / 2.5));
+  for (let i = 0; i <= samples; i++) {
+    const t = i / samples;
+    const px = a.x + dx * t;
+    const pz = a.z + dz * t;
+    // Centre + both flanks: a corner graze blocks the whole segment.
+    if (
+      isBlockedByMap({ x: px, z: pz }, mapData, freestandingPolys) ||
+      isBlockedByMap({ x: px + nx * VEHICLE_HALF_WIDTH, z: pz + nz * VEHICLE_HALF_WIDTH }, mapData, freestandingPolys) ||
+      isBlockedByMap({ x: px - nx * VEHICLE_HALF_WIDTH, z: pz - nz * VEHICLE_HALF_WIDTH }, mapData, freestandingPolys)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export interface VehicleTickResult {
   updatedVehicles: WorldVehicle[];
   updatedSquads: TacticalSquadUnit[];
@@ -663,7 +835,8 @@ export function updateVehiclesTick(
   roadGraph?: RoadNetworkGraph | null,
   freestandingBuildings?: AdaptedBuilding[],
   freestandingRevision = 0,
-  ammoPool?: { value: number }
+  ammoPool?: { value: number },
+  pathGrid?: PathGrid | null
 ): VehicleTickResult {
   const visualFx: CombatVisualFx[] = [];
   const noiseEvents: NoiseEvent[] = [];
@@ -680,6 +853,23 @@ export function updateVehiclesTick(
 
   const updatedVehicles = vehicles.map((veh) => {
     let current = { ...veh };
+
+    // Recovery: a vehicle parked inside a building/water footprint (legacy spawn,
+    // HQ-center arrival, workshop bay inside a footprint) can never move — every
+    // step fails the blocked check, so it strands forever and is unclickable for
+    // boarding. Nudge it to the nearest clear spot; a mounted squad syncs to the
+    // vehicle's position later in this same tick.
+    if (mapData && !current.isMoving && isVehiclePlacementBlocked(current.position, mapData, freestandingPolys)) {
+      const before = { ...current.position };
+      current.position = unembedVehiclePosition(current.position, mapData, freestandingPolys);
+      if (current.position.x !== before.x || current.position.z !== before.z) {
+        notifications.push({
+          title: 'VEHICLE RELOCATED',
+          desc: `${current.name} was parked inside a structure and has been moved to clear ground.`,
+          type: 'info',
+        });
+      }
+    }
 
     // Self-heal the mount link: the squad's mountedVehicleId is the authoritative
     // source (it flows through a ref-protected commit), while the vehicle's
@@ -750,7 +940,7 @@ export function updateVehiclesTick(
       // change bumps the revision again and triggers a fresh check.
       current = { ...stalled, routeRevision: freestandingRevision };
       if (roadGraph && stalled.targetPos && freestandingPolys.length > 0) {
-        const rerouted = orderVehicleRoadTravel(stalled, stalled.targetPos, roadGraph, freestandingPolys);
+        const rerouted = orderVehicleRoadTravel(stalled, stalled.targetPos, roadGraph, freestandingPolys, mapData, pathGrid);
         if (rerouted.isMoving && rerouted.roadPathWaypoints.length > 0) {
           current = { ...rerouted, routeRevision: freestandingRevision };
         }
@@ -807,7 +997,7 @@ export function updateVehiclesTick(
                 roadPathWaypoints: [],
                 currentWaypointIndex: 0,
               };
-              const reroute = orderVehicleRoadTravel(stalled, current.targetPos, roadGraph, freestandingPolys);
+              const reroute = orderVehicleRoadTravel(stalled, current.targetPos, roadGraph, freestandingPolys, mapData, pathGrid);
               if (reroute.isMoving && reroute.roadPathWaypoints.length > 0) {
                 current = reroute;
                 return current;

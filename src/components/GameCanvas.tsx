@@ -40,6 +40,8 @@ interface GameCanvasProps {
   onOrderSquadMove?: (squadId: string, pos: Point2D, targetBuildingId?: string | number, targetBuildingName?: string) => void;
   onOrderSquadAttack?: (squadId: string, zombieId: string) => void;
   onSelectVehicle?: (vehicleId: string | null) => void;
+  onSelectSurvivorGroup?: (groupId: string | null) => void;
+  onSelectZombieCluster?: (clusterKey: string | null) => void;
   onMountVehicle?: (squadId: string, vehicleId: string) => void;
   onSceneReady?: (scene: WorldScene) => void;
   onMapRendered?: () => void;
@@ -83,6 +85,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   onOrderSquadMove,
   onOrderSquadAttack,
   onSelectVehicle,
+  onSelectSurvivorGroup,
+  onSelectZombieCluster,
   onMountVehicle,
   onSceneReady,
   onMapRendered,
@@ -107,6 +111,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     onOrderSquadMove,
     onOrderSquadAttack,
     onSelectVehicle,
+    onSelectSurvivorGroup,
+    onSelectZombieCluster,
     onMountVehicle,
   });
   handlersRef.current = {
@@ -128,6 +134,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
 
     const scene = new WorldScene({
       container: containerRef.current,
+      // Applied at context creation so 'low' skips MSAA antialiasing from the
+      // very first frame (runtime switches can only change pixel ratio etc.).
+      graphicsQuality,
       onSelectBuilding: (value) => handlersRef.current.onSelectBuilding?.(value),
       onHoverBuilding: (value) => handlersRef.current.onHoverBuilding?.(value),
       onSelectPosition: ((value: Point2D, rotationDeg?: number) => handlersRef.current.onSelectPosition?.(value, rotationDeg)) as any,
@@ -137,6 +146,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         handlersRef.current.onOrderSquadMove?.(id, pos, bldgId, bldgName),
       onOrderSquadAttack: (id, value) => handlersRef.current.onOrderSquadAttack?.(id, value),
       onSelectVehicle: (value) => handlersRef.current.onSelectVehicle?.(value),
+      onSelectSurvivorGroup: (value) => handlersRef.current.onSelectSurvivorGroup?.(value),
+      onSelectZombieCluster: (value) => handlersRef.current.onSelectZombieCluster?.(value),
       onMountVehicle: (id, value) => handlersRef.current.onMountVehicle?.(id, value),
       onPlaceFreestandingRun: (typeId, placements) =>
         handlersRef.current.onPlaceFreestandingRun?.(typeId, placements),
