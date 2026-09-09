@@ -20,6 +20,7 @@ import {
   SettlementStockpile,
 } from '../types/settlement';
 import { clipPolygonToRect, polygonArea, polygonBounds, splitFootprintIntoStrips } from './adaptationGeometry';
+import { freestandingFootprintOverlapsBuildings, getFreestandingCollisionPolygon } from './freestandingFootprint';
 import {
   DEFAULT_JOB_PRIORITIES,
   INITIAL_GENERAL_POPULATION,
@@ -928,7 +929,9 @@ export function buildFreestanding(
   customWidth = 8,
   customLength = 8,
   customHeight = 4.5,
-  rotationDeg = 0
+  rotationDeg = 0,
+  /** Plain OSM buildings on the map (for the footprint-overlap guard). */
+  existingOsmBuildings: BuildingPolygon[] = []
 ): { success: boolean; newState: SettlementState; error?: string } {
   const def = FUNCTIONAL_BUILDING_DEFINITIONS[typeId];
   if (!def) {
@@ -971,6 +974,28 @@ export function buildFreestanding(
       success: false,
       newState: state,
       error: `Insufficient construction materials (Requires: ${cost.wood}W / ${cost.metal}M / ${cost.bricks}B${scimatNote})`,
+    };
+  }
+
+  // Footprint-overlap guard: a freestanding structure must not be erected
+  // inside (or slicing through) an existing building — OSM, adapted or
+  // previously placed freestanding. The commit path in useSettlementActions
+  // pre-checks per segment for wall runs; this is the authoritative guard.
+  const overlapCandidates: Array<{ polygon: Point2D[] }> = [
+    ...Array.from(state.adaptedBuildings.values()).map((b) => ({ polygon: b.polygon })),
+    ...(state.freestandingBuildings || []).map((b) => ({ polygon: b.polygon })),
+    ...existingOsmBuildings.map((b) => ({ polygon: b.polygon })),
+  ];
+  if (
+    freestandingFootprintOverlapsBuildings(
+      { typeId, position, rotationDeg, width: customWidth, length: customLength },
+      overlapCandidates
+    )
+  ) {
+    return {
+      success: false,
+      newState: state,
+      error: 'Cannot build there — the footprint overlaps an existing building.',
     };
   }
 

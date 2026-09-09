@@ -274,10 +274,25 @@ export function useSettlementActions(runtime: SettlementActionsRuntime) {
   const handleBuildFreestanding = (typeId: FunctionalBuildingTypeId, pos: Point2D, rotationDeg = 0) => {
     try {
       const dims = getFreestandingDimensions(typeId);
-      const res = buildFreestanding(settlement, typeId, pos, dims.width, dims.length, 4.5, rotationDeg);
+      const res = buildFreestanding(
+        settlement,
+        typeId,
+        pos,
+        dims.width,
+        dims.length,
+        4.5,
+        rotationDeg,
+        mapData?.buildings || []
+      );
       if (!res.success) {
         throw new Error(res.error || 'Failed freestanding construction.');
       }
+      // Sync the ref BEFORE React state: the simulation loop reads
+      // settlementRef.current each tick and commits its result back over both
+      // the ref and React state. Without this sync the next tick runs on the
+      // pre-placement state and silently discards the new structure and its
+      // construction order (mirrors handleAdaptBuilding above).
+      settlementRef.current = res.newState;
       setSettlement(res.newState);
       soundService.playBuildingPlaced();
       setToastMessage({
@@ -331,8 +346,27 @@ export function useSettlementActions(runtime: SettlementActionsRuntime) {
         break;
       }
       const dims = getFreestandingDimensions(typeId);
-      const res = buildFreestanding(next, typeId, { x: p.x, z: p.z }, p.width ?? dims.width, p.length ?? dims.length, 4.5, p.rotationDeg);
+      const res = buildFreestanding(
+        next,
+        typeId,
+        { x: p.x, z: p.z },
+        p.width ?? dims.width,
+        p.length ?? dims.length,
+        4.5,
+        p.rotationDeg,
+        mapData?.buildings || []
+      );
       if (!res.success) {
+        // A segment colliding with an existing building is skipped (keep
+        // building the dry/clear remainder of the run) — matching the
+        // water-overlap behaviour. A hard failure (materials, research) or a
+        // colliding single placement halts the whole run.
+        if (
+          placements.length > 1 &&
+          (res.error || '').includes('overlaps an existing building')
+        ) {
+          continue;
+        }
         setToastMessage({
           title: 'Construction Halted',
           desc: res.error || 'Insufficient materials to complete placement.',
@@ -378,6 +412,8 @@ export function useSettlementActions(runtime: SettlementActionsRuntime) {
       if (!res.success) {
         throw new Error(res.error || 'Failed ordering deconstruction.');
       }
+      // Ref-first sync so the sim loop cannot tick the stale state away.
+      settlementRef.current = res.newState;
       setSettlement(res.newState);
       setToastMessage({
         title: 'DECONSTRUCTION ORDERED',
@@ -395,6 +431,7 @@ export function useSettlementActions(runtime: SettlementActionsRuntime) {
 
   const handleCancelDeconstruction = (bldgId: string | number) => {
     const updated = cancelDeconstruction(settlement, bldgId);
+    settlementRef.current = updated;
     setSettlement(updated);
     setToastMessage({
       title: 'DECONSTRUCTION CANCELLED',

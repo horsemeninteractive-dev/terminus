@@ -124,8 +124,10 @@ test('equip rejects non-towers, unbuilt towers, melee, missing armory stock and 
   assert.equal(nonTower.success, false);
   assert.match(nonTower.error || '', /cannot mount/);
 
-  // Under-construction tower refuses weapons.
-  const inProgress = placeTower(armed);
+  // Under-construction tower refuses weapons. (Distinct coordinates — the
+  // first tower already occupies the default spot, and overlapping footprints
+  // are now rejected by the building-overlap placement guard.)
+  const inProgress = placeTower(armed, 40);
   const raw = inProgress.state.freestandingBuildings[inProgress.state.freestandingBuildings.length - 1];
   const unbuiltState = {
     ...inProgress.state,

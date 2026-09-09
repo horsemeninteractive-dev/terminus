@@ -16,7 +16,7 @@ import { sampleElevation } from '../services/elevationService';
 import { polygonArea, sweepFootprintSelection } from '../services/adaptationGeometry';
 import { getAdaptedCost } from '../data/functionalBuildings';
 import type { ResourceCost } from '../types/settlement';
-import { getFreestandingDimensions, getFreestandingCollisionPolygon, freestandingFootprintOverlapsWater } from '../services/freestandingFootprint';
+import { getFreestandingDimensions, getFreestandingCollisionPolygon, freestandingFootprintOverlapsWater, freestandingFootprintOverlapsBuildings } from '../services/freestandingFootprint';
 import { BuildingRenderer } from './BuildingRenderer';
 import { CameraController } from './CameraController';
 import { CombatRenderer } from './CombatRenderer';
@@ -1454,12 +1454,26 @@ export class WorldScene {
       const groundHits = this.raycaster.intersectObjects(this.groundRenderer.group.children, true);
       if (groundHits.length > 0) {
         const pt = groundHits[0].point;
-        // Reject placement over water: tint the ghost red while the footprint
-        // would straddle a river/lake so the player sees the invalid spot.
+        // Reject placement over water or slicing through an existing building:
+        // tint the ghost red while the footprint would overlap either, so the
+        // player sees the invalid spot before committing.
         const placementRot = this.placementGestureActive ? this.blueprintPlacementRotation : 0;
         const overWater = this.isPlacementOverWater(pt.x, pt.z, placementRot);
+        const overBuilding =
+          !overWater &&
+          this.isPlacementOverBuilding(
+            pt.x,
+            pt.z,
+            placementRot,
+            this.placementGestureActive && this.placementIsFence
+              ? FENCE_WIDTH
+              : undefined,
+            this.placementGestureActive && this.placementIsFence
+              ? Math.max(FENCE_WIDTH, Math.hypot(pt.x - (this.blueprintPlacementStart?.x ?? pt.x), pt.z - (this.blueprintPlacementStart?.z ?? pt.z)))
+              : undefined
+          );
         if (this.blueprintGhostMaterial) {
-          this.blueprintGhostMaterial.color.setHex(overWater ? 0xef4444 : 0x10b981);
+          this.blueprintGhostMaterial.color.setHex(overWater || overBuilding ? 0xef4444 : 0x10b981);
         }
         // Snap the live cursor to a freestanding structure's edge so the ghost
         // preview matches the exact run that will be built (fence runs only).
@@ -1533,6 +1547,27 @@ export class WorldScene {
     return freestandingFootprintOverlapsWater(
       { typeId: type, position: { x, z }, rotationDeg: rotDeg, width: dims.width, length: dims.length },
       this.waterPolygons
+    );
+  }
+
+  /**
+   * True when the pending freestanding structure, placed at (x, z) with the
+   * given rotation, overlaps any existing building footprint — OSM buildings,
+   * adapted structures, or already-placed freestanding ones. Mirrors the
+   * commit-time guard in buildFreestanding so the ghost turns red exactly
+   * where placement will be rejected.
+   */
+  private isPlacementOverBuilding(x: number, z: number, rotDeg: number, width?: number, length?: number): boolean {
+    const type = this.pendingFreestandingType;
+    if (!type) return false;
+    const candidates: Array<{ polygon: Point2D[] }> = [
+      ...Array.from(this.adaptedBuildings.values()).map((b) => ({ polygon: b.polygon })),
+      ...(this.freestandingBuildings || []).map((b) => ({ polygon: b.polygon })),
+      ...(this.currentMapData?.buildings || []).map((b) => ({ polygon: b.polygon })),
+    ];
+    return freestandingFootprintOverlapsBuildings(
+      { typeId: type, position: { x, z }, rotationDeg: rotDeg, width, length },
+      candidates
     );
   }
 
@@ -2100,7 +2135,21 @@ export class WorldScene {
     } else {
       // Tower/gate: click places the centre, drag (still held) rotates the
       // footprint, release places it with the final rotation.
+      // Skip dispatch entirely when the footprint overlaps an existing
+      // building — the ghost was red, so this only guards fast releases that
+      // skipped a mouse-move sample.
       const dims = getFreestandingDimensions(type);
+      if (
+        this.isPlacementOverBuilding(
+          start.x,
+          start.z,
+          (finalRotation * 180) / Math.PI,
+          dims.width,
+          dims.length
+        )
+      ) {
+        return;
+      }
       placements.push({
         x: round(start.x),
         z: round(start.z),

@@ -186,6 +186,139 @@ export function freestandingFootprintOverlapsWater(
 }
 
 /**
+ * True when two convex polygons (in consistent winding) overlap, using the
+ * separating-axis test on every edge normal. Exact for the rotated rectangles
+ * freestanding footprints and gate/tower modules are, and a conservative
+ * approximation for concave OSM footprints (their convex hull effectively —
+ * close enough for collision, and never misses a real overlap).
+ */
+function convexPolysIntersect(
+  a: Array<{ x: number; z: number }>,
+  b: Array<{ x: number; z: number }>
+): boolean {
+  const axes: Array<{ x: number; z: number }> = [];
+  for (const poly of [a, b]) {
+    for (let i = 0; i < poly.length; i++) {
+      const p1 = poly[i];
+      const p2 = poly[(i + 1) % poly.length];
+      const ex = p2.x - p1.x;
+      const ez = p2.z - p1.z;
+      const len = Math.hypot(ex, ez);
+      if (len < 1e-9) continue;
+      axes.push({ x: ez / len, z: -ex / len });
+    }
+  }
+  for (const axis of axes) {
+    let aMin = Infinity, aMax = -Infinity, bMin = Infinity, bMax = -Infinity;
+    for (const p of a) {
+      const d = p.x * axis.x + p.z * axis.z;
+      if (d < aMin) aMin = d;
+      if (d > aMax) aMax = d;
+    }
+    for (const p of b) {
+      const d = p.x * axis.x + p.z * axis.z;
+      if (d < bMin) bMin = d;
+      if (d > bMax) bMax = d;
+    }
+    if (aMax < bMin || bMax < aMin) return false;
+  }
+  return true;
+}
+
+/**
+ * How far a freestanding facility footprint may graze an existing building's
+ * mapped outline before it counts as "inside" it. OSM building polygons are
+ * simplified outlines, so a sub-metre touch along an edge must not block
+ * placement — but anything that meaningfully crosses into a building does.
+ */
+export const BUILDING_OVERLAP_TOLERANCE = 0.5;
+
+/**
+ * Extra allowance for the fence/wall/gate/tower family: fence runs SNAP to the
+ * edges of existing freestanding structures by design (snapToFreestandingEdge),
+ * so a snapped segment's centre sits ON a footprint edge and its half-width
+ * (~1.2 m) legitimately overlaps the outline. A wall butted flush against a
+ * tower or the perimeter of an adapted building is intended contact, not a
+ * collision — only a wall passing meaningfully THROUGH a building is invalid.
+ */
+export const WALL_FLUSH_TOLERANCE = 1.6;
+
+export function getBuildingOverlapTolerance(typeId: string): number {
+  if (
+    WALL_TYPES.includes(typeId) ||
+    GATE_TYPES.includes(typeId) ||
+    TOWER_TYPES.includes(typeId)
+  ) {
+    return WALL_FLUSH_TOLERANCE;
+  }
+  return BUILDING_OVERLAP_TOLERANCE;
+}
+
+/**
+ * True when a freestanding structure placed at (x, z) with the given rotation
+ * overlaps an existing building footprint — either an OSM building (its mapped
+ * polygon) or another settlement structure (adapted or freestanding). This is
+ * the shared rule for both the red placement ghost and the commit-time guard in
+ * buildFreestanding, so what the player sees as invalid is exactly what the
+ * service rejects.
+ *
+ * Tolerance is type-aware: facilities may graze an outline by 0.5 m; the
+ * fence/wall/gate/tower family gets a 1.6 m flush-contact allowance because
+ * fence runs snap to structure edges by design (see WALL_FLUSH_TOLERANCE).
+ */
+export function freestandingFootprintOverlapsBuildings(
+  free: Pick<AdaptedBuilding, 'typeId' | 'position' | 'rotationDeg'> & { width?: number; length?: number },
+  existingPolygons: Array<{ polygon: Point2D[] }>
+): boolean {
+  const tolerance = getBuildingOverlapTolerance(free.typeId);
+  const footprint = getFreestandingCollisionPolygon(free);
+  if (!footprint || footprint.length < 3) return false;
+
+  for (const existing of existingPolygons) {
+    const poly = existing.polygon;
+    if (!poly || poly.length < 3) continue;
+
+    // Quick reject: bounding-box overlap test before the exact SAT pass.
+    let minAx = Infinity, maxAx = -Infinity, minAz = Infinity, maxAz = -Infinity;
+    for (const p of footprint) {
+      if (p.x < minAx) minAx = p.x;
+      if (p.x > maxAx) maxAx = p.x;
+      if (p.z < minAz) minAz = p.z;
+      if (p.z > maxAz) maxAz = p.z;
+    }
+    let minBx = Infinity, maxBx = -Infinity, minBz = Infinity, maxBz = -Infinity;
+    for (const p of poly) {
+      if (p.x < minBx) minBx = p.x;
+      if (p.x > maxBx) maxBx = p.x;
+      if (p.z < minBz) minBz = p.z;
+      if (p.z > maxBz) maxBz = p.z;
+    }
+    if (maxAx < minBx - tolerance || maxBx < minAx - tolerance) continue;
+    if (maxAz < minBz - tolerance || maxBz < minAz - tolerance) continue;
+
+    // Exact test: SAT on the (convexified) outlines, shrunk by the tolerance
+    // so edge-grazing placements pass. Shrinking via an inward inset of each
+    // polygon towards its centroid approximates the tolerance band cheaply.
+    const inset = (pts: Array<{ x: number; z: number }>): Array<{ x: number; z: number }> => {
+      let cx = 0, cz = 0;
+      for (const p of pts) { cx += p.x; cz += p.z; }
+      cx /= pts.length; cz /= pts.length;
+      return pts.map((p) => {
+        const dx = p.x - cx, dz = p.z - cz;
+        const len = Math.hypot(dx, dz);
+        if (len <= tolerance) return { x: p.x, z: p.z };
+        const k = (len - tolerance) / len;
+        return { x: cx + dx * k, z: cz + dz * k };
+      });
+    };
+    const a = inset(footprint);
+    const b = inset(poly);
+    if (convexPolysIntersect(a, b)) return true;
+  }
+  return false;
+}
+
+/**
  * Collision footprint of a freestanding structure: a rectangle of the type's
  * width x length centred on `position`, rotated by `rotationDeg` using the same
  * rotation convention as the three.js renderer (local +Z is the length axis).
