@@ -4,6 +4,13 @@ name: CI
 # and pull request to main. The Node heap is raised for the build step:
 # the per-city data chunks push Vite's render/minify phase past Node's
 # ~2 GB default (see the `build` npm script, which does the same thing).
+#
+# On pushes to main the freshly built dist/ is deployed straight to
+# Cloudflare Pages with wrangler (direct upload). This bypasses Cloudflare's
+# Git-integration build system, whose memory-capped build containers cannot
+# finish this project's 400 MB city-data render phase. Requires the repo
+# secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID; when they are not
+# set (e.g. pull_request runs) the deploy step is skipped.
 
 on:
   push:
@@ -39,3 +46,18 @@ jobs:
 
       - name: Production build
         run: npm run build
+
+      - name: Deploy to Cloudflare Pages
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::warning::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID not set — skipping Cloudflare deploy."
+            exit 0
+          fi
+          npx wrangler@latest pages deploy dist \
+            --project-name=playterminus \
+            --branch=main \
+            --commit-dirty=true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
