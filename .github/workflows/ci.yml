@@ -1,0 +1,41 @@
+name: CI
+
+# Verifies lint (typecheck), tests and the production build on every push
+# and pull request to main. The Node heap is raised for the build step:
+# the per-city data chunks push Vite's render/minify phase past Node's
+# ~2 GB default (see the `build` npm script, which does the same thing).
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint (typecheck)
+        run: npm run lint
+
+      - name: Tests
+        run: npm test
+
+      - name: Production build
+        run: npm run build
