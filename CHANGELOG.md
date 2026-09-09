@@ -21,6 +21,30 @@ Releasing:
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Freestanding structures can no longer be built inside buildings.** Walls,
+  towers, gates and facilities (fields, workshops, …) could previously be
+  placed overlapping OSM buildings, adapted structures or earlier freestanding
+  builds — a wall could be drawn straight through a house. Placement is now
+  rejected with type-aware tolerances: facilities get a tight 0.5 m graze
+  allowance, while walls/gates/towers allow flush contact (1.6 m) so fence
+  runs can still snap butted against structures. Enforced authoritatively in
+  the settlement service (so no caller can bypass it), shown as a red ghost
+  preview like the water check, and skipped per-segment during wall runs so
+  the clear remainder of a dragged run still builds.
+- **Placements no longer silently vanish on the next simulation tick.**
+  Single freestanding placements, deconstruction ordering and cancellation
+  committed React state without syncing the simulation's settlement ref, so
+  the next sim tick ran on the pre-placement state and erased them — e.g. a
+  field placed right after an adaptation never got built. All mutating
+  settlement actions now sync the ref, with a contract test that fails if
+  any handler ever regresses.
+
+---
+
 ## [0.2.4] – 2026-09-08
 
 ### Added
