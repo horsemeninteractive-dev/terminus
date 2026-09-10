@@ -310,7 +310,7 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  id="open-population-btn"
  onClick={onOpenPopulation}
  className="px-2.5 py-1 bg-[#151D28] hover:bg-[#243129] border border-[#1E293B] hover:border-[#10B981] text-[#CBD5E1] hover:text-white text-[10px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
- title="Open Population & Labor Command (§4.1 - §4.6)"
+ title="Open Population & Labor Command"
  >
  <Users className="w-3.5 h-3.5 text-indigo-400" />
  <span>
@@ -323,7 +323,7 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  id="open-vehicles-btn"
  onClick={onOpenVehicles}
  className="px-2.5 py-1 bg-[#151D28] hover:bg-[#243129] border border-[#1E293B] hover:border-[#10B981] text-[#CBD5E1] hover:text-white text-[10px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
- title="Open Motor Pool & Vehicle Fleet Management (§8)"
+ title="Open Motor Pool & Vehicle Fleet Management"
  >
  <Truck className="w-3.5 h-3.5 text-[#CBD5E1]" />
  <span>
@@ -336,7 +336,7 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  id="open-squads-btn"
  onClick={onOpenSquads}
  className="px-2.5 py-1 bg-[#1c221e] hover:bg-[#25332a] border border-[#2d4f38] hover:border-[#4ade80] text-[#86efac] hover:text-white text-[10px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
- title="Open Tactical Squads Management (§4.3)"
+ title="Open Tactical Squads Management"
  >
  <Shield className="w-3.5 h-3.5 text-emerald-400" />
  <span>
@@ -357,7 +357,7 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  ? 'bg-indigo-950/60 border-indigo-500/60 text-indigo-200'
  : 'bg-[#221822] hover:bg-[#2f1f30] border-[#502e52] hover:border-[#ec4899] text-[#f472b6] hover:text-white'
  }`}
- title="Open Medbay, Clinical Triage & Infection Control (§6.2, §6.3)"
+ title="Open Medbay, Clinical Triage & Infection Control"
  >
  <HeartPulse className="w-3.5 h-3.5 text-pink-400" />
  <span>
@@ -386,7 +386,7 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  ? 'bg-amber-950/80 border-amber-500/60 text-amber-300 hover:bg-amber-900/90 animate-pulse'
  : 'bg-rose-950/90 border-rose-500 text-rose-300 hover:bg-rose-900 animate-pulse'
  }`}
- title="Settlement Morale & Passive Growth (§4.5)"
+ title="Settlement Morale & Passive Growth"
  >
  <Heart className="w-3.5 h-3.5" />
  <span>
@@ -415,7 +415,7 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  ? 'bg-amber-950/80 border-amber-500/60 text-amber-300 hover:bg-amber-900'
  : 'bg-orange-950/80 border-orange-500/60 text-orange-300 hover:bg-orange-900'
  }`}
- title="Weather & Seasonal Agricultural Forecast (§9)"
+ title="Weather & Seasonal Agricultural Forecast"
  >
  {settlement.weather?.currentSeason === 'winter' ? (
  <Snowflake className="w-3.5 h-3.5 text-sky-300" />
@@ -438,7 +438,7 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  <button
  id="open-research-btn"
  onClick={onOpenResearch}
- className="px-2.5 py-1 bg-[#151D28] hover:bg-[#243129] border border-[#1E293B] hover:border-[#10B981] text-[#CBD5E1] hover:text-white text-[10px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"   title="Open Colony Technology & Research Tree (§10) — Scientific Materials fund research"
+ className="px-2.5 py-1 bg-[#151D28] hover:bg-[#243129] border border-[#1E293B] hover:border-[#10B981] text-[#CBD5E1] hover:text-white text-[10px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"   title="Open Colony Technology & Research Tree — Scientific Materials fund research"
  ><BookOpen className="w-3.5 h-3.5 text-emerald-400" />
                   <span>
                     TECH:{' '}<strong className="text-white font-mono">
@@ -456,7 +456,7 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  id="open-caravans-btn"
  onClick={onOpenCaravans}
  className="px-2.5 py-1 bg-[#221714] hover:bg-[#33201a] border border-[#52291d] hover:border-[#ea580c] text-[#fdba74] hover:text-white text-[10px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
- title="Trade Caravans & Inter-Colony Convoys (§7.5)"
+ title="Trade Caravans & Inter-Colony Convoys"
  >
  <Truck className="w-3.5 h-3.5 text-[#fb923c]" />
  <span>
@@ -516,7 +516,7 @@ export const ResourceStockpileBar: React.FC<ResourceStockpileBarProps> = ({
  ? 'bg-[#1b2026] hover:bg-[#b31217] border-[#383d46] hover:border-[#b31217] text-white cursor-pointer'
  : 'bg-[#121417] border-[#22262c] text-[#52525b] cursor-not-allowed'
  }`}
- title={hasHQ ? 'Open Freestanding Construction Menu (§7.1)' : 'Establish HQ first'}
+ title={hasHQ ? 'Open Freestanding Construction Menu' : 'Establish HQ first'}
  >
  <Wrench className="w-3 h-3 text-[#f59e0b]" />
  <span>Build</span>

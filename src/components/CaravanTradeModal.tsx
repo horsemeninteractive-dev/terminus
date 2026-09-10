@@ -161,7 +161,7 @@ export const CaravanTradeModal: React.FC<CaravanTradeModalProps> = ({
  GLOBAL LOGISTICS & INTER-COLONY TRADE CARAVANS
  </span>
  <span className="bg-[#b31217] text-white text-[9px] font-bold px-1.5 py-0.2 uppercase">
- §7.5
+ TRADE
  </span>
  </div>
  <p className="text-[11px] text-[#9ca3af]">

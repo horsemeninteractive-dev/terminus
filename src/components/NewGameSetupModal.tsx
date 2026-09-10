@@ -448,7 +448,7 @@ export const NewGameSetupModal: React.FC<NewGameSetupModalProps> = ({
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="p-4 bg-[#0E1524] border border-[#1E293B]">
                     <label className="block text-xs font-mono text-[#94A3B8] uppercase mb-2">
-                      STARTING CLIMATE & SEASON (§9)
+                      STARTING CLIMATE & SEASON
                     </label>
                     <div className="grid grid-cols-4 gap-2">
                       {[

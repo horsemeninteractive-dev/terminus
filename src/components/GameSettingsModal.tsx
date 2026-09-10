@@ -264,7 +264,7 @@ export const GameSettingsModal: React.FC<GameSettingsModalProps> = ({
  <div className="p-4 bg-[#0E1524] border border-[#1E293B] flex items-center justify-between">
  <div>
  <div className="text-xs font-heading font-bold text-white uppercase">
- DYNAMIC DAY/NIGHT AMBIENT SOUNDSCAPE (§15)
+ DYNAMIC DAY/NIGHT AMBIENT SOUNDSCAPE
  </div>
  <div className="text-[11px] font-mono text-[#64748B] mt-0.5">
  Procedural wind, cricket night ambiance, generator hums, and horde threat drones

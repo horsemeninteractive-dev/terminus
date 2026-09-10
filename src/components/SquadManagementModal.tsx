@@ -146,7 +146,7 @@ export const SquadManagementModal: React.FC<SquadManagementModalProps> = ({
  </div>
  <div>
  <h2 className="text-lg font-bold text-slate-100 tracking-wide">
- TACTICAL SQUADS COMMAND (§4.3)
+ TACTICAL SQUADS COMMAND
  </h2>
  <p className="text-xs text-slate-400">
  Squad composition: 1 Named Leader + up to 3 General members, or an all-recruit 4-man squad without a named survivor (Cap: 4)
@@ -305,7 +305,7 @@ export const SquadManagementModal: React.FC<SquadManagementModalProps> = ({
  </div>
 
  {/* Available Armory — shows what weapons/armor the colony has to hand while the
-     modal hides the header strip (§4.3). */}
+     modal hides the header strip. */}
  <div className="p-3 bg-[#10131a] border border-slate-800">
  <div className="text-xs font-semibold text-slate-200 flex items-center gap-2 mb-2">
  <ShieldCheck className="w-4 h-4 text-[#34d399]" />

@@ -61,7 +61,7 @@ export const RansomEventModal: React.FC<RansomEventModalProps> = ({
  SQUAD CAPTURED — RANSOM DEMANDED
  </h2>
  <p className="text-xs text-neutral-400">
- §5.2 · Rival Human Faction Event
+ Rival Human Faction Event
  </p>
  </div>
  </div>

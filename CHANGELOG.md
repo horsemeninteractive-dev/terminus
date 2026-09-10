@@ -21,6 +21,23 @@ Releasing:
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **Removed design-document section references from the UI.** Panels,
+  headings, tooltips and header badges no longer display internal spec
+  cross-references (`§4.3`, `§6.2`, `§IFZ`, …) inherited from the original
+  game-design prompt — 48 player-visible strings across 20 components
+  (squad/population/medical/vehicle modals, the stockpile bar's quick-nav
+  tooltips, the adaptation drawer and edge sidebar, weather/trade/morale
+  modals, and the debug overlay). Standalone `§`-number header badges were
+  replaced with meaningful labels (e.g. `TRADE`, `MORALE`, `WEATHER`,
+  `EMERGENCY`). In-code comments keep their design-doc references, which
+  never render in-game.
+
+---
+
 ## [0.3.0] – 2026-09-10
 
 ### Added

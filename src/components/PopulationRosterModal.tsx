@@ -159,7 +159,7 @@ export const PopulationRosterModal: React.FC<PopulationRosterModalProps> = ({
  </div>
  <div>
  <h2 className="text-lg font-bold text-slate-100 tracking-wide">
- POPULATION & WORKFORCE COMMAND (§4.1 - §4.6)
+ POPULATION & WORKFORCE COMMAND
  </h2>
  <p className="text-xs text-slate-400">
  Two-tier population management: Named Specialists & Auto-Distributed General Labor
@@ -393,7 +393,7 @@ export const PopulationRosterModal: React.FC<PopulationRosterModalProps> = ({
  id={`vacate-role-${survivor.id}`}
  onClick={() => onVacateSurvivorRole(survivor.id)}
  className="px-3 py-1.5 text-xs font-semibold bg-rose-950/40 text-rose-300 hover:bg-rose-900/60 border border-rose-700/50 transition-colors flex items-center gap-1.5"
- title="Instantly pull survivor from their current role (§4.6)"
+ title="Instantly pull survivor from their current role"
  >
  <RotateCcw className="w-3.5 h-3.5" />
  Pull / Vacate Role
@@ -483,7 +483,7 @@ export const PopulationRosterModal: React.FC<PopulationRosterModalProps> = ({
  <div className="p-4 bg-[#1d2027] border border-slate-700/60 text-xs text-slate-300">
  <div className="font-bold text-slate-100 mb-1 flex items-center gap-2">
  <Hammer className="w-4 h-4 text-emerald-400" />
- Automated Labor Distribution Principle (§4.6)
+ Automated Labor Distribution Principle
  </div>
  <p className="text-slate-400 leading-relaxed">
  Citizens are not individually micromanaged. General population workers automatically fill open facility demands
@@ -551,7 +551,7 @@ export const PopulationRosterModal: React.FC<PopulationRosterModalProps> = ({
  <div className="p-4 bg-[#1d2027] border border-rose-900/40 text-xs text-slate-300">
  <div className="font-bold text-rose-300 mb-1 flex items-center gap-2">
  <Skull className="w-4 h-4 text-rose-400" />
- Permanent Casualty Registry & Memorial Wall (§6.2, §6.3)
+ Permanent Casualty Registry & Memorial Wall
  </div>
  <p className="text-slate-400 leading-relaxed">
  Survivor death from combat, field infection turning, isolation euthanization, or settlement outbreaks is strictly permanent. Their deeds and sacrifice are honored here.

@@ -501,7 +501,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
    onSetRepairmenBands && (
    <div className="bg-[#0e1117] p-2.5 border border-[#202836] space-y-1.5 text-[11px]">
     <div className="flex justify-between items-center">
-     <span className="text-[#9ca3af] font-semibold">Automated Repair Bands (§IFZ):</span>
+     <span className="text-[#9ca3af] font-semibold">Automated Repair Bands:</span>
      <span className="text-[10px] text-[#6b7280]">CREWS SERVICE ENABLED BANDS ONLY</span>
     </div>
     {(() => {
@@ -550,7 +550,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
    onSetRecipe && (
    <div className="bg-[#0e1117] p-2.5 border border-[#202836] space-y-1.5 text-[11px]">
     <div className="flex justify-between items-center">
-     <span className="text-[#9ca3af] font-semibold">Production Recipe (§7.2):</span>
+     <span className="text-[#9ca3af] font-semibold">Production Recipe:</span>
      {adaptedInfo.selectedRecipeId ? (
       <span className="text-[10px] text-[#6b7280]">Player set</span>
      ) : (
@@ -622,7 +622,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
    onSetFertilize && (
    <div className="bg-[#0e1117] p-2.5 border border-[#202836] space-y-1.5 text-[11px]">
     <div className="flex items-center justify-between">
-     <span className="text-[#9ca3af] font-semibold">Fertilization (§7.2):</span>
+     <span className="text-[#9ca3af] font-semibold">Fertilization:</span>
      <span className="text-[10px] font-mono text-[#6b7280]">
       Stockpile: {Math.floor((settlement.stockpile.materials.fertilizer || 0) * 100) / 100}
      </span>
@@ -660,7 +660,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
    <div className="bg-[#0e1117] p-2.5 border border-[#202836] space-y-1.5 text-[11px]">
     <div className="flex items-center justify-between">
      <span className="text-[#9ca3af] font-semibold flex items-center gap-1.5">
-      <HeartPulse className="w-3.5 h-3.5 text-rose-400" /> Medical Care (§5.3)
+      <HeartPulse className="w-3.5 h-3.5 text-rose-400" /> Medical Care
      </span>
      <span className="text-[10px] font-mono text-[#6b7280]">
       {adaptedInfo.assignedWorkers || 0} NURSE{adaptedInfo.assignedWorkers === 1 ? '' : 'S'}
@@ -707,7 +707,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
         <div className="bg-[#0e1117] p-2.5 border border-[#3b3c64] space-y-1.5 text-[11px]">
           <div className="flex items-center justify-between">
             <span className="text-[#a5b4fc] font-semibold flex items-center gap-1.5">
-              <FlaskConical className="w-3.5 h-3.5 text-[#818cf8]" /> Scientific Research (§10)
+              <FlaskConical className="w-3.5 h-3.5 text-[#818cf8]" /> Scientific Research
             </span>
             <span className="text-[10px] font-mono text-[#818cf8] font-bold">
               {staffed} / {slots} SCIENTIST{slots === 1 ? '' : 'S'}
@@ -808,7 +808,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  <div className="bg-[#0e1117] p-2.5 border border-[#202836] space-y-1.5 text-[11px]">
   <div className="flex justify-between items-center">
    <span className="text-[#9ca3af] font-semibold flex items-center gap-1.5">
-    <Scissors className="w-3.5 h-3.5 text-[#10B981]" /> Sections (§7.1)
+    <Scissors className="w-3.5 h-3.5 text-[#10B981]" /> Sections
    </span>
    <span className="text-[10px] font-mono text-[#6b7280]">
     {buildingSections.length > 0 ? `${buildingSections.length} sections` : 'unsplit'}
@@ -895,7 +895,7 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
  {/* Appointed Facility Head (§4.6) */}
  <div className="bg-[#0e1117] p-2.5 border border-[#202836] space-y-2">
  <div className="flex items-center justify-between text-[11px]">
- <span className="text-[#9ca3af] font-semibold">Appointed Facility Head (§4.6):</span>
+ <span className="text-[#9ca3af] font-semibold">Appointed Facility Head:</span>
  {currentHead && (
  <button
  onClick={() => onVacateSurvivorRole(currentHead.id)}

@@ -39,7 +39,7 @@ export const TacticalSquadPanel: React.FC<TacticalSquadPanelProps> = ({
  className="px-4 py-2 bg-[#1C232E] hover:bg-[#28303D] text-[#E8E8E8] font-mono text-xs font-bold border border-[#CBD5E1]/60 backdrop-blur-md transition-all flex items-center gap-2 clip-tactical-bracket"
  >
  <Shield className="w-4 h-4" />
- Muster Tactical Squad (§4.3)
+ Muster Tactical Squad
  </button>
  </div>
  );

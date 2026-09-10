@@ -67,7 +67,7 @@ export const ColonyOverrunModal: React.FC<ColonyOverrunModalProps> = ({
  CRITICAL EMERGENCY: SECTOR LOST
  </span>
  <span className="bg-[#b31217] text-white text-[9px] font-bold px-1.5 py-0.2 uppercase">
- §7.5
+ EMERGENCY
  </span>
  </div>
  <h2 className="text-xl font-black text-white uppercase tracking-wider">
@@ -109,7 +109,7 @@ export const ColonyOverrunModal: React.FC<ColonyOverrunModalProps> = ({
  <div className="bg-[#0B0F15] border border-[#1E293B] p-3 text-[11px] text-[#6ee7b7] space-y-1 clip-card-chip">
  <div className="font-bold flex items-center gap-1 text-white">
  <Truck className="w-3.5 h-3.5 text-[#CBD5E1]" />
- <span>COLONY RECOVERY PROTOCOL (§7.5):</span>
+ <span>COLONY RECOVERY PROTOCOL:</span>
  </div>
  <p>
  Settlement loss is a serious setback, but <strong>NOT</strong> a game over.{

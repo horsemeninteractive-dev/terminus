@@ -142,7 +142,7 @@ export const ResourceDebugModal: React.FC<ResourceDebugModalProps> = ({
  <div className="flex items-center gap-2">
  <Sparkles className="w-4 h-4 text-[#c084fc]" />
  <h2 className="font-black text-sm uppercase tracking-wider text-white">
- SETTLEMENT RESOURCE DEBUG PANEL <span className="text-[#c084fc]">(§7.2)</span>
+ SETTLEMENT RESOURCE DEBUG PANEL <span className="text-[#c084fc]">DEBUG</span>
  </h2>
  </div>
  <button

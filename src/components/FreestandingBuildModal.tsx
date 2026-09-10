@@ -125,7 +125,7 @@ export const FreestandingBuildModal: React.FC<FreestandingBuildModalProps> = ({
  <div className="flex items-center gap-2">
  <Wrench className="w-4 h-4 text-[#f59e0b]" />
  <h2 className="font-black text-sm uppercase tracking-wider text-white">
- FREESTANDING CONSTRUCTION (§7.1)
+ FREESTANDING CONSTRUCTION
  </h2>
  <span className="bg-[#291e10] text-[#f59e0b] text-[9px] px-1.5 py-0.5 border border-[#4d371a] uppercase">
  Higher Cost / Lower Durability

@@ -140,7 +140,7 @@ export const RecruitmentEncounterModal: React.FC<RecruitmentEncounterModalProps>
             </div>
             <div>
               <h2 className="text-lg font-bold text-slate-100 tracking-wide">
-                SURVIVOR ENCOUNTER DISCOVERY (§4.4)
+                SURVIVOR ENCOUNTER DISCOVERY
               </h2>
               <p className="text-xs text-slate-400">
                 {group.hasSmokeClue
@@ -193,7 +193,7 @@ export const RecruitmentEncounterModal: React.FC<RecruitmentEncounterModalProps>
           <div className="p-4 bg-[#14161a] border border-slate-800 clip-card-chip">
             <div className="text-xs font-bold text-slate-300 mb-3 flex items-center gap-1.5">
               <Award className="w-4 h-4 text-amber-400" />
-              Leader's Specialist Proficiency Sheet (§4.1)
+              Leader's Specialist Proficiency Sheet
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">

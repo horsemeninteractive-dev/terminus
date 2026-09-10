@@ -254,7 +254,7 @@ export const MedicalTriageModal: React.FC<MedicalTriageModalProps> = ({
  <div>
  <div className="flex items-center gap-2">
  <h2 className="text-base sm:text-lg font-bold text-slate-100 tracking-wide uppercase">
- MEDBAY, TRIAGE & INFECTION COMMAND (§6.2, §6.3)
+ MEDBAY, TRIAGE & INFECTION COMMAND
  </h2>
  {activeInfections.length > 0 && (
  <span className="px-2 py-0.5 text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse">
@@ -538,7 +538,7 @@ export const MedicalTriageModal: React.FC<MedicalTriageModalProps> = ({
  <button
  onClick={() => handleSimulateBite(selectedSurvivor.id)}
  className="px-2 py-1 text-[10px] bg-rose-950/40 border border-rose-700/40 text-rose-300 hover:bg-rose-900/60 transition-colors"
- title="Simulate a zombie bite for testing §6.2 mechanics"
+ title="Simulate a zombie bite for testing infection mechanics"
  >
  ⚡ Simulate Bite (Test)
  </button>
@@ -657,7 +657,7 @@ export const MedicalTriageModal: React.FC<MedicalTriageModalProps> = ({
 
  <div className="p-2.5 bg-indigo-950/20 border border-indigo-700/30 flex items-center justify-between">
  <div>
- <div className="text-[10px] text-indigo-400 font-bold">CURRENT CURE PROGNOSIS (§6.2)</div>
+ <div className="text-[10px] text-indigo-400 font-bold">CURRENT CURE PROGNOSIS</div>
  <div className="text-[11px] text-slate-300">
  Base Stage Odds + Medical Skill Bonus ({doctorBonus > 0 ? `+${doctorBonus}%` : '0%'})
  </div>
@@ -698,7 +698,7 @@ export const MedicalTriageModal: React.FC<MedicalTriageModalProps> = ({
  {/* RESOLUTION ACTIONS PANEL (§6.2, §6.3) */}
  <div className="p-4 bg-[#181b22] border border-slate-700 space-y-3">
  <div className="text-xs font-bold text-slate-200 uppercase tracking-wider">
- RESOLUTION PATHWAYS (§6.2, §6.3)
+ RESOLUTION PATHWAYS
  </div>
 
  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

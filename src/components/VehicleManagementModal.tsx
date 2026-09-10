@@ -101,7 +101,7 @@ export const VehicleManagementModal: React.FC<VehicleManagementModalProps> = ({
  setActionFeedback(
  `${carrier.name} withdrew ${liters.toFixed(0)}L of ${vehicle.fuelType.toUpperCase()} into a fuel item and is carrying it to ${vehicle.name}. The tank fills when the squad arrives.`
  );
- }; // Handle Repairing — §8 the Vehicle Workshop repairs over TIME. Parking a
+ }; // Handle Repairing — the Vehicle Workshop repairs over TIME. Parking a
  // damaged vehicle inside a staffed workshop queues a bay job; mechanics heal
  // it over mechanic-hours while metal is consumed per HP restored. The old
  // instant pay-metal → full HP button no longer exists.
@@ -240,7 +240,7 @@ export const VehicleManagementModal: React.FC<VehicleManagementModalProps> = ({
  </div>
  <div>
  <h2 className="text-lg font-black tracking-wide text-white uppercase flex items-center gap-2">
- <span>Motor Pool & Vehicle Fleet (§8)</span>
+ <span>Motor Pool & Vehicle Fleet</span>
  <span className="text-xs px-2 py-0.5 bg-[#0F172A] text-[#CBD5E1] border border-[#1E293B]">
  {vehicles.filter((v) => v.isDiscovered).length} Discovered
  </span>
@@ -619,7 +619,7 @@ export const VehicleManagementModal: React.FC<VehicleManagementModalProps> = ({
  <div className="p-4 bg-[#10151d] border border-[#1f2b3a] space-y-2.5 text-xs">
  <div className="flex items-center gap-2 font-bold text-white">
  <Wrench className="w-4 h-4 text-cyan-400" />
- <span>Vehicle Workshop (§8)</span>
+ <span>Vehicle Workshop</span>
  <span className="ml-auto text-[10px] font-mono text-slate-400">
  {workshopOrders.length} ORDER{workshopOrders.length === 1 ? '' : 'S'}
  </span>
@@ -779,7 +779,7 @@ export const VehicleManagementModal: React.FC<VehicleManagementModalProps> = ({
  <div className="flex items-center justify-between text-xs">
  <div className="flex items-center gap-2 font-bold text-white">
  <Users className="w-4 h-4 text-[#CBD5E1]" />
- <span>Assigned Squad & Crew (§8)</span>
+ <span>Assigned Squad & Crew</span>
  </div>
  {activeVehicle.assignedSquadId && (
  <button

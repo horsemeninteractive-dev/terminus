@@ -128,7 +128,7 @@ export const SeasonWeatherModal: React.FC<SeasonWeatherModalProps> = ({
  WEATHER & SEASONAL SIMULATION
  </h2>
  <span className="text-xs px-2 py-0.5 bg-neutral-800 text-neutral-400 font-mono border border-neutral-700">
- §9
+ WEATHER
  </span>
  </div>
  <p className="text-xs text-neutral-400">

@@ -103,7 +103,7 @@ export const MoraleModal: React.FC<MoraleModalProps> = ({
  SETTLEMENT MORALE & SOCIAL COHESION
  </h2>
  <span className="text-xs px-2 py-0.5 bg-neutral-800 text-neutral-400 font-mono border border-neutral-700">
- §4.5
+ MORALE
  </span>
  </div>
  <p className="text-xs text-neutral-400">

@@ -64,10 +64,9 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
             <Radio className="w-5 h-5 text-[#CBD5E1] animate-pulse" />
             <div>
               <h2 className="text-sm font-bold tracking-wider font-heading uppercase text-white flex items-center gap-2">
-                Acoustic & Audio Subsystem
-                <span className="text-[10px] px-1.5 py-0.5 bg-[#1C232E] text-[#CBD5E1] border border-[#2B3544]">
-                  §15 Sound Engine
-                </span>
+                Acoustic & Audio Subsystem <span className="text-[10px] px-1.5 py-0.5 bg-[#1C232E] text-[#CBD5E1] border border-[#2B3544]">
+ Sound Engine
+ </span>
               </h2>
               <p className="text-[11px] text-[#94A3B8]">
                 Real-time Web Audio synthesis, background score & atmospheric soundscape

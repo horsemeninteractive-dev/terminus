@@ -45,7 +45,7 @@ export const OnboardingCelebrationModal: React.FC<OnboardingCelebrationModalProp
  <div className="flex items-center gap-2">
  <span className="w-3 h-3 bg-[#F59E0B] inline-block animate-pulse" />
  <span className="text-xs font-bold uppercase tracking-widest text-[#F59E0B]">
- TACTICAL PROTOCOL §14 // SEQUENCE COMPLETE
+ TACTICAL PROTOCOL // SEQUENCE COMPLETE
  </span>
  </div>
  <div className="flex items-center gap-1 text-[10px] text-[#10B981] font-bold px-2 py-0.5 bg-[#064E3B]/40 border border-[#059669]">

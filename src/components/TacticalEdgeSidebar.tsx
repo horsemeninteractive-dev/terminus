@@ -890,7 +890,7 @@ const LAIR_VARIANT_LABELS: Record<ZombieVariant, string> = {
  {/* Building Adaptation Reference */}
  <div className="p-2.5 bg-[#12161D] border border-[#222832] text-xs font-mono text-[#94A3B8] clip-card-chip">
  <div className="font-heading font-bold text-xs text-[#CBD5E1] mb-1">
- BUILDING ADAPTATION (§7.1)
+ BUILDING ADAPTATION
  </div>
  <p className="text-[10px] text-[#718096]">
  Click any civilian building in the 3D scene to inspect floorplans, structural integrity, and convert it into a Cookhouse, Medbay, Armory, Watchtower, or Hydroponics facility.
@@ -1415,7 +1415,7 @@ const LAIR_VARIANT_LABELS: Record<ZombieVariant, string> = {
  <div className="p-2.5 bg-[#1A1213] border border-[#7C2D12] flex flex-col gap-2 clip-card-chip">
  <div className="flex items-center justify-between">
  <span className="font-heading font-bold text-[10px] text-[#FDBA74] uppercase">
- RIVAL HIDEOUT (§5.2)
+ RIVAL HIDEOUT
  </span>
  <span className="text-[10px] font-mono text-[#FB923C]">
  {selectedHideout.threatTier.toUpperCase()}
@@ -1491,7 +1491,7 @@ const LAIR_VARIANT_LABELS: Record<ZombieVariant, string> = {
  <div className="p-2.5 bg-[#1A1213] border border-[#7C2D12] flex flex-col gap-2 clip-card-chip">
  <div className="flex items-center justify-between">
  <span className="font-heading font-bold text-[10px] text-[#FDBA74] uppercase">
- BUILDING OCCUPIED (§IFZ)
+ BUILDING OCCUPIED
  </span>
  <span className="text-[10px] font-mono text-[#FB923C]">
  {selectedOccupation.threatTier.toUpperCase()}
@@ -1512,7 +1512,7 @@ const LAIR_VARIANT_LABELS: Record<ZombieVariant, string> = {
  {!isSelectedHQ && (
  <div className="p-2.5 bg-[#1A1213] border border-[#4A1C20] flex flex-col gap-2 clip-card-chip">
  <span className="font-heading font-bold text-[10px] text-[#FCA5A5] uppercase">
- BUILDING DECONSTRUCTION (§7.2)
+ BUILDING DECONSTRUCTION
  </span>
 
  {selectedDeconJob ? (
@@ -1557,7 +1557,7 @@ const LAIR_VARIANT_LABELS: Record<ZombieVariant, string> = {
 
  {/* Adaptation Options */}
  <div className="font-heading font-bold text-xs text-[#CBD5E1]">
- AVAILABLE ADAPTATION BLUEPRINTS (§7.1)
+ AVAILABLE ADAPTATION BLUEPRINTS
  </div>
 
  <div className="flex flex-col gap-2">

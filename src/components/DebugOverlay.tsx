@@ -187,7 +187,7 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
  TERMINUS <span className="text-[#b31217]">3D WORLD VIEW</span>
  </h1>
  <span className="bg-[#1f2228] text-[#8e95a5] px-1.5 py-0.5 text-[9px] uppercase border border-[#2b2f38]">
- OSM §3 + §12 Map Engine
+ OSM Map Engine
  </span>
  </div>
 
@@ -317,7 +317,7 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
  id="return-to-globe-btn"
  onClick={onReturnToGlobe}
  className="px-2 py-1 bg-[#16181b] hover:bg-[#b31217] border border-[#292c31] hover:border-[#b31217] text-[#9ca3af] hover:text-white text-[10px] font-bold flex items-center gap-1.5 transition-colors"
- title="Return to Orbital 3D Satellite Recon (§3.4)"
+ title="Return to Orbital 3D Satellite Recon"
  >
  <GlobeIcon className="w-3.5 h-3.5 text-[#38bdf8]" />
  <span>ORBITAL GLOBE</span>
@@ -543,7 +543,7 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
  {/* 4. Physical Resource Nodes (§7.2) */}
  <div>
  <div className="flex items-center justify-between text-[#9ca3af] font-bold uppercase tracking-wider mb-1.5 pb-1 border-b border-[#22262c]">
- <span>4. Physical Resource Nodes (§7.2)</span>
+ <span>4. Physical Resource Nodes</span>
  <span className="text-[10px] text-[#4ade80] font-normal">
  {mapData?.stats.resourceCount.total || 0} Total
  </span>
