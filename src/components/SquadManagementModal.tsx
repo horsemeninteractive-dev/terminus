@@ -4,6 +4,7 @@ import {
  Eye,
  Minus,
  Plus,
+ RefreshCw,
  Shield,
  ShieldCheck,
  Trash2,
@@ -24,6 +25,9 @@ interface SquadManagementModalProps {
  onModifyGeneralMembers?: (squadId: string, newCount: number) => void;
  onModifyGeneralCount?: (squadId: string, newCount: number) => void;
  onDisbandSquad: (squadId: string) => void;
+ onReplenishSquad?: (squadId: string) => void;
+ /** Squad ids currently physically at the HQ — the only place replenish works. */
+ squadAtHqIds?: Set<string>;
 }
 
 function getTierBadge(tier: StatTier) {
@@ -46,6 +50,8 @@ export const SquadManagementModal: React.FC<SquadManagementModalProps> = ({
  onModifyGeneralMembers,
  onModifyGeneralCount,
  onDisbandSquad,
+ onReplenishSquad,
+ squadAtHqIds,
 }) => {
  const handleModifyCount = onModifyGeneralMembers || onModifyGeneralCount || (() => {});
  const [isFormingNew, setIsFormingNew] = useState(false);
@@ -412,8 +418,18 @@ export const SquadManagementModal: React.FC<SquadManagementModalProps> = ({
  <div className="space-y-4">
  {squads.map((squad) => {
  const leader = namedSurvivors.find((s) => s.id === squad.leaderId);
- const totalSquadSize = 1 + squad.generalCount;
+ // §6.2: the leader's infection belongs to the SURVIVOR, surfaced wherever
+ // they are assigned — the squad card reads the settlement infection map.
+ const leaderMedical = leader
+ ? settlement.infections?.get(leader.id)
+ : undefined;
+ // Dead general members keep their roster slots but are not counted as
+ // strength, labour, or returns on disband — only alive members count.
+ const deadGeneral = squad.deadCount || 0;
+ const aliveGeneral = Math.max(0, squad.generalCount - deadGeneral);
+ const totalSquadSize = (leader ? 1 : 0) + aliveGeneral;
  const isDeployed = squad.status !== 'idle';
+ const atHq = squadAtHqIds?.has(squad.id) ?? false;
 
  return (
  <div
@@ -439,7 +455,7 @@ export const SquadManagementModal: React.FC<SquadManagementModalProps> = ({
             </span>
  </div>
  <div className="text-xs text-slate-400">
- Total Strength: <span className="font-bold text-slate-200">{totalSquadSize} / 4</span> (1 Leader + {squad.generalCount} General)
+ Total Strength: <span className="font-bold text-slate-200">{totalSquadSize} / 4</span> ({leader ? '1 Leader' : 'No Leader'} + {aliveGeneral} General{aliveGeneral === squad.generalCount ? '' : ` (${squad.generalCount} in roster)`})
  </div>
  </div>
  </div>            {/* Disband Action */}
@@ -465,7 +481,23 @@ export const SquadManagementModal: React.FC<SquadManagementModalProps> = ({
  </div>
  {leader ? (
  <div>
+ <div className="flex items-center justify-between">
  <div className="font-bold text-slate-200">{leader.name}</div>
+ {leaderMedical && leaderMedical.stage !== 'uninfected' && leaderMedical.stage !== 'cured' && (
+ <span
+ className={`px-1.5 py-0.5 text-[9px] font-bold border ${
+ leaderMedical.stage === 'advanced'
+ ? 'bg-rose-500/20 text-rose-300 border-rose-500/50 animate-pulse'
+ : leaderMedical.stage === 'symptomatic'
+ ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+ : 'bg-yellow-500/10 text-yellow-300 border-yellow-500/40'
+ }`}
+ title={`Infection status: ${leaderMedical.stage}${leaderMedical.isQuarantined ? ' (quarantined)' : ''}`}
+ >
+ {leaderMedical.isQuarantined ? 'QUARANTINED' : leaderMedical.stage.toUpperCase()}
+ </span>
+ )}
+ </div>
  <div className="flex gap-3 text-[11px] mt-1">
  <span className="flex items-center gap-1">
  <Crosshair className="w-3 h-3 text-slate-400" />
@@ -482,7 +514,7 @@ export const SquadManagementModal: React.FC<SquadManagementModalProps> = ({
  </div>
  </div>
  ) : (
- <div className="text-rose-400">Leader Missing</div>
+ <div className="text-slate-500 italic">No Named Leader — all-recruit squad</div>
  )}
  </div>
 
@@ -492,35 +524,53 @@ export const SquadManagementModal: React.FC<SquadManagementModalProps> = ({
  <div className="text-[11px] text-slate-400 font-semibold">
  General Citizen Escorts:
  </div>
- <div className="text-slate-200 font-semibold mt-0.5">
- {squad.generalCount} Assigned
+ <div className="flex items-center gap-2 mt-0.5">
+ <span className="text-slate-200 font-semibold">
+ {aliveGeneral} Assigned
+ </span>
+ {deadGeneral > 0 && (
+ <span className="px-1.5 py-0.5 text-[9px] font-bold border border-rose-700/50 bg-rose-950/40 text-rose-300">
+ {deadGeneral} DEAD
+ </span>
+ )}
  </div>
  </div>             {!isDeployed && (
               <div className="flex items-center gap-2">
                <button
                 onClick={() =>
-                 handleModifyCount(squad.id, Math.max(0, squad.generalCount - 1))
+                 handleModifyCount(squad.id, Math.max(0, aliveGeneral - 1))
                 }
- disabled={squad.generalCount <= 0}
+ disabled={aliveGeneral <= 0}
  className="p-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-slate-300 border border-slate-700"
  >
  <Minus className="w-3 h-3" />
  </button>
  <span className="font-bold text-slate-200 text-xs px-1">
- {squad.generalCount}
+ {aliveGeneral}
  </span>
  <button
  onClick={() =>
  handleModifyCount(
  squad.id,
- Math.min(3, squad.generalCount + 1)
+ Math.min(3 - deadGeneral, aliveGeneral + 1)
  )
  }
- disabled={squad.generalCount >= 3 || freeGeneralWorkers <= 0}
+ disabled={aliveGeneral >= 3 - deadGeneral || freeGeneralWorkers <= 0}
  className="p-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-slate-300 border border-slate-700"
  >
  <Plus className="w-3 h-3" />
  </button>
+ {deadGeneral > 0 && onReplenishSquad && (
+ <button
+ onClick={() => onReplenishSquad!(squad.id)}
+ disabled={!atHq}
+ title={atHq ? `Refill ${deadGeneral} fallen member${deadGeneral === 1 ? '' : 's'} from the general population` : 'Bring the squad back to HQ to replenish its ranks'}
+ className="px-2.5 py-1 text-[10px] font-bold bg-emerald-950/40 text-emerald-300 hover:bg-emerald-900/60 border border-emerald-700/50 disabled:opacity-30 disabled:hover:bg-emerald-950/40 transition-colors flex items-center gap-1.5"
+ >
+ <RefreshCw className="w-3 h-3" />
+ Replenish {deadGeneral}
+ </button>
+ )}
  </div>
  )}
  </div>

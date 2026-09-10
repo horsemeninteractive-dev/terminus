@@ -475,7 +475,8 @@ export function tickInfectionSimulation(
   state: SettlementState,
   deltaSec: number,
   speed: number,
-  inGameDay: number
+  inGameDay: number,
+  worldZombies?: ZombieUnit[]
 ): InfectionTickResult {
   if (speed === 0) {
     return { newState: state, newZombies: [], notifications: [] };
@@ -614,7 +615,48 @@ export function tickInfectionSimulation(
   for (const [bldgId, outbreak] of updatedOutbreaks.entries()) {
     if (!outbreak.isOutbreakActive || outbreak.isContained) continue;
 
-    const nextSpreadCountdown = outbreak.spreadCountdownSec - effectiveDelta;
+    // OUTBREAK LIFECYCLE — the outbreak's zombies are REAL world entities;
+    // reconcile the outbreak state against them every tick. When tactical
+    // squads (or tower fire) kill the last outbreak infected, the outbreak is
+    // actually contained: the record resolves, the spread timer stops, and
+    // the player is told their squads cleared the building. Without this the
+    // outbreak used to spread forever on hidden timers regardless of the
+    // zombies already lying dead in the street.
+    if (worldZombies) {
+      // The authoritative world list PLUS zombies this same tick spawned —
+      // a fresh turn/infiltrator is alive immediately, not "missing".
+      const worldNow = [...worldZombies, ...newZombies];
+      const livingIds = outbreak.spawnedZombieIds.filter((zid) => {
+        const z = worldNow.find((wz) => wz.id === zid);
+        return z && z.currentHp > 0 && z.state !== 'dead';
+      });
+      if (livingIds.length === 0) {
+        updatedOutbreaks.set(bldgId, {
+          ...outbreak,
+          zombieCount: 0,
+          spawnedZombieIds: [],
+          isOutbreakActive: false,
+          isContained: true,
+        });
+        notifications.push({
+          title: `OUTBREAK CONTAINED: ${outbreak.buildingName.toUpperCase()}`,
+          desc: `Every outbreak infected in ${outbreak.buildingName} has been eliminated. The building is secure again.`,
+          type: 'success',
+        });
+        continue;
+      }
+      if (livingIds.length !== outbreak.zombieCount) {
+        updatedOutbreaks.set(bldgId, {
+          ...outbreak,
+          zombieCount: livingIds.length,
+          spawnedZombieIds: livingIds,
+        });
+      }
+    }
+
+    const currentOutbreak = updatedOutbreaks.get(bldgId) ?? outbreak;
+    if (!currentOutbreak.isOutbreakActive || currentOutbreak.isContained) continue;
+    const nextSpreadCountdown = currentOutbreak.spreadCountdownSec - effectiveDelta;
 
     if (nextSpreadCountdown <= 0) {
       // Outbreak spreads to an adjacent/connected building! (§6.3)
@@ -668,10 +710,11 @@ export function tickInfectionSimulation(
         });
       }
 
-      // Reset spread timer for originating building
+      // Reset spread timer for originating building (carrying forward the
+      // reconciled living count so the UI stays truthful).
       updatedOutbreaks.set(bldgId, {
-        ...outbreak,
-        spreadCountdownSec: outbreak.maxSpreadCountdownSec,
+        ...currentOutbreak,
+        spreadCountdownSec: currentOutbreak.maxSpreadCountdownSec,
       });
     } else {
       updatedOutbreaks.set(bldgId, {

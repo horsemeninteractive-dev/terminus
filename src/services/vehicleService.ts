@@ -648,33 +648,115 @@ export function orderVehicleRoadTravel(
   const roadRouteUsable = waypoints.length > 0 && (
     waypoints.length > 1 || !isBlockedSegmentClearance(vehicle.position, waypoints[0], mapData, blockedPolys)
   );
-  if (!roadRouteUsable && straightBlocked && pathGrid && mapData) {
-    const gridPath = pathGrid.findPath(vehicle.position.x, vehicle.position.z, targetPos.x, targetPos.z, { gatesOpen: true, wallsImpassable: false });
-    if (gridPath && gridPath.length >= 2) {
-      // Verify the grid route with the vehicle's clearance model and keep the
-      // segments that are actually drivable; a purely-walled detour is worse
-      // than stopping short.
-      const drivable: Point2D[] = [];
-      let prev = vehicle.position;
-      for (const node of [...gridPath, targetPos]) {
-        if (node.x === prev.x && node.z === prev.z) continue;
-        if (!isBlockedSegmentClearance(prev, node, mapData, blockedPolys)) {
-          drivable.push({ x: node.x, z: node.z });
-          prev = node;
-        }
-      }
-      if (drivable.length >= 2) {
-        return {
-          ...vehicle,
-          isMoving: true,
-          roadPathWaypoints: drivable,
-          currentWaypointIndex: 0,
-          targetPos,
-          offRoadLegDistance: 0,
-          reachBlocked: false,
-        };
+  // The road route can be "usable" yet still dive into a river on its off-road
+  // final leg (or cross one between road hops): the road graph knows nothing
+  // about water. The tick rejects every water step, so such a route would
+  // strand the truck at the bank. Check each planned leg for WATER specifically
+  // (buildings are handled by the tick's blocked-step re-route, water is not —
+  // a truck cannot wade), and try a water-aware grid detour when one crosses.
+  const crossesWater = (a: Point2D, b: Point2D): boolean => {
+    if (!mapData) return false;
+    const waterPolys = (mapData.landuse || []).filter((l) => l.type === 'water').map((l) => l.polygon);
+    if (waterPolys.length === 0) return false;
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const len = Math.hypot(dx, dz);
+    const samples = Math.max(2, Math.ceil(len / 2.5));
+    for (let i = 0; i <= samples; i++) {
+      const t = i / samples;
+      const px = a.x + dx * t;
+      const pz = a.z + dz * t;
+      for (const poly of waterPolys) {
+        if (poly.length >= 3 && isPointInsidePolygon({ x: px, z: pz }, poly)) return true;
       }
     }
+    return false;
+  };
+  const routeCrossesWater = (() => {
+    let prev = vehicle.position;
+    for (const wp of waypoints) {
+      if (crossesWater(prev, wp)) return true;
+      prev = wp;
+    }
+    return false;
+  })();
+
+  // Shared grid-detour attempt: ask the PathGrid for a dry, building-avoiding
+  // route and keep only the stretches the vehicle's clearance model accepts.
+  const tryGridDetour = (): WorldVehicle | null => {
+    if (!pathGrid || !mapData) return null;
+    // waterImpassable: the tick rejects every water step, so a river-crossing
+    // detour would just be stripped by the drivability filter below and leave
+    // the truck frozen at the bank. Ask for a dry route in the first place.
+    const gridPath = pathGrid.findPath(vehicle.position.x, vehicle.position.z, targetPos.x, targetPos.z, { gatesOpen: true, wallsImpassable: false, waterImpassable: true });
+    if (!gridPath || gridPath.length < 2) return null;
+    // Drivability with a water-aware clearance model: the CENTRE line must
+    // avoid everything (water included — a truck never wades), but the flank
+    // probes only check buildings/walls. Grid A* hugs obstacle corners at
+    // cell-centre distance (~2.5m); requiring 1.6m of lateral water clearance
+    // there would kill every legitimate riverside detour leg.
+    const legDrivable = (a: Point2D, b: Point2D): boolean => {
+      const dx = b.x - a.x;
+      const dz = b.z - a.z;
+      const len = Math.hypot(dx, dz);
+      if (len < 0.01) return !isBlockedByMap(b, mapData, blockedPolys);
+      const nx = -dz / len;
+      const nz = dx / len;
+      const samples = Math.max(2, Math.ceil(len / 2.5));
+      for (let i = 0; i <= samples; i++) {
+        const t = i / samples;
+        const px = a.x + dx * t;
+        const pz = a.z + dz * t;
+        if (isBlockedByMap({ x: px, z: pz }, mapData, blockedPolys)) return false;
+        if (isBlockedByMapNoWater({ x: px + nx * VEHICLE_HALF_WIDTH, z: pz + nz * VEHICLE_HALF_WIDTH }, mapData, blockedPolys)) return false;
+        if (isBlockedByMapNoWater({ x: px - nx * VEHICLE_HALF_WIDTH, z: pz - nz * VEHICLE_HALF_WIDTH }, mapData, blockedPolys)) return false;
+      }
+      return true;
+    };
+    const drivable: Point2D[] = [];
+    let prev = vehicle.position;
+    for (const node of [...gridPath, targetPos]) {
+      if (node.x === prev.x && node.z === prev.z) continue;
+      if (legDrivable(prev, node)) {
+        drivable.push({ x: node.x, z: node.z });
+        prev = node;
+      }
+    }
+    if (drivable.length < 2) return null;
+    return {
+      ...vehicle,
+      isMoving: true,
+      roadPathWaypoints: drivable,
+      currentWaypointIndex: 0,
+      targetPos,
+      offRoadLegDistance: 0,
+      reachBlocked: false,
+    };
+  };
+
+  if (!roadRouteUsable && straightBlocked) {
+    // The road route is unusable AND the straight shot is obstructed (building
+    // or water between the vehicle and the network). A building-avoiding
+    // footpath-style detour may still exist; if none does, fall through to the
+    // original waypoints so the tick's blocked-step re-route logic applies.
+    const detour = tryGridDetour();
+    if (detour) return detour;
+  } else if (routeCrossesWater) {
+    // The planned route dives into a river. Trucks cannot wade and the tick
+    // would strand them at the bank, so only a dry detour is acceptable. When
+    // none exists, refuse the order: the destination is unreachable by road
+    // and the player is told via reachBlocked instead of a frozen truck.
+    const detour = tryGridDetour();
+    if (detour) return detour;
+    return {
+      ...vehicle,
+      isMoving: false,
+      roadPathWaypoints: [],
+      currentWaypointIndex: 0,
+      targetPos,
+      offRoadLegDistance: 0,
+      reachBlocked: true,
+    };
   }
 
   return {
@@ -713,6 +795,24 @@ function isBlockedByMap(
 ): boolean {
   if (!mapData) return false;
   if ((mapData.landuse || []).some((l) => l.type === 'water' && isPointInsidePolygon(point, l.polygon))) return true;
+  if (mapData.buildings.some((b) => b.polygon?.length >= 3 && isPointInsidePolygon(point, b.polygon))) return true;
+  if (freestandingPolys) {
+    for (const poly of freestandingPolys) {
+      if (poly.length >= 3 && isPointInsidePolygon(point, poly)) return true;
+    }
+  }
+  return false;
+}
+
+/** Same as {@link isBlockedByMap} but water is NOT an obstruction — used for
+ *  a vehicle's lateral flank probes alongside a river: the centre line already
+ *  enforces the no-wading rule, and grid-detour legs legitimately hug banks. */
+function isBlockedByMapNoWater(
+  point: Point2D,
+  mapData?: MapData,
+  freestandingPolys?: Point2D[][]
+): boolean {
+  if (!mapData) return false;
   if (mapData.buildings.some((b) => b.polygon?.length >= 3 && isPointInsidePolygon(point, b.polygon))) return true;
   if (freestandingPolys) {
     for (const poly of freestandingPolys) {

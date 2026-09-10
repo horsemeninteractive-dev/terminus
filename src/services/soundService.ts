@@ -119,6 +119,14 @@ class SoundEngine {
   private nightDroneGain: GainNode | null = null;
   private nightFilter: BiquadFilterNode | null = null;
 
+  // Lair proximity bed: a low infected-murmur layer whose volume tracks how
+  // close the nearest DISCOVERED, standing lair is, so a known nest literally
+  // sounds alive as a squad approaches it.
+  private lairBedGain: GainNode | null = null;
+  private lairBedFilter: BiquadFilterNode | null = null;
+  private lastLairGroanAt = 0;
+  private lairProximity = 0;
+
   private dangerDroneOsc: OscillatorNode | null = null;
   private dangerGain: GainNode | null = null;
   private dangerFilter: BiquadFilterNode | null = null;
@@ -309,6 +317,7 @@ class SoundEngine {
       if (this.windGain) this.windGain.gain.setTargetAtTime(0, now, 0.15);
       if (this.nightDroneGain) this.nightDroneGain.gain.setTargetAtTime(0, now, 0.15);
       if (this.dangerGain) this.dangerGain.gain.setTargetAtTime(0, now, 0.15);
+      if (this.lairBedGain) this.lairBedGain.gain.setTargetAtTime(0, now, 0.15);
     } else {
       this.updateAmbient(this.currentPhase, this.currentIsNight, this.currentDangerLevel);
     }
@@ -371,6 +380,7 @@ class SoundEngine {
    * 1. Dynamic Wind / Air noise layer with modulating frequency
    * 2. Night drone with dark sub-harmonics
    * 3. Danger tension layer scaling with combat/outbreak threat
+   * 4. Lair murmur bed — proximity-driven infected nest ambience
    */
   private initAmbientNodes() {
     if (!this.ctx || !this.ambientGain) return;
@@ -411,6 +421,25 @@ class SoundEngine {
       this.windGain.connect(this.ambientGain);
       noiseSource.start();
       this.windSource = noiseSource;
+
+      // 1b. Lair murmur bed — shares the wind noise buffer through a darker
+      // lowpass; gain is driven purely by lair proximity (updateLairAmbient).
+      this.lairBedFilter = this.ctx.createBiquadFilter();
+      this.lairBedFilter.type = 'lowpass';
+      this.lairBedFilter.frequency.setValueAtTime(140, this.ctx.currentTime);
+      this.lairBedFilter.Q.setValueAtTime(2.2, this.ctx.currentTime);
+
+      this.lairBedGain = this.ctx.createGain();
+      this.lairBedGain.gain.setValueAtTime(0, this.ctx.currentTime);
+
+      const lairNoise = this.ctx.createBufferSource();
+      lairNoise.buffer = noiseBuffer;
+      lairNoise.loop = true;
+      lairNoise.playbackRate.setValueAtTime(0.6, this.ctx.currentTime); // slower = deeper churning
+      lairNoise.connect(this.lairBedFilter);
+      this.lairBedFilter.connect(this.lairBedGain);
+      this.lairBedGain.connect(this.ambientGain);
+      lairNoise.start();
 
       // 2. Night Tension Drone (Dual detuned low oscillators)
       this.nightDroneOsc1 = this.ctx.createOscillator();
@@ -503,6 +532,82 @@ class SoundEngine {
       const targetDangerFreq = 80 + dangerLevel * 140;
       this.dangerGain.gain.setTargetAtTime(targetDangerGain, now, 0.8);
       this.dangerFilter.frequency.setTargetAtTime(targetDangerFreq, now, 0.8);
+    }
+  }
+
+  /**
+   * Proximity bed for DISCOVERED, standing lairs: `lairProximity` 0..1 tracks
+   * how close the nearest known nest is (1 = at its doorstep). Drives a low
+   * churning murmur so a nest audibly "breathes" as a squad closes in, and
+   * schedules distant groans whose cadence quickens with proximity. Volume
+   * follows the ambient bus (ambientVolume + ambientEnabled) and is silenced
+   * outside the game and for cleared nests.
+   */
+  public updateLairAmbient(proximity: number) {
+    this.lairProximity = Math.max(0, Math.min(1, proximity));
+    if (!this.ctx || !this.isInitialized || !this.isInGame) return;
+    const now = this.ctx.currentTime;
+
+    if (this.lairBedGain && this.lairBedFilter) {
+      const target = this.settings.ambientEnabled && !this.settings.muted
+        ? this.lairProximity * this.lairProximity * 0.5
+        : 0;
+      this.lairBedGain.gain.setTargetAtTime(target, now, 1.2);
+      // Rising pitch with proximity: the murmur gets higher/ angrier closer in.
+      this.lairBedFilter.frequency.setTargetAtTime(110 + this.lairProximity * 90, now, 1.2);
+    }
+
+    // Distant groans: every 9–22s scaled down to 3.5–9s at the doorstep.
+    if (
+      this.lairProximity > 0.15 &&
+      this.settings.ambientEnabled &&
+      !this.settings.muted &&
+      now - this.lastLairGroanAt > (9 - 5.5 * this.lairProximity) * (0.7 + Math.random() * 0.6)
+    ) {
+      this.lastLairGroanAt = now;
+      this.playLairGroan(this.lairProximity);
+    }
+  }
+
+  /**
+   * A distant infected groan from the nest — deeper and more resonant than the
+   * in-combat zombie sounds, as if heard from across the street. `intensity`
+   * (0..1, lair proximity) raises volume and opens the filter.
+   */
+  private playLairGroan(intensity: number) {
+    if (!this.ctx || !this.ambientGain) return;
+
+    try {
+      const now = this.ctx.currentTime;
+      const osc = this.ctx.createOscillator();
+      osc.type = 'sawtooth';
+      const base = 55 + Math.random() * 30; // A1–D2 territory: throat-deep
+      osc.frequency.setValueAtTime(base, now);
+      osc.frequency.linearRampToValueAtTime(base * (1.15 + Math.random() * 0.2), now + 0.4);
+      osc.frequency.exponentialRampToValueAtTime(base * 0.7, now + 1.4);
+
+      // Throat formant filter — opens with proximity so the groan "resolves"
+      // from a rumble into a recognisable moan as the squad closes.
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(180 + intensity * 220, now);
+      filter.Q.setValueAtTime(4, now);
+
+      // Slow amplitude swell in/out — a distant, wandering groan.
+      const gain = this.ctx.createGain();
+      const peak = 0.05 + intensity * 0.22;
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(peak, now + 0.5);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 1.6);
+
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.ambientGain);
+
+      osc.start(now);
+      osc.stop(now + 1.7);
+    } catch {
+      // Audio errors are never worth interrupting gameplay for.
     }
   }
 

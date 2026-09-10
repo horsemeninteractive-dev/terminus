@@ -157,7 +157,16 @@ export function runSimulationPipeline(args: {
   const gatheringResult = tickResourceGathering(forestry.newState, forestry.mapData, deltaSeconds * clock.speed, clock.isNight, alarmActive, pathGrid);
   const gathering = gatheringResult.newState;
   const combat = tickCombatSimulation(zombies, squads, gathering.adaptedBuildings, noiseEvents, clock, getPrimaryHQ(gathering)?.center || null, deltaSeconds, gathering, droppedItems, hostileHumans, pathGrid, alarmActive, mapData.elevation || null);
-  const infection = tickInfectionSimulation(gathering, deltaSeconds, clock.speed, clock.day);
+  // The infection tick sees the POST-COMBAT zombie list: killed outbreak
+  // infiltrators resolve their building's outbreak record (containment by
+  // firepower), instead of outbreaks spreading on hidden timers forever.
+  const infection = tickInfectionSimulation(
+    gathering,
+    deltaSeconds,
+    clock.speed,
+    clock.day,
+    combat.updatedZombies
+  );
   const vehicles = updateVehiclesTick(gathering.vehicles || [], combat.updatedSquads, combat.updatedZombies, deltaSeconds * clock.speed, Date.now(), mapData, roadGraph, gathering.freestandingBuildings || [], 0, undefined, pathGrid);
   let nextSquads = vehicles.updatedSquads;
   const nextZombies = vehicles.updatedZombies;

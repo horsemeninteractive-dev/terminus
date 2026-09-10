@@ -4,6 +4,7 @@ import {
   TacticalSquadUnit,
   ZombieLair,
   ZombieUnit,
+  ZombieVariant,
   getWeaponDefinition,
 } from '../types/combat';
 import { BuildingPolygon, Point2D } from '../types/map';
@@ -228,18 +229,22 @@ export function generateZombieLairs(
     // not stir at the same wall-clock instant as every other lair.
     const intervalSec = LAIR_SPAWN_BASE_MIN_SEC + Math.floor(Math.random() * LAIR_SPAWN_JITTER_SEC);
 
+    // DOMINANT VARIANT — each nest has a recognisable infected type, fixed at
+    // founding and stable for its life. Derived deterministically from the
+    // building id (same map → same nest types on replay) and weighted by
+    // threat tier: bigger structures skew toward runners and brutes.
+    const dominantVariant = pickLairDominantVariant(bldg.id, threatTier);
+
     const lairId = `lair_${bldg.id}`;
     const center = bldg.center || { x: 0, z: 0 };
 
     // The lair's initial population is REAL infected sheltering inside the
     // building: seed one ZombieUnit per head of population, scattered across
-    // the footprint so the player actually fights them in the interior.
-    const variantFor = (i: number): 'shambler' | 'runner' | 'brute' => {
-      const roll = (i * 7 + bldg.levels) % 10;
-      if (roll >= 9) return 'brute';
-      if (roll >= 7) return 'runner';
-      return 'shambler';
-    };
+    // the footprint so the player actually fights them in the interior. Most
+    // of the garrison is the dominant type; a minority varies so the nest is
+    // recognisable without being homogeneous.
+    const variantFor = (i: number): 'shambler' | 'runner' | 'brute' =>
+      Math.random() < 0.75 ? dominantVariant : pickMinorityVariant(dominantVariant, i, bldg.levels);
     for (let s = 0; s < population; s++) {
       const pt = randomPointInPolygon(bldg.polygon, center);
       const zmb = createZombieUnit(variantFor(s), pt.x, pt.z, 0, false);
@@ -274,6 +279,7 @@ export function generateZombieLairs(
       threatTier,
       replenishAccumSec: 0,
       hordeAccumSec: 0,
+      dominantVariant,
     });
   }
 
@@ -559,6 +565,41 @@ function randomPointInPolygon(poly: Point2D[] | undefined, center: Point2D): Poi
   return { ...center };
 }
 
+/** Deterministic hash of a building id — used to derive a lair's stable
+ *  dominant variant (same map always produces the same nest types). */
+function lairIdHash(id: string | number): number {
+  const s = String(id);
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+/** Pick a lair's dominant infected type: deterministic per building, with
+ *  higher threat tiers skewing toward faster/tougher infected. */
+export function pickLairDominantVariant(
+  buildingId: string | number,
+  threatTier: LairThreatTier
+): ZombieVariant {
+  const roll = lairIdHash(buildingId) % 100;
+  if (threatTier === 'high') return roll < 45 ? 'brute' : roll < 80 ? 'runner' : 'shambler';
+  if (threatTier === 'medium') return roll < 20 ? 'brute' : roll < 55 ? 'runner' : 'shambler';
+  return roll < 5 ? 'brute' : roll < 25 ? 'runner' : 'shambler';
+}
+
+/** A non-dominant companion variant for the minority of a nest's garrison —
+ *  keeps nests recognisable without making every infected identical. */
+function pickMinorityVariant(
+  dominant: ZombieVariant,
+  salt: number,
+  levels: number
+): ZombieVariant {
+  const others = (['shambler', 'runner', 'brute'] as ZombieVariant[]).filter((v) => v !== dominant);
+  return others[(salt * 7 + levels) % others.length];
+}
+
 /**
  * Advances every Lair as the home base of a REAL infected population:
  *
@@ -645,7 +686,7 @@ export function tickZombieLairs(
       while (replenishAccum >= replenishInterval && population < lair.baselinePopulation) {
         replenishAccum -= replenishInterval;
         const pt = randomPointInPolygon(poly, center);
-        const zmb = createZombieUnit('shambler', pt.x, pt.z, 0, isNight);
+        const zmb = createZombieUnit(lair.dominantVariant ?? 'shambler', pt.x, pt.z, 0, isNight);
         zmb.lairId = lair.id;
         zmb.homeX = center.x;
         zmb.homeZ = center.z;
@@ -694,6 +735,7 @@ export function tickZombieLairs(
         z.currentHp > 0 &&
         (poly ? isOutsideBuildingPolygon(z.x, z.z, poly) : false)
     ).length;
+    const dominant: ZombieVariant = lair.dominantVariant ?? 'shambler';
     if (population > 0 && population < garrisonCeiling && spawnAccum >= intervalSec) {
       const groupSize = Math.min(5, 2 + escalation);
       if (emergedOutside + groupSize <= emergenceCapacity) {
@@ -702,7 +744,10 @@ export function tickZombieLairs(
         for (let i = 0; i < groupSize; i++) {
           const angle = Math.random() * Math.PI * 2;
           const dist = 6 + Math.random() * 14;
-          const variant = Math.random() < 0.2 ? 'runner' : 'shambler';
+          // Emerging groups carry the nest's identity: mostly the dominant
+          // type, with occasional variety so combat stays interesting.
+          const variant: ZombieVariant =
+            Math.random() < 0.8 ? dominant : i % 5 === 4 ? 'runner' : dominant;
           const zmb = createZombieUnit(
             variant,
             center.x + Math.cos(angle) * dist,
@@ -787,6 +832,7 @@ export function tickZombieLairs(
       replenishAccumSec: replenishAccum,
       hordeAccumSec: hordeAccum,
       isCleared: clearedNow || lair.isCleared,
+      dominantVariant: lair.dominantVariant ?? 'shambler',
     });
 
     if (clearedNow) {

@@ -93,6 +93,7 @@ export interface TacticalWorldSceneProps {
   handleDesignateGatherArea: (type: GatherResourceType, bounds: WorldAreaBounds) => void;
   handleDesignateSquadScavenge: (bounds: WorldAreaBounds) => void;
   handleDisbandSquad: (squadId: string) => void;
+  handleReplenishSquad: (squadId: string) => void;
   handleDismissAlert: (id: string) => void;
   handleDismountVehicle: (vehicleId: string) => void;
   handleFocusBuilding: (building: BuildingPolygon) => void;
@@ -251,6 +252,7 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
     handleDesignateGatherArea,
     handleDesignateSquadScavenge,
     handleDisbandSquad,
+    handleReplenishSquad,
     handleDismissAlert,
     handleDismountVehicle,
     handleFocusBuilding,
@@ -404,6 +406,24 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
   // commands nothing — treated as absent until a new HQ is established.
   const primaryHQ = getPrimaryHQ(settlement);
   const hqOperational = isHQOperational(primaryHQ);
+
+  // Squads physically standing at the HQ can be replenished (fallen members
+  // refilled from the general population). Reused by both the muster modal and
+  // the tactical squad HUD so the button only appears when it can work.
+  const squadAtHqIds = React.useMemo(() => {
+    const hqCenter = primaryHQ?.center;
+    if (!hqCenter) return new Set<string>();
+    return new Set(
+      combatSquads
+        .filter(
+          (s) =>
+            !s.onExpedition &&
+            s.state !== 'combat' &&
+            Math.hypot(s.x - hqCenter.x, s.z - hqCenter.z) < 25
+        )
+        .map((s) => s.squadId)
+    );
+  }, [combatSquads, primaryHQ]);
   const lawsUnlock = getLawsUnlockInfo(settlement);
   const antennaOperational = isAntennaOperational(settlement);
 
@@ -551,6 +571,8 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                   }
                 }}
                 onPlaceFreestandingRun={(typeId, placements) => handleBuildFreestandingRun(typeId, placements)}
+                onCancelFreestandingPlacement={() => setPendingFreestandingType(null)}
+                onCancelAdaptPlacement={() => setPendingAdaptType(null)}
                 onSelectSquad={handleSelectSquad}
                 onSelectSquads={handleSelectSquads}
                 onOrderSquadMove={handleOrderSquadMove}
@@ -696,6 +718,8 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                     onCreateSquad={handleCreateSquad}
                     onModifyGeneralMembers={handleModifySquadGeneralMembers}
                     onDisbandSquad={handleDisbandSquad}
+                    onReplenishSquad={handleReplenishSquad}
+                    squadAtHqIds={squadAtHqIds}
                   />
     
                   {/* Laws & Policy (§IFZ Major Update #5) — Gathering Place forum */}
@@ -832,6 +856,8 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                         allSquads={combatSquads}
                         onSelectSquad={handleSelectSquad}
                         onDisbandSquad={handleDisbandSquad}
+                        onReplenishSquad={handleReplenishSquad}
+                        isAtHq={squadAtHqIds.has(selectedSquadObj?.squadId || '')}
                         sceneRef={sceneRef}
                       />
                       )}

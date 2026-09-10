@@ -671,10 +671,13 @@ export function recalculateLaborDistribution(state: SettlementState): Settlement
     unassigned: 24,
   };
 
-  // 1. Calculate general workers locked in squads & illness
+  // 1. Calculate general workers locked in squads & illness. Only ALIVE
+  // members occupy the labour pool: dead slots (squad.deadCount) keep their
+  // roster positions but never count as workers, so disbanding or
+  // replenishing a squad can never leak casualties back into the workforce.
   let totalInSquads = 0;
   for (const squad of state.squads || []) {
-    totalInSquads += squad.generalCount || 0;
+    totalInSquads += Math.max(0, (squad.generalCount || 0) - (squad.deadCount || 0));
   }
 
   const breakdown = calculateCitizenBreakdownStats(state);
@@ -983,8 +986,14 @@ export function appointBuildingHead(
   // 1. Vacate survivor's old role (if in squad, remove from squad; if at another building, vacate that building)
   let updatedSquads = [...state.squads];
   if (survivor.role.type === 'squad_leader') {
+    // A named leader is an optional specialist, NOT the squad itself.
+    // Vacating (death, turning, quarantine, reassignment) strips the leader
+    // from the squad and leaves the anonymous personnel INTACT as a leaderless
+    // unit — the squad is a container, the leader was one occupant.
     const squadId = survivor.role.squadId;
-    updatedSquads = updatedSquads.filter((sq) => sq.id !== squadId);
+    updatedSquads = updatedSquads.map((sq) =>
+      sq.id === squadId ? { ...sq, leaderId: '' } : sq
+    );
   } else if (survivor.role.type === 'building_head') {
     const prevBldgId = survivor.role.buildingId;
     const prevBldg =
@@ -1042,8 +1051,14 @@ export function vacateSurvivorRole(state: SettlementState, survivorId: string): 
   let updatedSquads = [...state.squads];
 
   if (survivor.role.type === 'squad_leader') {
+    // A named leader is an optional specialist, NOT the squad itself.
+    // Vacating (death, turning, quarantine, reassignment) strips the leader
+    // from the squad and leaves the anonymous personnel INTACT as a leaderless
+    // unit — the squad is a container, the leader was one occupant.
     const squadId = survivor.role.squadId;
-    updatedSquads = updatedSquads.filter((sq) => sq.id !== squadId);
+    updatedSquads = updatedSquads.map((sq) =>
+      sq.id === squadId ? { ...sq, leaderId: '' } : sq
+    );
   } else if (survivor.role.type === 'building_head') {
     const bldgId = survivor.role.buildingId;
     const bldg =
@@ -1104,7 +1119,11 @@ export function createSquad(
   // Validate general members availability. A named leader is one of the 4 people;
   // without one, all 4 members come from the general population (leaderless
   // squad must draw one extra citizen from the pool to fill the leader's slot).
-  const currentGeneralInSquads = state.squads.reduce((acc, sq) => acc + (sq.generalCount || 0), 0);
+  // Only ALIVE members across all squads hold the pool — dead slots don't.
+  const currentGeneralInSquads = state.squads.reduce(
+    (acc, sq) => acc + Math.max(0, (sq.generalCount || 0) - (sq.deadCount || 0)),
+    0
+  );
   const freeGeneral = Math.max(0, state.generalPopulation.total - currentGeneralInSquads);
   const maxGeneral = hasNamedLeader ? 3 : 4;
   const clampedGeneral = Math.max(0, Math.min(maxGeneral, Math.min(generalCount, freeGeneral)));
@@ -1222,11 +1241,21 @@ export function modifySquadGeneralMembers(
   const squad = state.squads.find((s) => s.id === squadId);
   if (!squad) return { success: false, newState: state, error: 'Squad not found.' };
 
-  const clamped = Math.max(0, Math.min(3, newGeneralCount));
-  const diff = clamped - squad.generalCount;
+  // The +/- controls operate on the ALIVE count: dead slots (deadCount) are
+  // preserved and the total roster never exceeds its cap (3 with a named
+  // leader, 4 leaderless).
+  const dead = squad.deadCount || 0;
+  const aliveNow = Math.max(0, (squad.generalCount || 0) - dead);
+  const maxAlive = Math.max(0, (squad.leaderId ? 3 : 4) - dead);
+  const aliveTarget = Math.max(0, Math.min(maxAlive, newGeneralCount));
+  const clamped = aliveTarget + dead;
+  const diff = aliveTarget - aliveNow;
 
-  const currentGeneralInSquads = state.squads.reduce((acc, sq) => acc + sq.generalCount, 0);
-  const freeGeneral = state.generalPopulation.total - currentGeneralInSquads;
+  const currentGeneralInSquads = state.squads.reduce(
+    (acc, sq) => acc + Math.max(0, (sq.generalCount || 0) - (sq.deadCount || 0)),
+    0
+  );
+  const freeGeneral = Math.max(0, state.generalPopulation.total - currentGeneralInSquads);
 
   if (diff > 0 && diff > freeGeneral) {
     return {
@@ -1276,6 +1305,52 @@ export function disbandSquad(
   return {
     success: true,
     newState: recalculateLaborDistribution(intermediate),
+  };
+}
+
+/**
+ * Refills a squad's fallen general members (deadCount → 0) at HQ: each dead
+ * slot is restored by a living citizen drawn from the free general population.
+ * Living members are untouched; the squad's total roster size (generalCount)
+ * never changes. Requires the colony to have enough free general workers to
+ * replace every casualty.
+ */
+export function replenishSquad(
+  state: SettlementState,
+  squadId: string
+): { success: boolean; newState: SettlementState; error?: string } {
+  const squad = state.squads.find((s) => s.id === squadId);
+  if (!squad) return { success: false, newState: state, error: 'Squad not found.' };
+  if (squad.status === 'captured') {
+    return { success: false, newState: state, error: 'Captured squads cannot be replenished while held for ransom.' };
+  }
+
+  const dead = squad.deadCount || 0;
+  if (dead <= 0) {
+    return { success: false, newState: state, error: 'This squad has no fallen members to replace.' };
+  }
+
+  // Only ALIVE members across all squads occupy the labour pool.
+  const aliveInSquads = state.squads.reduce(
+    (acc, sq) => acc + Math.max(0, (sq.generalCount || 0) - (sq.deadCount || 0)),
+    0
+  );
+  const freeGeneral = Math.max(0, state.generalPopulation.total - aliveInSquads);
+  if (freeGeneral < dead) {
+    return {
+      success: false,
+      newState: state,
+      error: `Not enough free general population to refill the squad (need ${dead}, have ${freeGeneral}).`,
+    };
+  }
+
+  const updatedSquads = state.squads.map((sq) =>
+    sq.id === squadId ? { ...sq, deadCount: 0 } : sq
+  );
+
+  return {
+    success: true,
+    newState: recalculateLaborDistribution({ ...state, squads: updatedSquads }),
   };
 }
 

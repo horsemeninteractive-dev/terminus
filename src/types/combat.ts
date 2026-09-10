@@ -75,6 +75,11 @@ export interface ZombieUnit {
    *  unaffiliated infected (hordes, swarms, ambient) are always independent. */
   isRoamer?: boolean;
   queuedOrders?: Array<{ pos: { x: number; z: number }; targetBuildingId?: string | number; targetBuildingName?: string }>;
+  /** §6.2 named-survivor exposure: the squad this zombie has already
+   *  successfully bitten — a zombie cannot re-expose the same squad while it
+   *  keeps fighting it, so a named leader is infected at most once per
+   *  attacker (suppression persists across ticks until the melee ends). */
+  lastBiteTargetSquadId?: string | null;
 }
 
 // ==========================================
@@ -496,5 +501,13 @@ export interface ZombieLair {
    * Cleared lairs never mobilize and the regional pressure collapses.
    */
   hordeAccumSec?: number;
+  /**
+   * The lair's recognisable dominant infected type — fixed at generation and
+   * stable for the lair's life. It drives the composition of replenished and
+   * emerging infected (a RUNNER nest sends out runners), and is shown in the
+   * lair's inspection panel. Individual members may still vary; the DOMINANT
+   * type is what the player should expect to face.
+   */
+  dominantVariant?: ZombieVariant;
 }
 

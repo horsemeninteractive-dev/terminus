@@ -48,6 +48,12 @@ interface GameCanvasProps {
   onLoadProgress?: (progress: number, label?: string) => void;
   onSelectResourceNode?: (node: any) => void;
   onPlaceFreestandingRun?: (typeId: import('../types/settlement').FunctionalBuildingTypeId, placements: import('../render/WorldScene').FreestandingPlacementPoint[]) => void;
+  /** Fired when the player cancels placement in-scene (Escape / right-click) so
+   *  the React layer can clear its PLACING banner. */
+  onCancelFreestandingPlacement?: () => void;
+  /** Fired when the player cancels the armed IFZ conversion paint mode in-scene
+   *  (Escape / right-click) so the React layer can clear its CONVERSION banner. */
+  onCancelAdaptPlacement?: () => void;
   onAdaptArea?: (
     typeId: import('../types/settlement').FunctionalBuildingTypeId,
     bldg: BuildingPolygon,
@@ -90,9 +96,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   onMountVehicle,
   onSceneReady,
   onMapRendered,
-  onLoadProgress,    onSelectResourceNode,
+  onLoadProgress,
+  onSelectResourceNode,
   onPlaceFreestandingRun,
   onAdaptArea,
+  onCancelFreestandingPlacement,
+  onCancelAdaptPlacement,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<WorldScene | null>(null);
@@ -127,6 +136,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     onMountVehicle,
     onPlaceFreestandingRun,
     onAdaptArea,
+    onCancelFreestandingPlacement,
+    onCancelAdaptPlacement,
   };
 
   useEffect(() => {
@@ -151,6 +162,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       onMountVehicle: (id, value) => handlersRef.current.onMountVehicle?.(id, value),
       onPlaceFreestandingRun: (typeId, placements) =>
         handlersRef.current.onPlaceFreestandingRun?.(typeId, placements),
+      onCancelFreestandingPlacement: () =>
+        handlersRef.current.onCancelFreestandingPlacement?.(),
+      onCancelAdaptPlacement: () =>
+        handlersRef.current.onCancelAdaptPlacement?.(),
       onAdaptArea: (typeId, bldg, polygon) =>
         handlersRef.current.onAdaptArea?.(typeId, bldg, polygon),
     });

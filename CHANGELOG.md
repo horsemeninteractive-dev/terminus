@@ -21,6 +21,119 @@ Releasing:
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Water traversal.** Lakes and rivers are no longer decorative: water
+  polygons are rasterized into the pathfinding grid as slow cells, so human
+  squads, workers and hostile humans wade across at reduced speed (≈0.45×,
+  with the A* time model matching so routes only cross water when it genuinely
+  saves time) — animated with a new front-crawl swim pose that sinks the rig
+  to water level. **Zombies cannot enter water at all** (it is a hard barrier
+  for their pathing and line-of-sight), making rivers a real defensive moat —
+  and vehicles refuse water routes too (next entry).
+- **Vehicles treat water as impassable.** Route planning now matches the
+  driving model: every planned leg is checked for water, the grid fallback
+  detour asks for a dry route (`waterImpassable`), and when no dry route
+  exists the order is refused with the standard "unreachable" signal instead
+  of a truck freezing forever at the riverbank. Grid-detour legs only require
+  the centre line to stay dry, so legitimate riverside detours aren't killed
+  by flank-clearance probes clipping the waterline.
+- **Lair dominant variants.** Every zombie lair is founded with a stable
+  dominant infected type — derived deterministically from the building id and
+  weighted by threat tier (bigger nests skew toward runners and brutes) — so
+  the same map always produces the same nest types on replay. ~75% of a
+  nest's garrison and its emerging groups carry the dominant type, with a
+  minority of variety so combat stays interesting. Old saves are migrated on
+  load (never re-rolled), and the lair inspection panel names the type
+  (Shamblers / Runners / Brutes).
+- **Squad replenishment at HQ.** Squad casualties now persist as dead roster
+  slots (`deadCount`) — fallen general members keep their positions (member
+  ids stay stable) but stop counting toward labour and are never returned to
+  the population pool on disband. A new Replenish action (squad panel and
+  squad management modal) refills the dead slots from the free general
+  population and revives the anonymous tactical members on the spot; it is
+  only allowed while the squad stands within 25 m of the settlement HQ, not
+  in combat. Dead named leaders remain permanently fallen.
+- **Lair ambient audio.** A proximity-driven drone bed with random groans:
+  the sim loop measures the distance from the listener origin (the HQ, or a
+  deployed squad — squads hear further afield) to the nearest active lair and
+  feeds a 0–1 proximity value into the audio graph, which smooths the
+  transitions (updates throttled to meaningful changes only).
+- **Zombie cluster badges show a ×N infected count** under the skull, so a
+  hunter can size up a discovered nest at a glance without opening its panel
+  (the count is baked into the badge texture cache key).
+- **Medical status readout.** The edge sidebar shows a persistent MEDICAL
+  ALERT card (not a toast) when something is actually wrong: active infection
+  stages across named survivors (incubating / symptomatic / quarantined) plus
+  any uncontained building outbreaks.
+- **Weather-reactive field soil.** Field plots swap their tilled-soil texture
+  with the weather: rain/thunderstorm turns them to dark glossy mud with
+  puddled furrows, heatwave bleaches them to cracked dust, freezing weather
+  dusts the ridges with frost, and clear/overcast/fog keeps the base loam.
+  Greenhouses are exempt; under-construction fields pick up the current
+  variant too. Silhouette-preserving — only the surface reads wetter or drier.
+- **In-scene placement cancel callbacks.** Cancelling freestanding placement
+  or IFZ conversion paint mode in the scene (Escape / right-click) now clears
+  the React layer's PLACING / CONVERSION banner instead of leaving it stuck.
+
+### Fixed
+
+- **Construction crews can finally reach the sites they build.** A common
+  wedge: crews target a structure's footprint centre, which always sits
+  inside the structure's own blocked path cells — the crew stood at HQ
+  forever with workers "assigned" but never arriving. The path search now
+  retargets to the nearest walkable cell (the site edge) when the goal itself
+  is blocked, and consuming that fallback path counts as arrival, so
+  construction begins. Crews whose goal is genuinely unreachable (e.g. a
+  site enclosed by a full wall run) still stay put rather than phasing
+  through walls.
+- **Outbreaks resolve when their zombies die.** Building outbreaks used to
+  spread forever on hidden timers even after every infected inside had been
+  shot. The infection tick now reconciles each outbreak against the real
+  world zombie list (including same-tick spawns): when squads or tower fire
+  kill the last outbreak infected, the outbreak is contained, the spread
+  timer stops, and a success notification credits the clearing.
+- **Field infections rewritten around named survivors.** Only a *named*
+  squad leader can contract an infection — the record belongs to the
+  persistent survivor entity, never to anonymous manpower — and each zombie
+  can land at most one successful exposure per melee (tracked per zombie), so
+  a long fight no longer machine-gun re-bites the leader through repeated
+  rolls.
+- **Save sanitation for phantom infection records.** Older builds could
+  persist anonymous infection records (e.g. keyed by an empty leader id) that
+  let a faceless "member" carry an infection through disband/reform. Load now
+  drops records that don't resolve to a named survivor; memorial/historical
+  records are preserved.
+- **Wooden towers rendered like brick.** The tower body had a wood-plank
+  texture multiplied by a dark red-brown tint that read as brickwork; it now
+  uses the warm timber brown shared with palisades.
+- **Fields had no texture at all** — a flat amber slab while building and a
+  flat olive box when done. They now wear a procedural soil texture (dark
+  loam with plough furrows, ridge crests and crop-row sprouts) through both
+  the construction shell and the completed plot, with the weather variants
+  above layered on top.
+- **Under-construction freestanding models were featureless amber boxes.**
+  Towers now show their real watchtower silhouette (posts, fighting platform,
+  parapets, roof) amber and translucent while the crew works; walls render
+  their true geometry (logs / chain-link / wire strands) tinted amber; gates
+  keep their real wood/metal/concrete textures instead of flat shells; and
+  facilities show their silhouettes. Damage/weather dressing still only
+  applies once completed.
+- **Placement ghosts matched their buildings.** The tower ghost was a plain
+  box wireframe; it now previews the full watchtower silhouette. Gates keep
+  their flanking-tower ghost, fields preview their real flat plot footprint
+  (instead of a generic cube), and facilities preview their module dimensions
+  plus per-type silhouette hints (gable roofs, tanks, stacks, masts, poles).
+- **Freestanding edge highlighting followed the build state.** Edges were
+  stuck on per-type accent colours — a completed wooden tower kept an amber
+  outline, matching the game's "under construction" signal. All freestanding
+  edges now use the shared visual language: amber while building, green the
+  moment construction completes.
+
+---
+
 ## [0.2.5] – 2026-09-09
 
 ### Fixed

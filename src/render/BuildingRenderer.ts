@@ -9,7 +9,10 @@ import { getPrimaryAdaptedEntry, isBuildingOperational } from '../services/build
 import {
   getBuildingTextureSet,
   getFreestandingMaterialTexture,
+  getFreestandingMaterialTextureVariant,
   getFreestandingBumpTexture,
+  soilVariantForWeather,
+  type SoilWeatherVariant,
   buildingVariantForId,
   getFlatRoofSet,
   selectFlatRoof,
@@ -58,9 +61,9 @@ const FUNCTIONAL_CATEGORY_COLORS: Record<FunctionalCategory, { wall: number; roo
 // identical green 8×8 boxes.
 // ---------------------------------------------------------------------------
 
-type FreestandingMaterialKindName = 'wood' | 'brick' | 'metal' | 'concrete';
+type FreestandingMaterialKindName = 'wood' | 'brick' | 'metal' | 'concrete' | 'soil';
 
-type FacilitySilhouette = 'gable' | 'flat' | 'tank' | 'stack' | 'cells' | 'antenna' | 'pole';
+export type FacilitySilhouette = 'gable' | 'flat' | 'tank' | 'stack' | 'cells' | 'antenna' | 'pole';
 
 interface FacilityLook {
   kind: FreestandingMaterialKindName;
@@ -118,6 +121,11 @@ const FACILITY_LOOKS: Partial<Record<string, FacilityLook>> = {
 function facilityLookFor(typeId: string, category: FunctionalCategory): FacilityLook {
   const def = FACILITY_LOOK_DEFAULTS[category] ?? FACILITY_LOOK_DEFAULTS.other;
   return FACILITY_LOOKS[typeId] ?? def;
+}
+
+/** Silhouette a facility ghost should preview, resolved by type id alone. */
+export function facilityGhostSilhouette(typeId: string): FacilitySilhouette {
+  return FACILITY_LOOKS[typeId]?.silhouette ?? 'flat';
 }
 
 /**
@@ -561,6 +569,9 @@ export class BuildingRenderer {
   // structures weather with the sky instead of staying pristine forever.
   private barrierRain = 0; // 0..1 wetness (puddle grime, mud splash)
   private barrierSnow = 0; // 0..1 snow accumulation (caps along the top)
+  // Field soil weather variant ('default' | 'mud' | 'dust' | 'snow') — fields
+  // swap their tilled-soil texture as the weather changes.
+  private soilVariant: SoilWeatherVariant = 'default';
   private lastBarrierElevation?: ElevationGrid | null = null;
 
   /**
@@ -1650,65 +1661,61 @@ export class BuildingRenderer {
       let wallColor = 0x23683f;
       let roofColor = 0x2e7d47;
       let emissiveColor = 0x0d2816;
-      let beaconColor = 0x22c55e;
 
       if (isUnderConstruction) {
         wallColor = 0xb45309;
         roofColor = 0xd97706;
         emissiveColor = 0x451a03;
-        beaconColor = 0xf59e0b;
       } else if (isWall) {
         if (typeId === 'wooden_palisade') {
           wallColor = 0x854d0e;
           roofColor = 0x713f12;
           emissiveColor = 0x1c1005;
-          beaconColor = 0xf59e0b;
         } else if (typeId === 'brick_wall') {
           wallColor = 0x9a3412;
           roofColor = 0x7c2d12;
           emissiveColor = 0x210c05;
-          beaconColor = 0xea580c;
         } else if (typeId === 'fortified_wall') {
           wallColor = 0x475569;
           roofColor = 0x334155;
           emissiveColor = 0x0f172a;
-          beaconColor = 0x94a3b8;
         } else {
           wallColor = 0x64748b;
           roofColor = 0x475569;
           emissiveColor = 0x1e293b;
-          beaconColor = 0x94a3b8;
         }
       } else if (isGate) {
         wallColor = typeId === 'wooden_gate' ? 0x92400e : 0x334155;
         roofColor = 0x10b981;
         emissiveColor = 0x064e3b;
-        beaconColor = 0x10b981;
       } else if (isField) {
         if (typeId === 'greenhouse' || typeId === 'greenhouse_hydro') {
           wallColor = 0x2a5f5f;
           roofColor = 0x7dd3fc;
           emissiveColor = 0x0f2a2a;
-          beaconColor = 0x38bdf8;
         } else {
-          wallColor = 0x3f6212;
-          roofColor = 0x4d7c0f;
-          emissiveColor = 0x14240a;
-          beaconColor = 0x84cc16;
+          // Open fields wear the tilled-soil texture, so the shell colour must
+          // be near-white for the texture's own loam/ridge colours to show
+          // (same convention as facilities: texture carries the material). A
+          // flat dark-olive wallColor over the soil map would read as brick.
+          wallColor = 0xf2e8d8;
+          roofColor = 0xf2e8d8;
+          emissiveColor = 0x101418;
         }
       } else if (isTower) {
-        wallColor = typeId === 'wooden_tower' ? 0x78350f : 0x1e293b;
+        // Warm timber brown for the wooden tower (matching the palisade/gate's
+        // 0x854d0e / 0x92400e palette) — a dark red tint (0x78350f) over the
+        // plank texture read as brick.
+        wallColor = typeId === 'wooden_tower' ? 0x854d0e : 0x1e293b;
         roofColor = 0xca8a04;
         emissiveColor = 0x422006;
-        beaconColor = 0xfacc15;
       } else if (isFacility) {
         // Facility shell: the surface texture carries the material colour, and
-        // the category accent colours the beacon/wireframe (blue HQ, red walls,
-        // violet utility, ...) so colony infrastructure stays legible.
+        // the category accent colours the beacon (blue HQ, red walls, violet
+        // utility, ...) so colony infrastructure stays legible.
         wallColor = 0xffffff;
         roofColor = look ? look.roof : 0x2e7d47;
         emissiveColor = 0x101418;
-        beaconColor = FUNCTIONAL_CATEGORY_COLORS[free.category]?.beacon ?? 0x22c55e;
       }
 
       // Procedural surface texture for walls / towers / gates / facilities so
@@ -1718,7 +1725,11 @@ export class BuildingRenderer {
       // as timber and a fence site as steel — not as identical brown boxes.
       // repeat is in 0..1 box-UV space — tile every ~2m so 10m walls show 5 tiles.
       let matKind: FreestandingMaterialKindName | null = null;
-      if (!isField) {
+      if (isField) {
+        // Open field plots (not greenhouses) wear the tilled-soil texture —
+        // amber-tinted while the crew builds, natural loam once completed.
+        if (typeId !== 'greenhouse' && typeId !== 'greenhouse_hydro') matKind = 'soil';
+      } else {
         if (isFacility) matKind = look?.kind ?? null;
         else if (typeId === 'wooden_palisade' || typeId === 'wooden_gate' || typeId === 'wooden_tower') matKind = 'wood';
         else if (typeId === 'brick_wall') matKind = 'brick';
@@ -1735,7 +1746,7 @@ export class BuildingRenderer {
         // CLONE the shared tileable surface — its repeat is per-structure (one
         // tile per ~2m of real wall) so mutating the shared cached texture
         // would leave every earlier structure sampling the last one's repeat.
-        const tex = getFreestandingMaterialTexture(matKind).clone();
+        const tex = getFreestandingMaterialTextureVariant(matKind, matKind === 'soil' ? this.soilVariant : 'default').clone();
         tex.repeat.set(Math.max(1, width / 2), Math.max(1, height / 2));
         wallMatOpts.map = tex;
         // Matching height map so freestanding shells also read with relief
@@ -1763,16 +1774,18 @@ export class BuildingRenderer {
       boxGeom.addGroup(24, 12, 0); // +Z, -Z sides (wall)
 
       const mesh = new THREE.Mesh(boxGeom, [wallMat, roofMat]);
+      // True-geometry barriers (palisade / fence / barbed wire) keep their real
+      // shape even while under construction — tinted amber instead of swapped
+      // for a plain box, so the player sees the actual wall they are building.
       const isTrueGeometryBarrier =
-        isWall && !isUnderConstruction && typeId !== 'brick_wall' && typeId !== 'fortified_wall';
+        isWall && typeId !== 'brick_wall' && typeId !== 'fortified_wall';
       const baseY = isTrueGeometryBarrier ? minElev - 3.0 : minElev;
 
       // Timber stockades, chain-link fences and barbed wire are NOT solid
       // boxes: each barrier gets its own true geometry (vertical logs, mesh
       // fabric between posts, wire strands on posts). Brick & fortified walls
-      // keep the masonry box shell. Under-construction sites stay as the
-      // translucent amber box so the player sees the shape they are building.
-      if (isWall && !isUnderConstruction && typeId !== 'brick_wall' && typeId !== 'fortified_wall') {
+      // keep the masonry box shell.
+      if (isWall && typeId !== 'brick_wall' && typeId !== 'fortified_wall') {
         // Ground-height function in the barrier's LOCAL frame (root sits at
         // baseY): pieces are planted individually so a stockade/fence follows
         // the terrain.
@@ -1785,7 +1798,7 @@ export class BuildingRenderer {
           const elev = this.terrainY(elevation, wx, wz, exaggeration);
           return Math.max(2.6, elev - baseY);
         };
-        this.renderBarrierGeometry(free, typeId, length, height, baseY, centerElev, beaconColor, groundYAt);
+        this.renderBarrierGeometry(free, typeId, length, height, baseY, centerElev, groundYAt, isUnderConstruction);
         return;
       }
 
@@ -1811,17 +1824,31 @@ export class BuildingRenderer {
 
       this.registerFreestandingBuilding(free, width, length, height, centerElev, mesh);
 
-      // Facilities: mount the type's own silhouette on the completed body — a
-      // gabled roof on building-like modules, tanks / stacks / cabinets / masts
-      // on infrastructure. Children of the root mesh so demolition removes them.
-      if (isFacility && !isUnderConstruction && look) {
+      // Towers rise as a real watchtower silhouette — corner posts, a fighting
+      // platform with a parapet and a pyramid roof — instead of a bare 8m box.
+      // The silhouette is attached even while under construction: wallMat /
+      // roofMat are already the amber translucent shell, so the player sees the
+      // actual tower shape they are building, not a blank box.
+      if (isTower) {
+        this.attachTowerSilhouette(mesh, width, length, totalH, wallMat, roofMat);
+      }
+
+      // Facilities: mount the type's own silhouette on the body — a gabled roof
+      // on building-like modules, tanks / stacks / cabinets / masts on
+      // infrastructure. Children of the root mesh so demolition removes them.
+      // Under construction the hardcoded silhouette materials are tinted amber
+      // so the player sees the real module shape while the crew builds.
+      if (isFacility && look) {
         this.attachFacilitySilhouette(mesh, width, length, totalH, look, wallMat, roofMat);
+        if (isUnderConstruction) this.tintAmberUnderConstruction(mesh);
       }
 
       // Add edge wireframe (tracked so body rebuilds remove the old outline).
+      // Same state language as adapted buildings: amber while the crew builds,
+      // green the moment construction completes.
       const edgeGeom = new THREE.EdgesGeometry(boxGeom);
       const edgeMat = new THREE.LineBasicMaterial({
-        color: isUnderConstruction ? 0x60a5fa : beaconColor,
+        color: isUnderConstruction ? 0xf59e0b : 0x22c55e,
         linewidth: 2,
       });
       const edgeLine = new THREE.LineSegments(edgeGeom, edgeMat);
@@ -1862,8 +1889,8 @@ export class BuildingRenderer {
     height: number,
     baseY: number,
     centerElev: number,
-    beaconColor: number,
-    groundYAt: (localZ: number) => number
+    groundYAt: (localZ: number) => number,
+    isUnderConstruction = false
   ) {
     const hl = length / 2;
     const root = new THREE.Group();
@@ -1872,9 +1899,11 @@ export class BuildingRenderer {
     root.castShadow = true;
     root.receiveShadow = true;
 
-    const dmg = this.barrierDamage(free); // continuous 0..1 (repair eases it down)
-    const wet = this.barrierRain;
-    const snow = this.barrierSnow;
+    // While under construction the wall is pristine (no combat damage, no
+    // weather grime) and every piece is tinted amber by tintAmberUnderConstruction.
+    const dmg = isUnderConstruction ? 0 : this.barrierDamage(free); // continuous 0..1
+    const wet = isUnderConstruction ? 0 : this.barrierRain;
+    const snow = isUnderConstruction ? 0 : this.barrierSnow;
     // Corrosion / weathering intensifies smoothly with damage.
     const rust = clamp01((dmg - 0.14) / 0.6);
 
@@ -2176,8 +2205,14 @@ export class BuildingRenderer {
     }
 
     this.registerFreestandingBuilding(free, thickness, length, height, centerElev, root);
+    if (isUnderConstruction) this.tintAmberUnderConstruction(root);
+    // Same state language as adapted buildings: amber while the crew builds,
+    // green the moment construction completes.
     const edgeGeom = new THREE.EdgesGeometry(new THREE.BoxGeometry(thickness, edgeTop, length));
-    const edgeMat = new THREE.LineBasicMaterial({ color: beaconColor, linewidth: 2 });
+    const edgeMat = new THREE.LineBasicMaterial({
+      color: isUnderConstruction ? 0xf59e0b : 0x22c55e,
+      linewidth: 2,
+    });
     const edgeLine = new THREE.LineSegments(edgeGeom, edgeMat);
     edgeLine.position.set(free.position.x, baseY, free.position.z);
     edgeLine.rotation.y = ((free.rotationDeg || 0) * Math.PI) / 180;
@@ -2186,6 +2221,30 @@ export class BuildingRenderer {
     const prevEdges = this.freestandingEdges.get(free.buildingId) || [];
     prevEdges.push(edgeLine);
     this.freestandingEdges.set(free.buildingId, prevEdges);
+  }
+
+  /**
+   * Pushes every material on a freshly built under-construction structure to
+   * the amber scaffold look: each material's colour is shifted toward amber and
+   * made translucent at 0.75 opacity (matching the box shell). Used for true-
+   * geometry barriers and facility silhouettes, whose pieces create their own
+   * materials — the same result the box path gets by passing amber colours
+   * straight into wallMat/roofMat.
+   */
+  private tintAmberUnderConstruction(root: THREE.Object3D) {
+    root.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!(mesh as THREE.Mesh).isMesh) return;
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const m of mats) {
+        const lam = m as THREE.MeshLambertMaterial;
+        if (lam && lam.color) {
+          lam.color.lerp(new THREE.Color(0xb45309), 0.72);
+          lam.transparent = true;
+          lam.opacity = 0.75;
+        }
+      }
+    });
   }
 
   /**
@@ -2372,6 +2431,83 @@ export class BuildingRenderer {
     return geom;
   }
 
+  /**
+   * Dresses a completed freestanding tower body as a real watchtower: four
+   * corner posts rising past the shaft, an overhanging fighting platform,
+   * a parapet rail and a small pyramid roof. Everything is a child of the
+   * body mesh, so the rebuild-on-status-change path removes it together with
+   * the shell and demolition disposes it in one go.
+   */
+  private attachTowerSilhouette(
+    root: THREE.Mesh,
+    width: number,
+    length: number,
+    totalH: number,
+    wallMat: THREE.Material,
+    roofMat: THREE.Material
+  ) {
+    const halfW = width / 2;
+    const halfL = length / 2;
+    const postT = 0.34;
+    const postH = 1.1;
+    // Corner posts poke just above the shaft top so the silhouette reads as
+    // a framed timber tower instead of a monolithic block.
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        const post = new THREE.Mesh(
+          new THREE.BoxGeometry(postT, postH, postT),
+          wallMat
+        );
+        post.position.set(sx * (halfW - postT / 2), totalH + postH / 2, sz * (halfL - postT / 2));
+        post.castShadow = true;
+        root.add(post);
+      }
+    }
+
+    // Fighting platform: a slab overhanging the shaft on every side.
+    const platW = width + 0.9;
+    const platL = length + 0.9;
+    const platT = 0.28;
+    const platY = totalH + postH;
+    const platform = new THREE.Mesh(new THREE.BoxGeometry(platW, platT, platL), wallMat);
+    platform.position.set(0, platY + platT / 2, 0);
+    platform.castShadow = true;
+    platform.receiveShadow = true;
+    root.add(platform);
+
+    // Parapet rails around the platform edge (front gap on the local -Z face
+    // so a manned weapon can fire over it).
+    const railH = 0.7;
+    const railT = 0.16;
+    const railY = platY + platT + railH / 2;
+    const backRail = new THREE.Mesh(new THREE.BoxGeometry(platW, railH, railT), wallMat);
+    backRail.position.set(0, railY, platL / 2 - railT / 2);
+    backRail.castShadow = true;
+    root.add(backRail);
+    for (const sx of [-1, 1]) {
+      const sideRail = new THREE.Mesh(new THREE.BoxGeometry(railT, railH, platL), wallMat);
+      sideRail.position.set(sx * (platW / 2 - railT / 2), railY, 0);
+      sideRail.castShadow = true;
+      root.add(sideRail);
+    }
+    // Low front lip so the open firing face still reads as railed.
+    const frontLip = new THREE.Mesh(new THREE.BoxGeometry(platW, 0.22, railT), wallMat);
+    frontLip.position.set(0, platY + platT + 0.11, -platL / 2 + railT / 2);
+    frontLip.castShadow = true;
+    root.add(frontLip);
+
+    // Pyramid roof held above the platform by the corner posts.
+    const roofH = 1.3;
+    const roof = new THREE.Mesh(
+      new THREE.ConeGeometry(Math.max(platW, platL) * 0.62, roofH, 4),
+      roofMat
+    );
+    roof.rotation.y = Math.PI / 4; // align the cone's square base with the platform
+    roof.position.set(0, platY + platT + railH + roofH / 2 + 0.15, 0);
+    roof.castShadow = true;
+    root.add(roof);
+  }
+
   private attachFacilitySilhouette(
     root: THREE.Mesh,
     width: number,
@@ -2553,7 +2689,11 @@ export class BuildingRenderer {
         opts.bumpMap = bump;
         opts.bumpScale = 0.85;
       }
-      return new THREE.MeshLambertMaterial(opts);
+      const mat = new THREE.MeshLambertMaterial(opts);
+      // Under construction the real material texture is tinted amber (same
+      // language as the box shell) instead of swapping to a flat amber box.
+      if (isUnderConstruction) mat.color.lerp(new THREE.Color(0xb45309), 0.72);
+      return mat;
     };
     const plainMat = (color: number, emissive = 0x000000): THREE.MeshLambertMaterial =>
       new THREE.MeshLambertMaterial({
@@ -2562,14 +2702,14 @@ export class BuildingRenderer {
         transparent: isUnderConstruction,
         opacity: isUnderConstruction ? 0.75 : 1.0,
       });
-    // Under construction every part is the translucent amber placeholder; once
-    // complete the shell is textured to its type.
-    const towerMat = isUnderConstruction ? plainMat(0xb45309, 0x451a03) : faceMat(towerW, towerH);
+    // Gates always wear their real material texture — under construction tinted
+    // amber and translucent, once complete fully opaque.
+    const towerMat = faceMat(towerW, towerH);
     const towerRoofMat = isUnderConstruction
       ? plainMat(0xd97706, 0xd97706)
       : plainMat(roofHex[free.typeId] ?? 0x475569);
     const beamSpan = width + towerW * 2 + 0.2;
-    const beamMat = isUnderConstruction ? plainMat(0xd97706) : faceMat(beamSpan, 0.8);
+    const beamMat = faceMat(beamSpan, 0.8);
 
     for (const sx of [-1, 1]) {
       const tower = new THREE.Mesh(new THREE.BoxGeometry(towerW, towerH, towerD), [towerMat, towerRoofMat]);
@@ -2593,9 +2733,10 @@ export class BuildingRenderer {
         gateGroup.add(cap);
       }
       // Edge wireframe around each tower so the shape is legible at a glance.
+      // Amber while under construction, green once the gate is complete.
       const towerEdgeGeom = new THREE.EdgesGeometry(new THREE.BoxGeometry(towerW, towerH, towerD));
       const towerEdgeMat = new THREE.LineBasicMaterial({
-        color: isUnderConstruction ? 0x60a5fa : 0x111317,
+        color: isUnderConstruction ? 0xf59e0b : 0x22c55e,
         linewidth: 2,
       });
       const towerEdge = new THREE.LineSegments(towerEdgeGeom, towerEdgeMat);
@@ -2631,7 +2772,7 @@ export class BuildingRenderer {
     const doorH = towerH - 0.4;
     const doorT = 0.28;
     const hingeX = width / 2 - 0.08;
-    const doorMat = isUnderConstruction ? wallMat : faceMat(doorW, doorH);
+    const doorMat = faceMat(doorW, doorH);
     const leftDoor = new THREE.Group();
     const rightDoor = new THREE.Group();
     leftDoor.position.set(-hingeX, 0, 0);
@@ -2742,6 +2883,18 @@ export class BuildingRenderer {
    * Under-construction sites keep the amber placeholder box ('uc').
    */
   private barrierVisualKey(free: AdaptedBuilding): string | null {
+    // Field plots track the soil weather variant (mud / dust / snow) so a
+    // weather flip rebuilds them with the new texture.
+    const isField =
+      free.typeId === 'field' ||
+      free.typeId === 'vast_field' ||
+      free.typeId === 'greenhouse' ||
+      free.typeId === 'greenhouse_hydro';
+    if (isField) {
+      // Greenhouses are glazed envelopes — their glass doesn't turn to mud.
+      if (free.typeId === 'greenhouse' || free.typeId === 'greenhouse_hydro') return null;
+      return `soil:${this.soilVariant}`;
+    }
     if (!BARRIER_TYPE_IDS.has(free.typeId)) return null;
     if (free.constructionStatus !== 'completed') return 'uc';
     const q = Math.min(28, Math.max(0, Math.round(this.barrierDamage(free) * 28)));
@@ -2765,6 +2918,21 @@ export class BuildingRenderer {
     if (Math.abs(s - this.barrierSnow) < 0.001 && Math.abs(r - this.barrierRain) < 0.001) return;
     this.barrierSnow = s;
     this.barrierRain = r;
+    this.refreshBarrierVisuals(this.lastBarrierElevation, this.lastBarrierExaggeration);
+  }
+
+  /**
+   * Feed the current weather into field plots: their tilled-soil surface swaps
+   * to soaked mud after rain, cracked dust in a heatwave and a frost powdering
+   * under freezing weather. Fields whose variant changed are rebuilt
+   * immediately (same throttle pattern as the barrier weather look).
+   */
+  public setSoilWeather(weather: string) {
+    const variant = soilVariantForWeather(weather || 'clear');
+    if (variant === this.soilVariant) return;
+    this.soilVariant = variant;
+    // Only field-type bodies wear the soil texture; reuse the barrier refresh
+    // sweep (it rebuilds any freestanding body whose visual signature changed).
     this.refreshBarrierVisuals(this.lastBarrierElevation, this.lastBarrierExaggeration);
   }
 

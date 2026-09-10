@@ -133,6 +133,11 @@ export interface Squad {
   name: string;
   leaderId: string; // NamedSurvivor ID, or '' for a leaderless all-recruit squad (generic Field Leader)
   generalCount: number; // general pop members: 0-3 with a named leader, 4 for a leaderless squad (Total squad max = 4)
+  /** Anonymous general members killed in the field. They keep their roster
+   *  positions (so member ids stay stable) but are excluded from labour
+   *  accounting and are NEVER returned to the population pool on disband —
+   *  only alive members come back. Restore them at HQ via replenishSquad. */
+  deadCount?: number;
   status: SquadPhysicalAction;
   inventory: LootItem[];
   currentWeightKg: number;

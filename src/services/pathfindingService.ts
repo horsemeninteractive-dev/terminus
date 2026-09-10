@@ -23,6 +23,15 @@ export const INDOOR_SPEED_MULTIPLIER = 0.42;
 // a route is chosen through a building only when it genuinely saves travel time.
 const INDOOR_CELL_COST = 1 / INDOOR_SPEED_MULTIPLIER; // ~2.38
 
+// Water: humans can wade/swim across rivers and lakes, but it is slower than
+// dry ground (the movement model applies WATER_SPEED_MULTIPLIER while a unit
+// stands in a water cell). The A* cost is the inverse of that multiplier so
+// the pathfinder's time model matches the movement model — a route is chosen
+// through water only when it genuinely saves travel time. Infected cannot
+// enter water at all (see PathOptions.waterImpassable).
+export const WATER_SPEED_MULTIPLIER = 0.45;
+const WATER_CELL_COST = 1 / WATER_SPEED_MULTIPLIER; // ~2.22
+
 function pointInPolygon(x: number, z: number, poly: Point2D[]): boolean {
   let inside = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
@@ -110,6 +119,9 @@ export interface PathState {
 export interface PathOptions {
   gatesOpen?: boolean;
   wallsImpassable?: boolean;
+  /** Humans wade/swim through water cells at a movement penalty; when true
+   *  (infected) water cells are hard barriers never traversed. */
+  waterImpassable?: boolean;
 }
 
 export class PathGrid {
@@ -130,6 +142,7 @@ export class PathGrid {
   readonly rows: number;
   private cellCosts: Float32Array;
   private isBuildingCell: Uint8Array;
+  private isWaterCell: Uint8Array;
   private rawBuildings: BuildingPolygon[];
   // Cells currently occupied by player-built freestanding structures (walls,
   // fences, towers). Tracked so they can be cleared when a structure is removed
@@ -170,9 +183,20 @@ export class PathGrid {
     const totalCells = this.cols * this.rows;
     this.cellCosts = new Float32Array(totalCells).fill(1.0);
     this.isBuildingCell = new Uint8Array(totalCells);
+    this.isWaterCell = new Uint8Array(totalCells);
     this.gateCells = new Uint8Array(totalCells);
     this.hazardSlow = new Float32Array(totalCells);
     this.hazardDamage = new Float32Array(totalCells);
+
+    // Rasterize water polygons (rivers, lakes, canals) as slower but passable
+    // terrain for humans — the infected treat them as hard barriers via the
+    // waterImpassable path option. Roads override water underneath bridges.
+    if (mapData.landuse) {
+      for (const lu of mapData.landuse) {
+        if (lu.type !== 'water' || !lu.polygon || lu.polygon.length < 3) continue;
+        this.rasterizeWaterPolygon(lu.polygon);
+      }
+    }
 
     // Rasterize roads as lower-cost traversal (0.75x)
     if (mapData.roads) {
@@ -256,6 +280,51 @@ export class PathGrid {
           this.isBuildingCell[id] = 1;
           this.cellCosts[id] = INDOOR_CELL_COST; // Matches the real 0.42x indoor speed
         }
+      }
+    }
+  }
+
+  /** Rasterize one water polygon (river/lake/canal) into the cost grid.
+   *  Water is passable for humans at a wading penalty; roads drawn over it
+   *  (bridges) keep their cheaper road cost. The infected's waterImpassable
+   *  check reads the isWaterCell mask, which is set regardless of road cost. */
+  private rasterizeWaterPolygon(poly: Point2D[]) {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (const p of poly) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.z < minZ) minZ = p.z;
+      if (p.z > maxZ) maxZ = p.z;
+    }
+
+    const c0 = Math.floor((minX - this.minX) / this.cellSize);
+    const c1 = Math.floor((maxX - this.minX) / this.cellSize);
+    const r0 = Math.floor((minZ - this.minZ) / this.cellSize);
+    const r1 = Math.floor((maxZ - this.minZ) / this.cellSize);
+
+    const half = this.cellSize / 2;
+    for (let r = r0; r <= r1; r++) {
+      for (let c = c0; c <= c1; c++) {
+        if (!this.isInside(c, r)) continue;
+        const cx = this.minX + (c + 0.5) * this.cellSize;
+        const cz = this.minZ + (r + 0.5) * this.cellSize;
+        const inside =
+          pointInPolygon(cx, cz, poly) ||
+          pointInPolygon(cx - half, cz - half, poly) ||
+          pointInPolygon(cx + half, cz - half, poly) ||
+          pointInPolygon(cx - half, cz + half, poly) ||
+          pointInPolygon(cx + half, cz + half, poly);
+        if (!inside) continue;
+        const id = this.idx(c, r);
+        // Never turn buildings into water (defensive: buildings win).
+        if (this.isBuildingCell[id] === 1) continue;
+        this.isWaterCell[id] = 1;
+        // Bridges (roads) keep their lower cost; open water slows humans.
+        if (this.cellCosts[id] < 1.0) continue;
+        this.cellCosts[id] = Math.max(this.cellCosts[id], WATER_CELL_COST);
       }
     }
   }
@@ -385,6 +454,14 @@ export class PathGrid {
     return this.isBuildingCell[this.idx(cell.col, cell.row)] === 1;
   }
 
+  /** True when the given world point sits in a water cell (river/lake/canal).
+   *  Water is wadeable for humans (slower) and impassable for the infected. */
+  public isWater(x: number, z: number): boolean {
+    const cell = this.worldToCell(x, z);
+    if (!cell) return false;
+    return this.isWaterCell[this.idx(cell.col, cell.row)] === 1;
+  }
+
   /**
    * §7.1 Hazard sampling (barbed wire): returns the slow percentage and
    * per-second contact damage for the cell under a world point, or null when
@@ -415,6 +492,44 @@ export class PathGrid {
     const id = this.idx(cell.col, cell.row);
     if (this.cellCosts[id] >= 1e5) return true;
     return opts?.gatesOpen === false && this.gateCells[id] === 1;
+  }
+
+  /**
+   * Nearest walkable point to the given world position, found by scanning
+   * outward ring by ring through the cost grid. Returns the input unchanged
+   * when it already sits on walkable terrain (or no walkable cell exists
+   * within the search radius).
+   *
+   * Used by {@link stepAlongPath} when a unit's goal lies inside a fully
+   * blocked region (e.g. a construction site's own footprint cells): the
+   * search is redirected there so the unit can at least reach the site edge
+   * instead of wedging forever on a dead path.
+   */
+  public nearestWalkablePoint(x: number, z: number, maxRingRadius = 12): Point2D {
+    const goalCell = this.worldToCell(x, z);
+    if (!goalCell) return { x, z };
+    const id = this.idx(goalCell.col, goalCell.row);
+    if (this.cellCosts[id] < 1e5 && !(this.gateCells[id] === 1)) return { x, z };
+    for (let r = 1; r <= maxRingRadius; r++) {
+      let best: { x: number; z: number; d: number } | null = null;
+      for (let dr = -r; dr <= r; dr++) {
+        for (let dc = -r; dc <= r; dc++) {
+          // Ring scan: only the perimeter of each successive square.
+          if (Math.max(Math.abs(dr), Math.abs(dc)) !== r) continue;
+          const col = goalCell.col + dc;
+          const row = goalCell.row + dr;
+          if (!this.isInside(col, row)) continue;
+          const nId = this.idx(col, row);
+          if (this.cellCosts[nId] >= 1e5) continue;
+          const px = this.minX + (col + 0.5) * this.cellSize;
+          const pz = this.minZ + (row + 0.5) * this.cellSize;
+          const d = Math.hypot(px - x, pz - z);
+          if (!best || d < best.d) best = { x: px, z: pz, d };
+        }
+      }
+      if (best) return { x: best.x, z: best.z };
+    }
+    return { x, z };
   }
 
   private worldToCell(x: number, z: number): { col: number; row: number } | null {
@@ -451,7 +566,11 @@ export class PathGrid {
     if (!a || !b) return false;
     if (a.col === b.col && a.row === b.row) {
       const sameId = this.idx(a.col, a.row);
-      return this.isBuildingCell[sameId] === 0 && !(opts?.gatesOpen === false && this.gateCells[sameId] === 1);
+      return (
+        this.isBuildingCell[sameId] === 0 &&
+        !(opts?.gatesOpen === false && this.gateCells[sameId] === 1) &&
+        !(opts?.waterImpassable && this.isWaterCell[sameId] === 1)
+      );
     }
 
     const dist = Math.hypot(x2 - x1, z2 - z1);
@@ -465,6 +584,7 @@ export class PathGrid {
       const id = this.idx(cell.col, cell.row);
       if (this.isBuildingCell[id] === 1) return false;
       if (opts?.gatesOpen === false && this.gateCells[id] === 1) return false;
+      if (opts?.waterImpassable && this.isWaterCell[id] === 1) return false;
     }
     return true;
   }
@@ -525,9 +645,11 @@ export class PathGrid {
         if (closed[nIdx] === 1) continue;
 
         // Hostiles treat walls (1e5) and closed gates as impassable, never
-        // traversable — a fenced perimeter genuinely keeps them out.
+        // traversable — a fenced perimeter genuinely keeps them out. The
+        // infected also cannot wade: water cells are hard barriers for them.
         if (opts?.wallsImpassable && this.cellCosts[nIdx] >= 1e5) continue;
         if (opts?.gatesOpen === false && this.gateCells[nIdx] === 1) continue;
+        if (opts?.waterImpassable && this.isWaterCell[nIdx] === 1) continue;
 
         const cellWeight = this.cellCosts[nIdx];
         const stepCost = distMult * cellWeight;
@@ -602,7 +724,7 @@ export function stepAlongPath(
   delta: number,
   arriveRadius = 1.2,
   opts?: PathOptions
-): { x: number; z: number; rotation: number; state: PathState; arrived: boolean; isIndoor: boolean } {
+): { x: number; z: number; rotation: number; state: PathState; arrived: boolean; isIndoor: boolean; isInWater: boolean } {
   const goalKey = goalKeyFor(goalX, goalZ);
   // A cached path is reusable only for the SAME goal, the SAME grid, and the
   // SAME obstacle revision. A new map (different gridId) or any wall/gate placed
@@ -647,12 +769,25 @@ export function stepAlongPath(
         state: st,
         arrived: true,
         isIndoor: true,
+        isInWater: grid ? grid.isWater(x, z) : false,
       };
     } else {
-      // Obstructed and the search failed (e.g. goal pinned behind a wall with
-      // no route). Stay put on a dead one-point path rather than phasing
-      // through construction.
-      st.path = [{ x, z }];
+      // Obstructed and the search failed. A common cause: the goal itself lies
+      // inside a fully blocked footprint — construction crews target a
+      // structure's centre, which always sits inside the structure's own
+      // blocked cells (buildFreestanding rasterizes the fresh footprint as a
+      // hard obstacle). Retarget the search to the nearest walkable cell
+      // centre so the crew walks to the site edge instead of wedging forever
+      // on a dead one-point path. Only when no walkable cell exists nearby
+      // (goal pinned behind an enclosed wall run) does the crew stay put.
+      const fallback = grid
+        ? grid.nearestWalkablePoint(goalX, goalZ)
+        : { x: goalX, z: goalZ };
+      if (fallback.x !== goalX || fallback.z !== goalZ) {
+        st.path = [{ x, z }, fallback];
+      } else {
+        st.path = [{ x, z }];
+      }
     }
     st.index = 0;
   }
@@ -666,11 +801,32 @@ export function stepAlongPath(
 
   const distToGoal = Math.hypot(goalX - x, goalZ - z);
   if (distToGoal <= arriveRadius) {
-    return { x, z, rotation: Math.atan2(goalX - x, goalZ - z), state: st, arrived: true, isIndoor: false };
+    return { x, z, rotation: Math.atan2(goalX - x, goalZ - z), state: st, arrived: true, isIndoor: false, isInWater: grid ? grid.isWater(x, z) : false };
+  }
+
+  // The path's final waypoint may be a fallback (nearest walkable cell to an
+  // unreachable goal, e.g. a construction site's own footprint centre). Once
+  // the unit consumes the whole path it has reached the site edge — count
+  // that as arrival, otherwise it stands on a fully-consumed path reporting
+  // `arrived: false` forever and construction can never begin.
+  const lastWp = st.path[st.path.length - 1];
+  const lastIsFallback =
+    st.path.length === 2 &&
+    lastWp &&
+    (Math.abs(lastWp.x - goalX) > 0.001 || Math.abs(lastWp.z - goalZ) > 0.001);
+  if (
+    lastIsFallback &&
+    st.index >= st.path.length - 1 &&
+    Math.hypot(lastWp.x - x, lastWp.z - z) < 1.2
+  ) {
+    return { x, z, rotation: Math.atan2(goalX - x, goalZ - z), state: st, arrived: true, isIndoor: false, isInWater: grid ? grid.isWater(x, z) : false };
   }
 
   const isIndoor = grid ? grid.isInsideBuilding(x, z) : false;
-  const effectiveSpeed = isIndoor ? baseSpeed * INDOOR_SPEED_MULTIPLIER : baseSpeed;
+  const isInWater = grid ? grid.isWater(x, z) : false;
+  // Wading/swimming is slower than dry ground; indoor slowdown stacks.
+  let effectiveSpeed = isIndoor ? baseSpeed * INDOOR_SPEED_MULTIPLIER : baseSpeed;
+  if (isInWater) effectiveSpeed *= WATER_SPEED_MULTIPLIER;
 
   const wp = st.path[st.index] ?? { x: goalX, z: goalZ };
   const dx = wp.x - x;
@@ -679,7 +835,7 @@ export function stepAlongPath(
 
   if (dist <= 0.01) {
     st.index = Math.min(st.index + 1, st.path.length - 1);
-    return { x, z, rotation: Math.atan2(goalX - x, goalZ - z), state: st, arrived: false, isIndoor };
+    return { x, z, rotation: Math.atan2(goalX - x, goalZ - z), state: st, arrived: false, isIndoor, isInWater };
   }
 
   const step = Math.min(dist, effectiveSpeed * delta);
@@ -690,5 +846,6 @@ export function stepAlongPath(
     state: st,
     arrived: false,
     isIndoor,
+    isInWater,
   };
 }

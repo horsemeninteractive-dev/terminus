@@ -54,6 +54,18 @@ export class CombatRenderer {
     this.terrainSurfaceSampler = sampler;
   }
 
+  /**
+   * Water sampler injected by WorldScene: true when a world point sits inside
+   * a water polygon (river/lake/canal). Drives the swim pose — moving units
+   * over water use a front-crawl stroke instead of walk/run, and stay sunk to
+   * water level (see swimOffset).
+   */
+  private waterSampler: ((x: number, z: number) => boolean) | null = null;
+
+  public setWaterSampler(sampler: ((x: number, z: number) => boolean) | null) {
+    this.waterSampler = sampler;
+  }
+
   /** Rendered-terrain height when available, else the smooth analytic surface. */
   private terrainSample(x: number, z: number, exaggeration: number): number {
     return (
@@ -495,16 +507,18 @@ export class CombatRenderer {
       if (!sm) continue;
       const p = sm.sample(now);
       const elev = this.terrainSample(p.x, p.z, this.currentExaggeration);
-      container.position.set(p.x, elev, p.z);
+      const inWater = this.waterSampler?.(p.x, p.z) ?? false;
+      container.position.set(p.x, inWater ? elev - 0.35 : elev, p.z);
       if (p.rot !== null) container.rotation.y = p.rot;
 
       // Rigged members: rifle-port jog while covering ground (squads move at
       // ~10 m/s tactical run, so a walk cadence would look like moon-walking),
-      // weapons raised in combat.
+      // weapons raised in combat. Wading units use the front-crawl swim pose.
       const moving = this.trackMotion(`squad:${id}`, p.x, p.z);
       const combat = this.squadCombatIds.has(id);
-      const mode: RigPoseMode = combat && !moving ? 'aim' : moving ? 'run' : 'idle';
-      const t = this.advanceClock(`squad:${id}`, delta, combat && !moving ? 0.5 : moving ? 1 : 0.4);
+      const mode: RigPoseMode =
+        moving && inWater ? 'swim' : combat && !moving ? 'aim' : moving ? 'run' : 'idle';
+      const t = this.advanceClock(`squad:${id}`, delta, moving && inWater ? 1.4 : combat && !moving ? 0.5 : moving ? 1 : 0.4);
       this.poseRigs(container.userData?.rigs, mode, t);
     }
 
@@ -513,20 +527,24 @@ export class CombatRenderer {
       if (!sm) continue;
       const p = sm.sample(now);
       const elev = this.terrainSample(p.x, p.z, this.currentExaggeration);
-      mesh.position.set(p.x, elev, p.z);
+      const inWater = this.waterSampler?.(p.x, p.z) ?? false;
+      mesh.position.set(p.x, inWater ? elev - 0.35 : elev, p.z);
       const anim = this.workerAnimState.get(id);
       // Rigs animate whenever a work action is underway or the worker is on the
       // move; idle crews breathe in place (cadence scales with clock speed so
       // limbs keep up with speed-scaled ground movement — no slow-motion at 2x).
+      // Wading workers switch to the swim stroke while crossing water.
       const moving = this.trackMotion(`worker:${id}`, p.x, p.z);
-      const mode: RigPoseMode = anim === 'harvesting'
+      const mode: RigPoseMode = moving && inWater
+        ? 'swim'
+        : anim === 'harvesting'
         ? 'workHarvest'
         : anim === 'constructing'
         ? 'workBuild'
         : moving
         ? 'walk'
         : 'idle';
-      const t = this.advanceClock(`worker:${id}`, delta, anim ? 1 : moving ? 1 : 0.4);
+      const t = this.advanceClock(`worker:${id}`, delta, moving && inWater ? 1.4 : anim ? 1 : moving ? 1 : 0.4);
       this.poseRigs(mesh.userData?.rigs, mode, t);
     }
 
@@ -570,7 +588,8 @@ export class CombatRenderer {
       if (!sm) continue;
       const p = sm.sample(now);
       const elev = this.terrainSample(p.x, p.z, this.currentExaggeration);
-      mesh.position.set(p.x, elev, p.z);
+      const inWater = this.waterSampler?.(p.x, p.z) ?? false;
+      mesh.position.set(p.x, inWater ? elev - 0.35 : elev, p.z);
       if (p.rot !== null) mesh.rotation.y = p.rot;
 
       const rig: HumanoidRig | undefined = mesh.userData?.rig;
@@ -586,9 +605,16 @@ export class CombatRenderer {
           }
         }
         const moving = this.trackMotion(`hostile:${id}`, p.x, p.z);
+        const inWater = this.waterSampler?.(p.x, p.z) ?? false;
         const combat = this.hostileCombatIds.has(id);
-        const mode: RigPoseMode = combat && !moving ? 'aim' : moving ? 'walk' : 'idle';
-        const t = this.advanceClock(`hostile:${id}`, delta, combat && !moving ? 0.5 : moving ? 1 : 0.4);
+        const mode: RigPoseMode = moving && inWater
+          ? 'swim'
+          : combat && !moving
+          ? 'aim'
+          : moving
+          ? 'walk'
+          : 'idle';
+        const t = this.advanceClock(`hostile:${id}`, delta, moving && inWater ? 1.4 : combat && !moving ? 0.5 : moving ? 1 : 0.4);
         applyRigPose(rig, mode, t + rig.anim.workPhase);
       }
     }

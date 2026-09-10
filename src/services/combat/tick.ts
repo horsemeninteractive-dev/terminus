@@ -41,6 +41,12 @@ export interface CombatTickResult {
   settlementNotifications: { title: string; desc: string; type: 'warn' | 'info' | 'success' | 'danger' }[];
   newInfections: SurvivorInfection[];
   fallenHeroEvents: { survivorId: string; cause: DeathCause; location: string }[];
+  /** Fresh squad casualties this tick — members actually killed NOW (not
+   *  previously-dead members), so the settlement can reconcile its roster
+   *  counts exactly once per death. `generalKilled` counts anonymous
+   *  recruits; `leaderKilled` mirrors a fallenHeroEvents entry for the
+   *  named leader. */
+  squadCasualties: { squadId: string; leaderKilled: boolean; generalKilled: number }[];
   droppedItems: DroppedItem[];
   // §5.2 rival factions: armed hostile-human occupants of Hideouts, plus any
   // player squads they overpowered this tick (captured for ransom, not killed).
@@ -91,6 +97,20 @@ export function tickCombatSimulation(
   const settlementNotifications: { title: string; desc: string; type: 'warn' | 'info' | 'success' | 'danger' }[] = [];
   const newInfections: SurvivorInfection[] = [];
   const fallenHeroEvents: { survivorId: string; cause: DeathCause; location: string }[] = [];
+  const squadCasualties: { squadId: string; leaderKilled: boolean; generalKilled: number }[] = [];
+  const recordSquadCasualty = (squadId: string, isLeader: boolean) => {
+    let entry = squadCasualties.find((c) => c.squadId === squadId);
+    if (!entry) {
+      entry = { squadId, leaderKilled: false, generalKilled: 0 };
+      squadCasualties.push(entry);
+    }
+    if (isLeader) entry.leaderKilled = true;
+    else entry.generalKilled += 1;
+  };
+  // Rival-human kills are deferred: a squad reaching 0 HP against a Hideout is
+  // CAPTURED for ransom (its people are hostages, not casualties), so kills
+  // only count once the capture decision is known (see flush below).
+  const deferredRivalKills: { squadId: string; isLeader: boolean }[] = [];
   const capturedSquadIds: string[] = [];
   let ammoAvailable = settlement?.stockpile?.ammo?.sharedPool ?? 0;
   let ammoConsumed = 0;
@@ -665,6 +685,22 @@ export function tickCombatSimulation(
               victim.currentHp = Math.max(0, victim.currentHp - appliedDamage);
               if (victim.currentHp <= 0) {
                 victim.isAlive = false;
+                // §6.2/§4.3 casualty accounting: every member killed NOW is
+                // reported so the settlement can reconcile the roster — dead
+                // anonymous recruits become dead slots (never returned to the
+                // labour pool on disband) and a dead NAMED leader is
+                // memorialized immediately, even when the rest of the squad
+                // survives (previously the settlement only learned of a leader
+                // death on a full squad wipe, leaving a dead leader stuck in
+                // the leader slot).
+                recordSquadCasualty(targetSquad.squadId, !!victim.isLeader);
+                if (victim.isLeader) {
+                  fallenHeroEvents.push({
+                    survivorId: targetSquad.leaderId,
+                    cause: 'combat_slain',
+                    location: `Tactical Grid (${Math.round(targetSquad.x)}, ${Math.round(targetSquad.z)})`,
+                  });
+                }
                 // Drop equipped weapon & armor to the ground (§4.3)
                 const dropWeapon = victim.weaponId !== 'knife' ? victim.weaponId : null;
                 if (dropWeapon || victim.armorId) {
@@ -713,31 +749,48 @@ export function tickCombatSimulation(
               durationMs: 800,
             });
 
-            // Melee bite roll check (§6.2 Field infection on bite, reduced by vaccine and building barricades)
+            // Melee bite roll check (§6.2 Field infection on bite, reduced by vaccine and building barricades).
+            // ARCHITECTURE (named-survivor exposure): only a NAMED squad leader can
+            // contract an infection — the infection record belongs to the persistent
+            // survivor entity (settlement.infections, keyed by survivor id), never to
+            // the squad or its anonymous personnel. A leaderless squad has nobody to
+            // infect: anonymous members stay abstract manpower with no hidden ids.
+            // Each zombie also rolls at most ONE successful exposure (tracked by
+            // zombie id) so a long melee doesn't machine-gun re-bite the leader.
             let biteChance = rollBiteChance(zombie.variant, settlement);
             if (isSquadInBuilding) {
               biteChance *= 0.5; // Barricade reduces bite angle
             }
-            if (Math.random() < biteChance) {
+            const alreadyBitten = zombie.lastBiteTargetSquadId === targetSquad.squadId;
+            if (
+              targetSquad.leaderId &&
+              targetSquad.leaderId !== '' &&
+              !alreadyBitten &&
+              Math.random() < biteChance
+            ) {
+              // Stored ON the zombie so suppression persists across ticks —
+              // the encounter ends when the zombie dies or disengages.
+              zombie.lastBiteTargetSquadId = targetSquad.squadId;
+              // Resolve the REAL named survivor so the record carries the true id/name.
+              const leaderSurvivor = settlement?.namedSurvivors.find(
+                (ns) => ns.id === targetSquad.leaderId
+              );
               const inf = createSurvivorInfection(
                 targetSquad.leaderId,
-                targetSquad.leaderName,
+                leaderSurvivor?.name ?? targetSquad.leaderName,
                 true,
                 `${zombie.variant.toUpperCase()} Melee Claw/Bite`
               );
               newInfections.push(inf);
             }
 
+            // The whole-squad-down notification is informational only — the
+            // leader's fallenHeroEvent (if any) was already pushed when their
+            // MEMBER died above, so a wipe never double-records the leader.
             if (targetSquad.currentHp <= 0) {
-              fallenHeroEvents.push({
-                survivorId: targetSquad.leaderId,
-                cause: 'combat_slain',
-                location: `Tactical Grid (${Math.round(targetSquad.x)}, ${Math.round(targetSquad.z)})`,
-              });
-
               settlementNotifications.push({
-                title: 'SQUAD OVERWHELMED & LEADER FALLEN',
-                desc: `${targetSquad.name} (${targetSquad.leaderName}) was killed in the line of duty!`,
+                title: 'SQUAD OVERWHELMED',
+                desc: `${targetSquad.name} was wiped out in the field!`,
                 type: 'warn',
               });
             }
@@ -884,7 +937,9 @@ export function tickCombatSimulation(
           1.2,
           // The infected cannot pass through gates, and walls are never
           // traversable for them — a fenced perimeter genuinely keeps them out.
-          { gatesOpen: false, wallsImpassable: true }
+          // They also cannot wade: rivers/lakes are hard barriers, so a water
+          // line genuinely holds them back from the colony.
+          { gatesOpen: false, wallsImpassable: true, waterImpassable: true }
         );
         x = step.x;
         z = step.z;
@@ -1028,7 +1083,12 @@ export function tickCombatSimulation(
 
             if (victim) {
               victim.currentHp = Math.max(0, victim.currentHp - appliedDamage);
-              if (victim.currentHp <= 0) victim.isAlive = false;
+              if (victim.currentHp <= 0) {
+                victim.isAlive = false;
+                // Deferred — a squad downed by rivals this tick is captured
+                // (ransom) and its members are hostages, not casualties.
+                deferredRivalKills.push({ squadId: targetSquad.squadId, isLeader: !!victim.isLeader });
+              }
               recomputeSquadHealth(targetSquad);
 
               settlementNotifications.push({
@@ -1144,6 +1204,21 @@ export function tickCombatSimulation(
     })
     .filter((h) => h.state !== 'dead');
 
+  // Flush rival kills now that capture is decided: members of captured squads
+  // survive as hostages; everyone else's deaths count normally.
+  for (const kill of deferredRivalKills) {
+    if (capturedSquadIds.includes(kill.squadId)) continue;
+    recordSquadCasualty(kill.squadId, kill.isLeader);
+    if (kill.isLeader) {
+      const captorSquad = squads.find((s) => s.squadId === kill.squadId);
+      fallenHeroEvents.push({
+        survivorId: captorSquad?.leaderId ?? '',
+        cause: 'combat_slain',
+        location: `Tactical Grid (${Math.round(captorSquad?.x ?? 0)}, ${Math.round(captorSquad?.z ?? 0)})`,
+      });
+    }
+  }
+
   // 4. Dropped equipment pickup (§4.3) — squads within 3m auto-equip dropped gear
   const remainingDrops: DroppedItem[] = [];
   for (const item of droppedItems) {
@@ -1219,6 +1294,9 @@ export function tickCombatSimulation(
       // guarded gate (guardable + allowsFriendlyPassage). Passive barriers —
       // walls, fences, barbed wire, floodlights — are never firing positions.
       if (!def || !(def.weaponMountable || (def.guardable && def.allowsFriendlyPassage))) continue;
+      // An unfinished tower/gate has no crew platform (scaffolding only) — it
+      // must never open fire, even when workers are assigned to BUILD it.
+      if (bldg.constructionStatus !== 'completed') continue;
       const isTower = !!def.weaponMountable;
       const isGate = !!def.allowsFriendlyPassage && !isTower;
       defensiveStructures.push({
@@ -1240,6 +1318,8 @@ export function tickCombatSimulation(
     for (const fs of settlement.freestandingBuildings) {
       const def = getCanonicalDefenseDef(fs.typeId);
       if (!def || !(def.weaponMountable || (def.guardable && def.allowsFriendlyPassage))) continue;
+      // Same rule for freestanding towers/gates: no firing until completed.
+      if (fs.constructionStatus !== 'completed') continue;
       const isTower = !!def.weaponMountable;
       const isGate = !!def.allowsFriendlyPassage && !isTower;
       defensiveStructures.push({
@@ -1383,6 +1463,7 @@ export function tickCombatSimulation(
     settlementNotifications,
     newInfections,
     fallenHeroEvents,
+    squadCasualties,
     droppedItems: remainingDrops,
     updatedHostileHumans,
     capturedSquadIds,

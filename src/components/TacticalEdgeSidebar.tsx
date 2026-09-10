@@ -62,7 +62,7 @@ import {
  SettlementState,
 } from '../types/settlement';
 import { NamedSurvivor, HiddenSurvivorGroup, StatTier, SquadArmorLoadout } from '../types/population';
-import { CombatStance, TacticalSquadUnit, WeaponLoadoutId, ZombieLair, ArmorItemId, WeaponItemId, getWeaponDefinition, getArmorDefinition } from '../types/combat';
+import { CombatStance, TacticalSquadUnit, WeaponLoadoutId, ZombieLair, ArmorItemId, WeaponItemId, getWeaponDefinition, getArmorDefinition, ZombieVariant } from '../types/combat';
 import { RivalHideout } from '../types/rivalFaction';
 import { BuildingOccupation } from '../types/occupation';
 import { WorldVehicle } from '../types/vehicle';
@@ -249,7 +249,14 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  ? String(primaryHQ.buildingId) === String(selectedBuilding.id)
  : false;
 
- // §5.2 threat overlays: rival Hideouts & zombie Lairs occupying a selected building
+/** Player-facing names for infected variants in lair inspection. */
+const LAIR_VARIANT_LABELS: Record<ZombieVariant, string> = {
+  shambler: 'Shamblers',
+  runner: 'Runners',
+  brute: 'Brutes',
+};
+
+// §5.2 threat overlays: rival Hideouts & zombie Lairs occupying a selected building
  const selectedHideout: RivalHideout | undefined = selectedBuilding
  ? settlement.rivalHideouts?.get(selectedBuilding.id)
  : undefined;  const selectedLair: ZombieLair | undefined = selectedBuilding
@@ -259,6 +266,25 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
   ? settlement.occupiedBuildings?.buildings.get(selectedBuilding.id)
   : undefined;
  const selectedSearch = selectedBuilding ? settlement.buildingSearches?.get(selectedBuilding.id) : undefined;
+
+ // §6.2 settlement medical picture — a persistent status readout (not a
+ // toast): active infection stages across named survivors plus any uncontained
+ // building outbreaks, surfaced as a MEDICAL ALERT card when something is
+ // actually wrong.
+ const settlementInfections = Array.from(settlement.infections?.values() ?? []).filter(
+   (inf) => inf.stage !== 'uninfected' && inf.stage !== 'cured' && inf.stage !== 'turned'
+ );
+ const infectedCount = settlementInfections.filter((i) => i.stage === 'incubation').length;
+ const symptomaticCount = settlementInfections.filter(
+   (i) => i.stage === 'symptomatic' || i.stage === 'advanced'
+ ).length;
+ const quarantinedCount = settlementInfections.filter((i) => i.isQuarantined).length;
+ const exposedNamedCount = settlementInfections.filter((i) => i.isNamed).length;
+ const activeOutbreaks = Array.from(settlement.outbreaks?.values() ?? []).filter(
+   (o) => o.isOutbreakActive && !o.isContained
+ );
+ const hasMedicalAlert =
+   settlementInfections.length > 0 || activeOutbreaks.length > 0;
 
  // §IFZ regional Lair pressure — the strategic layer: every STANDING lair
  // (even undiscovered ones) keeps feeding its neighbourhood and committing
@@ -1126,6 +1152,46 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  </div>
  </div>
 
+ {/* MEDICAL ALERT (§6.2) — persistent settlement infection status. Only
+      renders while someone is actually infected or an outbreak is active. */}
+ {hasMedicalAlert && (
+ <div className="p-3 bg-[#1A1213] border border-[#7C2D12] flex flex-col gap-2 clip-card-chip">
+ <div className="flex items-center justify-between">
+ <span className="font-heading font-bold text-xs text-[#FDBA74]">MEDICAL ALERT</span>
+ <span className={`font-heading font-bold text-xs uppercase ${activeOutbreaks.length > 0 ? 'text-[#FF4D4D] animate-pulse' : 'text-[#FBBF24]'}`}>
+ {activeOutbreaks.length > 0 ? 'OUTBREAK' : symptomaticCount > 0 ? 'SYMPTOMATIC' : 'WATCH'}
+ </span>
+ </div>
+ <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[10px] font-mono text-[#E8E8E8]">
+ <span>INFECTED</span><span className="text-right">{infectedCount}</span>
+ <span>SYMPTOMATIC</span><span className="text-right">{symptomaticCount}</span>
+ <span>QUARANTINED</span><span className="text-right">{quarantinedCount}</span>
+ {exposedNamedCount > 0 && (
+ <>
+ <span>NAMED EXPOSED</span><span className="text-right text-[#FBBF24]">{exposedNamedCount}</span>
+ </>
+ )}
+ {activeOutbreaks.length > 0 && (
+ <>
+ <span>OUTBREAKS</span><span className="text-right text-[#FF4D4D]">{activeOutbreaks.length}</span>
+ </>
+ )}
+ </div>
+ {activeOutbreaks.length > 0 && (
+ <div className="text-[10px] font-mono text-[#94A3B8]">
+ {activeOutbreaks.map((o) => (
+ <div key={String(o.buildingId)}>
+ · {o.buildingName} — {o.zombieCount} infected inside. Dispatch squads or contain from Medbay.
+ </div>
+ ))}
+ </div>
+ )}
+ <div className="text-[10px] font-mono text-[#94A3B8]">
+ Open MEDICAL to triage, quarantine and treat.
+ </div>
+ </div>
+ )}
+
  {/* Regional Lair Pressure Card (§IFZ) — the strategic consequence of nests */}
  <div className="p-3 bg-[#11141A] border border-[#7C2D12] flex flex-col gap-2 clip-card-chip">
  <div className="flex items-center justify-between">
@@ -1373,26 +1439,49 @@ export const TacticalEdgeSidebar: React.FC<TacticalEdgeSidebarProps> = ({
  </div>
  )}
 
- {/* Zombie Lair (§5.2) — persistent nest, distinct from ordinary occupied buildings */}
+ {/* Zombie Lair — a discovered nest: inspectable, persistent, clearable */}
  {selectedLair && selectedLair.isDiscovered && !selectedLair.isCleared && (
  <div className="p-2.5 bg-[#0F1410] border border-[#3F6212] flex flex-col gap-2 clip-card-chip">
  <div className="flex items-center justify-between">
  <span className="font-heading font-bold text-[10px] text-[#BEF264] uppercase">
- ZOMBIE LAIR (§5.2)
+ ZOMBIE LAIR
  </span>
- <span className="text-[10px] font-mono text-[#A3E635]">ESC LVL {selectedLair.escalation}</span>
+ <span className="text-[10px] font-mono text-[#A3E635]">
+ {selectedLair.population > 0 ? 'ACTIVE' : 'CLEARED'}
+ </span>
  </div>
  <div className="text-[11px] font-mono text-[#E8E8E8]">
- {selectedLair.population} INFECTED NOW · SUSTAINABLE {selectedLair.garrisonCeiling ?? selectedLair.baselinePopulation}
- {selectedLair.population > selectedLair.baselinePopulation ? ' · SWOLLEN NEST' : ''}
+ {selectedLair.population} INFECTED
  </div>
- <div className="text-[9px] font-mono text-[#6B8F5E]">
- FOUNDING GARRISON {selectedLair.baselinePopulation} · EMERGENCE CAP {selectedLair.emergenceCapacity ?? Math.max(8, Math.round((selectedLair.baselinePopulation || 0) * 0.35))}
+ <div className="flex flex-col gap-0.5">
+ <span className="text-[9px] font-mono text-[#6B8F5E] uppercase">Dominant Type</span>
+ <span className="text-[11px] font-mono text-[#E8E8E8] uppercase">
+ {LAIR_VARIANT_LABELS[selectedLair.dominantVariant ?? 'shambler']}
+ </span>
  </div>
+ {selectedLair.escalation > 0 && (
+ <div className="flex flex-col gap-0.5">
+ <span className="text-[9px] font-mono text-[#6B8F5E] uppercase">Escalation</span>
+ <span className="text-[11px] font-mono text-[#E8E8E8]">{selectedLair.escalation}</span>
+ </div>
+ )}
  <p className="text-[10px] font-mono text-[#94A3B8]">
- {selectedLair.population > selectedLair.baselinePopulation
- ? `A nest of real infected that shelter by day and emerge by night. It has swollen past its founding garrison of ${selectedLair.baselinePopulation} — at ESC LVL ${selectedLair.escalation} the nest is a genuine hive. Kill every last one of them to clear it.`
- : `A nest of real infected that shelter by day and emerge by night. Kill every one of them to clear it — a partially cleared nest regrows toward its founding garrison of ${selectedLair.baselinePopulation} while it stands, and neglect lets it swell beyond.`}
+ This building is being used as a nest. Most infected remain close to the
+ lair, but groups periodically emerge from it. Kill every one of them to
+ clear it — a partially cleared nest recovers while it stands, and the
+ longer it is left alone the bolder it becomes.
+ </p>
+ </div>
+ )}
+
+ {/* Cleared Lair — historical marker: the nest is gone, the record remains */}
+ {selectedLair && selectedLair.isDiscovered && selectedLair.isCleared && (
+ <div className="p-2.5 bg-[#0F1410] border border-[#3F3F46] flex flex-col gap-1.5 clip-card-chip">
+ <span className="font-heading font-bold text-[10px] text-[#71717A] uppercase">
+ ZOMBIE LAIR — CLEARED
+ </span>
+ <p className="text-[10px] font-mono text-[#94A3B8]">
+ Every infected in this nest was eliminated. The building stands empty.
  </p>
  </div>
  )}

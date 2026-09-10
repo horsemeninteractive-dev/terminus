@@ -160,6 +160,8 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
   // One warning per squad per storage-full hold episode (cleared when the squad
   // starts returning to deposit again).
   const heldHaulWarnedRef = useRef(new Set<string>());
+  /** Last lair-proximity value pushed to the ambient audio bed (0..1). */
+  const lairAmbientRef = useRef(0);
   // Last values actually committed to React state this session, used by the
   // no-op guards below to skip setX calls when a tick changed nothing.
   const lastCommittedRef = useRef({
@@ -905,6 +907,38 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
           }
         }
 
+        // B2. Reconcile anonymous squad casualties into the roster: each dead
+        // recruit leaves the living population (total) and becomes a dead slot
+        // (deadCount) in the squad. Disbanding therefore only ever returns
+        // ALIVE members to the labour pool, and a depleted squad can be
+        // refilled at HQ via replenishSquad. The named leader's death is
+        // already fully handled by B (memorial + role vacated).
+        if (combatResult.squadCasualties.length > 0) {
+          const casualtyMap = new Map(
+            combatResult.squadCasualties.map((c) => [c.squadId, c])
+          );
+          let generalKilled = 0;
+          const reconciledSquads = current.squads.map((sq) => {
+            const cas = casualtyMap.get(sq.id);
+            if (!cas || cas.generalKilled <= 0) return sq;
+            generalKilled += cas.generalKilled;
+            return { ...sq, deadCount: (sq.deadCount || 0) + cas.generalKilled };
+          });
+          if (generalKilled > 0) {
+            current = {
+              ...current,
+              squads: reconciledSquads,
+              generalPopulation: {
+                ...current.generalPopulation,
+                total: Math.max(
+                  0,
+                  (current.generalPopulation?.total ?? 0) - generalKilled
+                ),
+              },
+            };
+          }
+        }
+
         // C. Apply building durability damage to settlement state if any building took damage
         let adaptedChanged = false;
         const newAdapted = new Map(current.adaptedBuildings);
@@ -1106,6 +1140,41 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
         setDangerLevel(totalDanger);
       }
       soundService.updateAmbient(nextClock.phase, nextClock.isNight, totalDanger);
+
+      // 5b. Lair proximity ambience — how close is the nearest DISCOVERED,
+      // standing nest? 1.0 at/below its home radius, fading to 0 at 3× that
+      // distance. Cleared and undiscovered nests are silent: the soundscape
+      // only reacts to nests the player actually knows about.
+      if (mapDataRef.current?.buildings && settlement.zombieLairs && settlement.zombieLairs.size > 0) {
+        const hq = getPrimaryHQ(settlement);
+        const origin =
+          combatSquadsRef.current.find((sq) => sq.isDeployed && sq.currentHp > 0) || null;
+        const ox = origin ? origin.x : hq?.center.x ?? 0;
+        const oz = origin ? origin.z : hq?.center.z ?? 0;
+        let nearest = Infinity;
+        for (const lair of settlement.zombieLairs.values()) {
+          if (!lair.isDiscovered || lair.isCleared || lair.population <= 0) continue;
+          const b = mapDataRef.current.buildings.find((bl) => String(bl.id) === String(lair.buildingId));
+          if (!b) continue;
+          const d = Math.hypot(b.center.x - ox, b.center.z - oz);
+          nearest = Math.min(nearest, d);
+        }
+        let proximity = 0;
+        if (nearest !== Infinity) {
+          const audibleFrom = Math.max(150, origin ? 300 : 600); // squads hear further afield than the HQ does
+          const fadeStart = audibleFrom * 0.5;
+          proximity = Math.max(0, Math.min(1, 1 - (nearest - fadeStart) / (audibleFrom - fadeStart)));
+        }
+        // Only push updates when the proximity meaningfully moved — the audio
+        // graph smooths transitions, so there is no need to call it 10×/s.
+        if (Math.abs(proximity - lairAmbientRef.current) > 0.05) {
+          lairAmbientRef.current = proximity;
+          soundService.updateLairAmbient(proximity);
+        }
+      } else if (lairAmbientRef.current !== 0) {
+        lairAmbientRef.current = 0;
+        soundService.updateLairAmbient(0);
+      }
 
       // Forward combat entities & visual FX to Three.js WorldScene
       if (sceneRef.current) {

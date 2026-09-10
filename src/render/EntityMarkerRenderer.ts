@@ -516,6 +516,18 @@ function drawCircularZombieCanvas(marker: EntityMarker): HTMLCanvasElement {
   // Skull silhouette in center
   drawTacticalSkull(ctx, cx, cy - 2, colors.accent, 1.15);
 
+  // Infected count (lair nests): a small ×N readout under the skull so a
+  // hunter can size up a discovered nest at a glance without opening its panel.
+  if (marker.sublabel) {
+    ctx.save();
+    ctx.font = 'bold 20px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(248, 250, 252, 0.92)';
+    ctx.fillText(`×${marker.sublabel}`, cx, cy + 30);
+    ctx.restore();
+  }
+
   // Radial group-health gauge around the badge: a dark track ring with a filled
   // arc sweeping 2π × the cluster's combined damageRatio. IFZ never surfaces
   // per-zombie HP — this group meter is the only health readout for the pin.
@@ -1118,7 +1130,10 @@ function getMarkerTexture(marker: EntityMarker): THREE.CanvasTexture {
   }
 
   if (marker.kind === 'lair') {
-    const cacheKey = `zombie_${marker.faction}`;
+    // The infected-count sublabel is drawn INTO the badge, so the cache key
+    // must include it (each count gets its own texture; counts are bounded
+    // and change rarely).
+    const cacheKey = `zombie_${marker.faction}_${marker.sublabel ?? ''}`;
     return getOrCreateSharedTexture(cacheKey, () => drawCircularZombieCanvas(marker));
   }
 
@@ -1148,6 +1163,7 @@ function markerSignature(marker: EntityMarker): string {
     marker.detailMode || '',
     marker.damageRatio !== undefined ? marker.damageRatio.toFixed(2) : '',
     marker.searchProgress !== undefined ? marker.searchProgress.toFixed(1) : '',
+    marker.sublabel || '',
   ].join('|');
 }
 

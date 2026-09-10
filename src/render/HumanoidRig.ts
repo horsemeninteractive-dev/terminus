@@ -432,6 +432,7 @@ export type RigPoseMode =
   | 'aim'          // weapon raised, braced stance
   | 'workHarvest'  // bend + scoop at a resource node
   | 'workBuild'    // hammer swing at a construction site
+  | 'swim'         // front-crawl stroke while wading/crossing open water
   | 'zombieIdle'   // standing infected, arms out, subtle sway
   | 'zombieShamble'
   | 'zombieRun'
@@ -566,6 +567,22 @@ export function applyRigPose(rig: HumanoidRig, mode: RigPoseMode, timeSec: numbe
       r.armL.rotation.set(-1.15 + swing * 0.08, 0.25, -0.2);
       r.headPivot.rotation.set(0.1, 0, 0);
       legSwing(0.02, 0.6);
+      break;
+    }
+    case 'swim': {
+      // Front-crawl while wading: torso leans forward over the water, arms
+      // windmill alternately (catch, pull, recover), legs scissor a steady
+      // flutter kick. The rig sits low — a swimmer is mostly submerged — with
+      // a per-stroke bounce riding the catch/pull cycle.
+      const stroke = Math.sin(t * TWO_PI * 1.3);
+      r.legL.rotation.x = Math.sin(t * TWO_PI * 2.6) * 0.55;
+      r.legR.rotation.x = Math.sin(t * TWO_PI * 2.6 + PI) * 0.55;
+      r.armL.rotation.set(-1.15 - stroke * 1.1, -0.12, -0.55);
+      r.armR.rotation.set(-1.15 + stroke * 1.1, 0.12, 0.55);
+      r.hips.rotation.x = 0.9; // forward lean, chest toward the water
+      r.hips.rotation.z = stroke * 0.06;
+      r.root.position.y = 0.012 + Math.max(0, Math.sin(t * TWO_PI * 1.3)) * 0.02;
+      r.headPivot.rotation.set(0.22, 0, 0); // head up, eyes on the far bank
       break;
     }
     case 'zombieIdle': {

@@ -987,7 +987,7 @@ const BuildingTextureCache = new Map<string, {
 // wood / brick / metal / concrete surfaces.
 // ---------------------------------------------------------------------------
 
-export type FreestandingMaterialKind = 'wood' | 'brick' | 'metal' | 'concrete' | 'chainlink' | 'logs';
+export type FreestandingMaterialKind = 'wood' | 'brick' | 'metal' | 'concrete' | 'chainlink' | 'logs' | 'soil';
 
 const FreestandingTextureCache = new Map<string, THREE.CanvasTexture>();
 
@@ -1133,6 +1133,54 @@ function drawChainLink(ctx: CanvasRenderingContext2D, S: number) {
   }
 }
 
+/**
+ * Tilled field soil — dark loam with plough furrows running across the plot
+ * and a few sprouting crop rows, so a field reads as farmland rather than a
+ * flat olive/brick box. Used for freestanding field plots (both while the
+ * crew works, amber-tinted, and when completed).
+ */
+function drawSoil(ctx: CanvasRenderingContext2D, S: number, rng: () => number) {
+  // Base loam: warm dark brown, speckled with grit.
+  ctx.fillStyle = '#4a3724';
+  ctx.fillRect(0, 0, S, S);
+  for (let i = 0; i < 2200; i++) {
+    ctx.fillStyle = rng() > 0.5
+      ? `rgba(255,235,200,${0.03 + rng() * 0.05})`
+      : `rgba(0,0,0,${0.05 + rng() * 0.06})`;
+    ctx.fillRect(rng() * S, rng() * S, 1.6, 1.6);
+  }
+  // Plough furrows: parallel raised ridges with dark troughs between, roughly
+  // one row per 1/6 of the tile so a 16m field shows ~3 furrow bands.
+  const rows = 6;
+  const rowH = S / rows;
+  for (let r = 0; r < rows; r++) {
+    const y = r * rowH;
+    // trough between ridges
+    ctx.fillStyle = 'rgba(25,16,8,0.55)';
+    ctx.fillRect(0, y, S, rowH * 0.34);
+    // sunlit ridge crest
+    ctx.fillStyle = 'rgba(150,112,70,0.5)';
+    ctx.fillRect(0, y + rowH * 0.34, S, rowH * 0.12);
+    ctx.fillStyle = 'rgba(96,70,42,0.45)';
+    ctx.fillRect(0, y + rowH * 0.46, S, rowH * 0.2);
+    // occasional sprout row peeking above the ridge
+    if (r % 2 === 0) {
+      for (let x = 0; x < S; x += 6 + rng() * 10) {
+        if (rng() < 0.5) continue;
+        ctx.fillStyle = `rgba(${70 + rng() * 30},${110 + rng() * 30},${40 + rng() * 20},0.7)`;
+        ctx.fillRect(x, y + rowH * 0.36, 1.5, 3);
+      }
+    }
+  }
+  // Fine clod shadows across the tile so the texture isn't perfectly uniform.
+  ctx.fillStyle = 'rgba(30,20,10,0.18)';
+  for (let i = 0; i < 60; i++) {
+    ctx.beginPath();
+    ctx.ellipse(rng() * S, rng() * S, 1.5 + rng() * 3, 0.8 + rng() * 1.6, rng() * Math.PI, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
 function drawConcrete(ctx: CanvasRenderingContext2D, S: number, rng: () => number) {
   ctx.fillStyle = '#7c8288';
   ctx.fillRect(0, 0, S, S);
@@ -1221,6 +1269,21 @@ function paintFreestandingRelief(ctx: CanvasRenderingContext2D, kind: Freestandi
         heightFill(ctx, gx, 0, 1, S, 96); // grain furrow
       }
     }
+  } else if (kind === 'soil') {
+    // plough ridges: raised crests with recessed troughs between rows
+    heightFill(ctx, 0, 0, S, S, 118);
+    const rows = 6;
+    const rowH = S / rows;
+    for (let r = 0; r < rows; r++) {
+      const y = r * rowH;
+      heightFill(ctx, 0, y, S, rowH * 0.34, 96); // trough
+      heightFill(ctx, 0, y + rowH * 0.34, S, rowH * 0.12, 168); // crest lip
+      heightFill(ctx, 0, y + rowH * 0.46, S, rowH * 0.2, 138); // ridge face
+      for (let i = 0; i < 30; i++) {
+        const cx = rng() * S;
+        heightFill(ctx, cx, y + rowH * 0.36 + rng() * rowH * 0.5, 2, 2, 150 + rng() * 20); // clods
+      }
+    }
   }
 }
 
@@ -1244,27 +1307,174 @@ export function getFreestandingBumpTexture(kind: FreestandingMaterialKind): THRE
   return tex;
 }
 
-/** Tileable material surface for freestanding walls / towers / gates. */
-export function getFreestandingMaterialTexture(kind: FreestandingMaterialKind): THREE.CanvasTexture {
-  const cached = FreestandingTextureCache.get(kind);
-  if (cached) return cached;
+/** Core painter/factory shared by the base texture and weather variants. */
+function buildFreestandingTexture(kind: FreestandingMaterialKind, paint: (ctx: CanvasRenderingContext2D, S: number, rng: () => number) => void, seed: string): THREE.CanvasTexture {
   const S = 256;
-  const rng = mulberry32(hashString('mat:' + kind));
+  const rng = mulberry32(hashString(seed));
   const [canvas, ctx] = makeCanvas(S, S);
-  if (kind === 'wood') drawWood(ctx, S, rng);
-  else if (kind === 'brick') drawBrickMat(ctx, S, rng);
-  else if (kind === 'metal') drawMetal(ctx, S);
-  else if (kind === 'chainlink') drawChainLink(ctx, S);
-  else if (kind === 'logs') drawLogStaves(ctx, S, rng);
-  else drawConcrete(ctx, S, rng);
+  paint(ctx, S, rng);
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
   tex.needsUpdate = true;
+  return tex;
+}
+
+/** Tileable material surface for freestanding walls / towers / gates. */
+export function getFreestandingMaterialTexture(kind: FreestandingMaterialKind): THREE.CanvasTexture {
+  const cached = FreestandingTextureCache.get(kind);
+  if (cached) return cached;
+  const tex = buildFreestandingTexture(kind, (ctx, S, rng) => {
+    if (kind === 'wood') drawWood(ctx, S, rng);
+    else if (kind === 'brick') drawBrickMat(ctx, S, rng);
+    else if (kind === 'metal') drawMetal(ctx, S);
+    else if (kind === 'chainlink') drawChainLink(ctx, S);
+    else if (kind === 'logs') drawLogStaves(ctx, S, rng);
+    else if (kind === 'soil') drawSoil(ctx, S, rng);
+    else drawConcrete(ctx, S, rng);
+  }, 'mat:' + kind);
   FreestandingTextureCache.set(kind, tex);
   return tex;
+}
+
+/**
+ * Weather variants for the field soil material: the same tilled plot reads as
+ * soaked mud after rain, cracked dust in a heatwave/drought, snow-dusted under
+ * frost/blizzard, and normal loam otherwise. Each variant is a separate cached
+ * texture so swapping weather is just a material.map swap.
+ */
+export type SoilWeatherVariant = 'default' | 'mud' | 'dust' | 'snow';
+
+/** Maps a WeatherType to the soil variant a field should wear. */
+export function soilVariantForWeather(weather: string): SoilWeatherVariant {
+  switch (weather) {
+    case 'rain':
+    case 'thunderstorm':
+      return 'mud';
+    case 'heatwave':
+      return 'dust';
+    case 'freezing_frost':
+    case 'blizzard':
+      return 'snow';
+    default:
+      return 'default';
+  }
+}
+
+const FreestandingSoilVariantCache = new Map<string, THREE.CanvasTexture>();
+
+export function getFreestandingMaterialTextureVariant(
+  kind: FreestandingMaterialKind,
+  soilVariant: SoilWeatherVariant = 'default'
+): THREE.CanvasTexture {
+  if (kind !== 'soil' || soilVariant === 'default') {
+    return getFreestandingMaterialTexture(kind);
+  }
+  const key = `soil:${soilVariant}`;
+  const cached = FreestandingSoilVariantCache.get(key);
+  if (cached) return cached;
+  const tex = buildFreestandingTexture(kind, (ctx, S, rng) => drawSoilVariant(ctx, S, rng, soilVariant), 'mat:' + key);
+  FreestandingSoilVariantCache.set(key, tex);
+  return tex;
+}
+
+/** Weather-shifted soil painter: reuses the furrow layout of drawSoil but
+ *  swaps the palette and surface dressing per variant. */
+function drawSoilVariant(ctx: CanvasRenderingContext2D, S: number, rng: () => number, variant: SoilWeatherVariant) {
+  // Furrow geometry identical to the base soil (rows/ridges), so a plot's
+  // silhouette doesn't jump when the weather flips — only the surface reads
+  // wetter or drier.
+  const rows = 6;
+  const rowH = S / rows;
+  if (variant === 'mud') {
+    // Soaked: darker, glossier loam; furrow troughs hold puddles; heavy clods.
+    ctx.fillStyle = '#33261a';
+    ctx.fillRect(0, 0, S, S);
+    for (let r = 0; r < rows; r++) {
+      const y = r * rowH;
+      ctx.fillStyle = 'rgba(12,10,18,0.65)';
+      ctx.fillRect(0, y, S, rowH * 0.34);
+      // puddle film in the troughs
+      ctx.fillStyle = 'rgba(70,90,120,0.35)';
+      for (let i = 0; i < 10; i++) {
+        ctx.beginPath();
+        ctx.ellipse(rng() * S, y + rowH * 0.17, 6 + rng() * 16, 1.5 + rng() * 2.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = 'rgba(90,70,48,0.4)';
+      ctx.fillRect(0, y + rowH * 0.34, S, rowH * 0.12);
+      ctx.fillStyle = 'rgba(58,42,28,0.5)';
+      ctx.fillRect(0, y + rowH * 0.46, S, rowH * 0.2);
+    }
+    // dark mud splatter
+    ctx.fillStyle = 'rgba(15,10,5,0.28)';
+    for (let i = 0; i < 90; i++) {
+      ctx.beginPath();
+      ctx.ellipse(rng() * S, rng() * S, 1.5 + rng() * 4, 0.8 + rng() * 2, rng() * Math.PI, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else if (variant === 'dust') {
+    // Parched: pale bleached earth; furrows faded; fine crack web.
+    ctx.fillStyle = '#8a7a62';
+    ctx.fillRect(0, 0, S, S);
+    for (let r = 0; r < rows; r++) {
+      const y = r * rowH;
+      ctx.fillStyle = 'rgba(120,105,82,0.5)';
+      ctx.fillRect(0, y, S, rowH * 0.34);
+      ctx.fillStyle = 'rgba(190,175,145,0.5)';
+      ctx.fillRect(0, y + rowH * 0.34, S, rowH * 0.12);
+      ctx.fillStyle = 'rgba(150,132,105,0.45)';
+      ctx.fillRect(0, y + rowH * 0.46, S, rowH * 0.2);
+    }
+    // desiccation cracks: a jittered web of thin dark lines
+    ctx.strokeStyle = 'rgba(50,38,25,0.5)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 26; i++) {
+      let x = rng() * S;
+      let y = rng() * S;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      for (let s = 0; s < 5; s++) {
+        x += (rng() - 0.5) * 30;
+        y += (rng() - 0.5) * 30;
+        ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    // wind-blown dust drifts
+    ctx.fillStyle = 'rgba(215,200,170,0.18)';
+    for (let i = 0; i < 30; i++) {
+      ctx.fillRect(rng() * S, rng() * S, 10 + rng() * 26, 1.5 + rng() * 2);
+    }
+  } else {
+    // snow: frost-dusted furrows — most of the plot keeps its loam colour, the
+    // ridges and clods carry a light powdering, deeper troughs stay bare.
+    ctx.fillStyle = '#4a3724';
+    ctx.fillRect(0, 0, S, S);
+    for (let r = 0; r < rows; r++) {
+      const y = r * rowH;
+      ctx.fillStyle = 'rgba(25,16,8,0.55)';
+      ctx.fillRect(0, y, S, rowH * 0.34);
+      ctx.fillStyle = 'rgba(150,112,70,0.5)';
+      ctx.fillRect(0, y + rowH * 0.34, S, rowH * 0.12);
+      ctx.fillStyle = 'rgba(96,70,42,0.45)';
+      ctx.fillRect(0, y + rowH * 0.46, S, rowH * 0.2);
+    }
+    // powder dusting across the ridges (not a white blanket — it's soil)
+    for (let i = 0; i < 700; i++) {
+      ctx.fillStyle = `rgba(235,240,248,${0.1 + rng() * 0.35})`;
+      ctx.fillRect(rng() * S, rng() * S, 1.2 + rng() * 2, 1 + rng() * 1.6);
+    }
+  }
+  // shared clod shadows for all variants
+  ctx.fillStyle = 'rgba(30,20,10,0.18)';
+  for (let i = 0; i < 60; i++) {
+    ctx.beginPath();
+    ctx.ellipse(rng() * S, rng() * S, 1.5 + rng() * 3, 0.8 + rng() * 1.6, rng() * Math.PI, 0, Math.PI * 2);
+    ctx.fill();
+  }
 }
 
 /**

@@ -17,7 +17,7 @@ import { polygonArea, sweepFootprintSelection } from '../services/adaptationGeom
 import { getAdaptedCost } from '../data/functionalBuildings';
 import type { ResourceCost } from '../types/settlement';
 import { getFreestandingDimensions, getFreestandingCollisionPolygon, freestandingFootprintOverlapsWater, freestandingFootprintOverlapsBuildings } from '../services/freestandingFootprint';
-import { BuildingRenderer } from './BuildingRenderer';
+import { BuildingRenderer, facilityGhostSilhouette } from './BuildingRenderer';
 import { CameraController } from './CameraController';
 import { CombatRenderer } from './CombatRenderer';
 import { EntityMarker, EntityMarkerRenderer } from './EntityMarkerRenderer';
@@ -194,6 +194,12 @@ export interface WorldSceneOptions {
     typeId: FunctionalBuildingTypeId,
     placements: FreestandingPlacementPoint[]
   ) => void;
+  /** Fired when the player cancels an armed freestanding placement
+   *  (Escape key or right-click) so the React layer can disarm its banner. */
+  onCancelFreestandingPlacement?: () => void;
+  /** Fired when the player cancels an armed IFZ-style conversion (Escape key
+   *  or right-click) so the React layer can disarm its paint-mode banner. */
+  onCancelAdaptPlacement?: () => void;
   /**
    * §7.1 IFZ-style drag adaptation: fired when the player finishes a paint
    * sweep across a building's OWN footprint while a conversion type is armed.
@@ -283,6 +289,8 @@ export class WorldScene {
     typeId: FunctionalBuildingTypeId,
     placements: FreestandingPlacementPoint[]
   ) => void;
+  private onCancelFreestandingPlacement?: () => void;
+  private onCancelAdaptPlacement?: () => void;
   private onAdaptArea?: (
     typeId: FunctionalBuildingTypeId,
     bldg: BuildingPolygon,
@@ -427,6 +435,15 @@ export class WorldScene {
       e.preventDefault();
       this.togglePerfHud();
     }
+    // Escape cancels an armed freestanding placement (and any active gesture
+    // half-way through), releasing the camera lock with it.
+    if (e.code === 'Escape' && this.pendingFreestandingType) {
+      this.cancelFreestandingPlacement();
+    }
+    // Escape also disarms an armed IFZ-style conversion paint mode.
+    if (e.code === 'Escape' && this.pendingAdaptType) {
+      this.cancelAdaptPlacement();
+    }
   };
 
   /** Show/hide the FPS / draw-call / triangle profiler overlay. */
@@ -495,6 +512,8 @@ export class WorldScene {
     this.onOrderSquadAttack = options.onOrderSquadAttack;
     this.onMountVehicle = options.onMountVehicle;
     this.onPlaceFreestandingRun = options.onPlaceFreestandingRun;
+    this.onCancelFreestandingPlacement = options.onCancelFreestandingPlacement;
+    this.onCancelAdaptPlacement = options.onCancelAdaptPlacement;
     this.onAdaptArea = options.onAdaptArea;
 
     const width = this.container.clientWidth || window.innerWidth;
@@ -694,6 +713,12 @@ export class WorldScene {
     this.waterPolygons = (mapData.landuse || [])
       .filter((l) => l.type === 'water' && l.polygon?.length >= 3)
       .map((l) => l.polygon as Point2D[]);
+    // Combat units need to know whether they are wading so the rigs switch to
+    // the swim stroke (and sink to water level). Sampled against the same
+    // water polygons used to reject placement.
+    this.combatRenderer.setWaterSampler((x: number, z: number) =>
+      this.waterPolygons.some((poly) => pointInPolygonSimple(x, z, poly))
+    );
     this.showBuildingEdges = showBuildingEdges;
     this.currentExaggeration = exaggeration;
     this.disableElevation = disableElevation;
@@ -1157,6 +1182,9 @@ export class WorldScene {
     const rain = weather === 'rain' || weather === 'thunderstorm' ? 1 : 0;
     const snow = weather === 'blizzard' || weather === 'freezing_frost' ? 1 : 0;
     this.buildingRenderer.setBarrierWeather(snow, rain);
+    // Field plots swap their tilled-soil surface: mud after rain, cracked
+    // dust in a heatwave, frost powdering when freezing.
+    this.buildingRenderer.setSoilWeather(weather);
   }
 
   private lerpColor(out: THREE.Color, a: number, b: number, t: number): THREE.Color {
@@ -1319,13 +1347,17 @@ export class WorldScene {
     // footprint that you then rotate by dragging before releasing. Lock the
     // camera so the drag rotates/extends the blueprint instead of panning.
     if (this.pendingFreestandingType) {
-      this.cameraController.placementActive = true;
       const rect = this.container.getBoundingClientRect();
       this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
       this.raycaster.setFromCamera(this.mouse, this.camera);
       const groundHits = this.raycaster.intersectObjects(this.groundRenderer.group.children, true);
+      // Only lock the camera once the press actually HIT the ground and the
+      // gesture really started. Locking before this check meant a press that
+      // missed the ground (sky / horizon / over a tall building) locked the
+      // camera with no gesture running to ever release it again.
       if (groundHits.length > 0) {
+        this.cameraController.placementActive = true;
         const pt = groundHits[0].point;
         // Snap a fence run's anchor to the edge of a nearby freestanding
         // structure (tower, gate or wall) so the run starts flush against it.
@@ -1457,29 +1489,49 @@ export class WorldScene {
         // Reject placement over water or slicing through an existing building:
         // tint the ghost red while the footprint would overlap either, so the
         // player sees the invalid spot before committing.
-        const placementRot = this.placementGestureActive ? this.blueprintPlacementRotation : 0;
+        // blueprintPlacementRotation is radians (atan2); the collision helpers
+        // take degrees — convert so the ghost's validity footprint matches the
+        // committed run's orientation.
+        const placementRot = this.placementGestureActive
+          ? (this.blueprintPlacementRotation * 180) / Math.PI
+          : 0;
+        // Snap the live cursor to a freestanding structure's edge (or clamp the
+        // run flush where the drag crosses one) so the ghost preview matches
+        // the exact run that will be built (fence runs only).
+        const runStartForResolve = this.placementGestureActive ? this.blueprintPlacementStart : null;
+        const resolved = this.placementIsFence
+          ? this.resolveFenceRunEnd(runStartForResolve, pt)
+          : null;
+        const snap = resolved;
+        const ex = snap ? snap.x : pt.x;
+        const ez = snap ? snap.z : pt.z;
+        // Validity footprint must mirror what will actually be committed: a
+        // fence RUN spans anchor→cursor (centred on the run's midpoint, not the
+        // cursor), and a fence at rest is a small 1.2m square — not the
+        // canonical 10m wall segment. Checking the raw cursor with the full
+        // drag length painted the ghost red whenever the far half of the checked
+        // rectangle crossed the very tower the wall was butting into, so walls
+        // could never visually reach a tower even though flush contact is valid.
+        const runStart = this.blueprintPlacementStart;
+        const draggingFence = this.placementGestureActive && this.placementIsFence && !!runStart;
+        const checkX = draggingFence && runStart ? (ex + runStart.x) / 2 : ex;
+        const checkZ = draggingFence && runStart ? (ez + runStart.z) / 2 : ez;
+        const checkLen = draggingFence && runStart
+          ? Math.max(FENCE_WIDTH, Math.hypot(ex - runStart.x, ez - runStart.z))
+          : FENCE_WIDTH;
         const overWater = this.isPlacementOverWater(pt.x, pt.z, placementRot);
         const overBuilding =
           !overWater &&
           this.isPlacementOverBuilding(
-            pt.x,
-            pt.z,
+            checkX,
+            checkZ,
             placementRot,
-            this.placementGestureActive && this.placementIsFence
-              ? FENCE_WIDTH
-              : undefined,
-            this.placementGestureActive && this.placementIsFence
-              ? Math.max(FENCE_WIDTH, Math.hypot(pt.x - (this.blueprintPlacementStart?.x ?? pt.x), pt.z - (this.blueprintPlacementStart?.z ?? pt.z)))
-              : undefined
+            this.placementIsFence ? FENCE_WIDTH : undefined,
+            this.placementIsFence ? checkLen : undefined
           );
         if (this.blueprintGhostMaterial) {
           this.blueprintGhostMaterial.color.setHex(overWater || overBuilding ? 0xef4444 : 0x10b981);
         }
-        // Snap the live cursor to a freestanding structure's edge so the ghost
-        // preview matches the exact run that will be built (fence runs only).
-        const snap = this.placementIsFence ? this.snapToFreestandingEdge(pt.x, pt.z) : null;
-        const ex = snap ? snap.x : pt.x;
-        const ez = snap ? snap.z : pt.z;
         if (this.placementGestureActive && this.blueprintPlacementStart) {
           const dx = ex - this.blueprintPlacementStart.x;
           const dz = ez - this.blueprintPlacementStart.z;
@@ -1607,6 +1659,53 @@ export class WorldScene {
     return best;
   }
 
+  /**
+   * Resolves where a fence run ENDS given the drag cursor: snapped to the
+   * nearest structure edge within the snap radius, or — when the drag crosses
+   * into a structure (cursor released over a tower's footprint) — clamped
+   * flush against the first footprint edge the ray hits. This is what lets a
+   * wall be dragged straight INTO a tower and still terminate with no gap:
+   * without the clamp the run would slice through the footprint, every
+   * overlapping segment would be skipped at commit, and the wall would stop
+   * up to a snap radius short of the tower.
+   */
+  private resolveFenceRunEnd(
+    start: { x: number; z: number } | null,
+    pt: { x: number; z: number }
+  ): { x: number; z: number } {
+    const snap = this.snapToFreestandingEdge(pt.x, pt.z);
+    if (snap || !start) return snap ?? { x: pt.x, z: pt.z };
+
+    const dx = pt.x - start.x;
+    const dz = pt.z - start.z;
+    const denom = (ex: number, ez: number) => dx * ez - dz * ex;
+    let bestT = Infinity;
+    const structures = this.freestandingBuildings || [];
+    for (const f of structures) {
+      const poly = getFreestandingCollisionPolygon(f);
+      if (!poly || poly.length < 2) continue;
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i];
+        const b = poly[(i + 1) % poly.length];
+        const ex = b.x - a.x;
+        const ez = b.z - a.z;
+        const d = denom(ex, ez);
+        if (Math.abs(d) < 1e-9) continue; // parallel
+        const t = ((a.x - start.x) * ez - (a.z - start.z) * ex) / d;
+        const u = ((a.x - start.x) * dz - (a.z - start.z) * dx) / d;
+        if (t >= 0 && t <= 1 && u >= 0 && u <= 1 && t < bestT) bestT = t;
+      }
+    }
+    if (bestT <= 1) {
+      // Back off 1cm past the edge so the committed segment butts flush
+      // without its rectangle dipping inside the structure's outline.
+      const len = Math.hypot(dx, dz);
+      const t = Math.max(0, bestT - 0.01 / Math.max(len, 1e-6));
+      return { x: start.x + dx * t, z: start.z + dz * t };
+    }
+    return { x: pt.x, z: pt.z };
+  }
+
   public setPendingFreestandingType(type: FunctionalBuildingTypeId | null) {
     this.pendingFreestandingType = type;
     this.blueprintPlacementStart = null;
@@ -1614,6 +1713,11 @@ export class WorldScene {
     this.placementGestureActive = false;
     if (!type) {
       this.blueprintGhostGroup.visible = false;
+      // Disarming MUST release the camera: the Cancel button (and any other
+      // disarm path) runs while a pointer-down may already have locked the
+      // camera for a gesture that will now never complete. Without this the
+      // camera stays pan/orbit-locked until a full click-drag-release happens.
+      this.cameraController.placementActive = false;
       return;
     }
 
@@ -1633,6 +1737,12 @@ export class WorldScene {
       type === 'barbed_wire';
     const isGate = type === 'wooden_gate' || type === 'metal_gate' || type === 'fortified_gate';
     const isTower = type === 'wooden_tower' || type === 'metal_tower' || type === 'fortified_tower' || type === 'floodlight_tower';
+    const isField =
+      type === 'field' ||
+      type === 'vast_field' ||
+      type === 'greenhouse' ||
+      type === 'greenhouse_hydro';
+    const isFacility = !isWall && !isGate && !isTower && !isField;
 
     // Fences are placed as click-drag-release *runs*: many consecutive segments.
     // The ghost's length axis (local Z) runs along the dragged direction so it can
@@ -1657,6 +1767,19 @@ export class WorldScene {
       width = 5.2;
       length = 5.2;
       height = type === 'fortified_tower' ? 9.5 : 8.0;
+    } else if (isField) {
+      // Flat rectangular plot — the ghost matches the exact placed footprint
+      // (or the canonical plot size), not a generic 8×8 box.
+      const fDims = getFreestandingDimensions(type);
+      width = fDims.width;
+      length = fDims.length;
+      height = type === 'greenhouse' || type === 'greenhouse_hydro' ? 2.8 : 0.7;
+    } else if (isFacility) {
+      // Facilities use their PREDEFINED module footprint.
+      const fDims = getFreestandingDimensions(type);
+      width = fDims.width;
+      length = fDims.length;
+      height = 4.5;
     }
 
     const boxGeom = new THREE.BoxGeometry(width, height, length);
@@ -1728,6 +1851,119 @@ export class WorldScene {
         const door = new THREE.Mesh(doorGeom, doorMat);
         door.position.x = sx * (width / 4);
         this.blueprintGhostGroup.add(door);
+      }
+    }
+
+    // Tower previews as their real watchtower silhouette — corner posts, a
+    // fighting platform, parapet rails and a pyramid roof — mirroring the built
+    // tower, so the ghost doesn't read as a plain box either.
+    if (isTower) {
+      const halfW = width / 2;
+      const halfL = length / 2;
+      const postT = 0.34;
+      const postH = 1.1;
+      // Corner posts rising just above the shaft top (base of the ghost box is
+      // at local y=0; the box body spans 0..height).
+      for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          const post = new THREE.Mesh(new THREE.BoxGeometry(postT, postH, postT), ghostMat);
+          post.position.set(sx * (halfW - postT / 2), height + postH / 2, sz * (halfL - postT / 2));
+          this.blueprintGhostGroup.add(post);
+        }
+      }
+      // Fighting platform overhanging the shaft on every side.
+      const platW = width + 0.9;
+      const platL = length + 0.9;
+      const platT = 0.28;
+      const platY = height + postH;
+      const platform = new THREE.Mesh(new THREE.BoxGeometry(platW, platT, platL), ghostMat);
+      platform.position.set(0, platY + platT / 2, 0);
+      this.blueprintGhostGroup.add(platform);
+      // Parapet rails around the platform edge (front gap on the local -Z face).
+      const railH = 0.7;
+      const railT = 0.16;
+      const railY = platY + platT + railH / 2;
+      const backRail = new THREE.Mesh(new THREE.BoxGeometry(platW, railH, railT), ghostMat);
+      backRail.position.set(0, railY, platL / 2 - railT / 2);
+      this.blueprintGhostGroup.add(backRail);
+      for (const sx of [-1, 1]) {
+        const sideRail = new THREE.Mesh(new THREE.BoxGeometry(railT, railH, platL), ghostMat);
+        sideRail.position.set(sx * (platW / 2 - railT / 2), railY, 0);
+        this.blueprintGhostGroup.add(sideRail);
+      }
+      const frontLip = new THREE.Mesh(new THREE.BoxGeometry(platW, 0.22, railT), ghostMat);
+      frontLip.position.set(0, platY + platT + 0.11, -platL / 2 + railT / 2);
+      this.blueprintGhostGroup.add(frontLip);
+      // Pyramid roof held above the platform.
+      const roofH = 1.3;
+      const roof = new THREE.Mesh(
+        new THREE.ConeGeometry(Math.max(platW, platL) * 0.62, roofH, 4),
+        ghostMat
+      );
+      roof.rotation.y = Math.PI / 4;
+      roof.position.set(0, platY + platT + railH + roofH / 2 + 0.15, 0);
+      this.blueprintGhostGroup.add(roof);
+    }
+
+    // Facilities preview their real silhouette on the plinth — a gable roof on
+    // building-like modules, tanks / stacks / cabinets / masts on infrastructure
+    // — mirroring attachFacilitySilhouette so the ghost matches the built shape.
+    if (isFacility) {
+      const sil = facilityGhostSilhouette(type);
+      const halfW = width / 2;
+      const halfL = length / 2;
+      if (sil === 'gable') {
+        // A simple prism roof riding the plinth's width (apex along local Z).
+        const rise = Math.min(3.6, Math.max(1.4, width * 0.3));
+        const roofGeom = new THREE.BoxGeometry(width * 1.1, rise, length * 1.02);
+        roofGeom.translate(0, height + rise / 2, 0);
+        const roof = new THREE.Mesh(roofGeom, ghostMat);
+        this.blueprintGhostGroup.add(roof);
+      } else if (sil === 'tank') {
+        const r = Math.min(3.8, Math.max(1.6, Math.min(width, length) * 0.34));
+        const len = Math.max(width, length) * 0.62;
+        const tank = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 16), ghostMat);
+        tank.rotation.x = Math.PI / 2;
+        tank.position.set(0, height + r, 0);
+        this.blueprintGhostGroup.add(tank);
+      } else if (sil === 'stack') {
+        const stackH = 3.2;
+        const stack = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.52, stackH, 10), ghostMat);
+        stack.position.set(width * 0.3, height + stackH / 2, 0);
+        this.blueprintGhostGroup.add(stack);
+        const fuel = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.34, 0.34, width * 0.44, 8),
+          ghostMat
+        );
+        fuel.rotation.x = Math.PI / 2;
+        fuel.position.set(-width * 0.28, height + 0.34, length * 0.32);
+        this.blueprintGhostGroup.add(fuel);
+      } else if (sil === 'cells') {
+        const cellW = Math.max(1.1, width * 0.2);
+        const cellD = Math.max(1.0, length * 0.15);
+        const cellH = 1.35;
+        for (let i = -1; i <= 1; i++) {
+          const cell = new THREE.Mesh(new THREE.BoxGeometry(cellW, cellH, cellD), ghostMat);
+          cell.position.set(0, height + cellH / 2, i * Math.max(2.2, length * 0.3));
+          this.blueprintGhostGroup.add(cell);
+        }
+      } else if (sil === 'antenna') {
+        const mastH = 11;
+        const base = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.42, 0.9, 8), ghostMat);
+        base.position.set(0, height + 0.45, 0);
+        this.blueprintGhostGroup.add(base);
+        const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.3, mastH - 0.9, 6), ghostMat);
+        upper.position.set(0, height + 0.9 + (mastH - 0.9) / 2, 0);
+        this.blueprintGhostGroup.add(upper);
+        for (const h of [2.4, 5.2, 8.0]) {
+          const arm = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.1, 0.1), ghostMat);
+          arm.position.set(0, height + h, 0);
+          this.blueprintGhostGroup.add(arm);
+        }
+      } else if (sil === 'pole') {
+        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.12, 6.4, 6), ghostMat);
+        pole.position.set(0, height + 3.2, 0);
+        this.blueprintGhostGroup.add(pole);
       }
     }
 
@@ -1980,6 +2216,18 @@ export class WorldScene {
       this.cancelAdaptDrag();
       this.showAdaptReadoutAuto('CONVERSION CANCELLED', 1400);
     }
+    // Same safety net for freestanding placement: a release that never reached
+    // the scene (over a HUD overlay, outside the window, …) would otherwise
+    // leave the camera locked forever with the gesture stuck half-open.
+    if (this.placementGestureActive) {
+      this.placementGestureActive = false;
+      this.blueprintPlacementStart = null;
+      this.cameraController.placementActive = false;
+    } else if (this.pendingFreestandingType) {
+      // Armed but mid-gesture cleanup: if a pointerup arrives with no gesture
+      // running, make sure the camera is never left locked from a stale press.
+      this.cameraController.placementActive = false;
+    }
   };
 
   /** Squads inside the dragged screen-space rectangle become the selection. */
@@ -2088,11 +2336,11 @@ export class WorldScene {
     if (this.placementIsFence) {
       // Click-start -> drag -> release builds the whole run as consecutive,
       // independent fence segments from anchor A to cursor B. The cursor is
-      // snapped to any adjacent tower edge first so the wall terminates flush
-      // against a tower.
-      const snapEnd = this.snapToFreestandingEdge(pt.x, pt.z);
-      const ex = snapEnd ? snapEnd.x : pt.x;
-      const ez = snapEnd ? snapEnd.z : pt.z;
+      // snapped to any adjacent tower edge — or clamped flush where the drag
+      // crosses into a structure — so the wall terminates flush against a tower.
+      const end = this.resolveFenceRunEnd(start, pt);
+      const ex = end.x;
+      const ez = end.z;
       const dx = ex - start.x;
       const dz = ez - start.z;
       const len = Math.hypot(dx, dz);
@@ -2622,8 +2870,44 @@ export class WorldScene {
     }
   }
 
+  /**
+   * Cancels an armed freestanding placement: disarms the blueprint, aborts any
+   * half-finished gesture and releases the camera lock. Used by the Escape key
+   * and right-click; the caller (React) clears its own banner via callback.
+   */
+  private cancelFreestandingPlacement() {
+    if (!this.pendingFreestandingType) return;
+    this.setPendingFreestandingType(null);
+    this.cameraController.placementActive = false;
+    this.onCancelFreestandingPlacement?.();
+  }
+
+  /**
+   * Cancels an armed IFZ-style conversion paint mode: disarms the conversion
+   * type, aborts any half-finished paint gesture and releases the camera lock.
+   * Used by the Escape key and right-click; the caller (React) clears its own
+   * banner via callback.
+   */
+  private cancelAdaptPlacement() {
+    if (!this.pendingAdaptType) return;
+    this.setPendingAdaptType(null);
+    this.cameraController.placementActive = false;
+    this.onCancelAdaptPlacement?.();
+  }
+
   private onContextMenu = (e: MouseEvent) => {
     e.preventDefault(); // Prevent default browser context menu
+    // Right-click while a placement is armed cancels it instead of issuing a
+    // tactical order — the same affordance as most RTS build tools.
+    if (this.pendingFreestandingType && !this.pointerDragged) {
+      this.cancelFreestandingPlacement();
+      return;
+    }
+    // Same cancel affordance for the armed IFZ conversion paint mode.
+    if (this.pendingAdaptType && !this.pointerDragged) {
+      this.cancelAdaptPlacement();
+      return;
+    }
     if (this.pointerDragged) return; // If user dragged with right-click to rotate/elevate camera, do NOT execute squad order
     this.executeTacticalOrderAtScreenPos(e.clientX, e.clientY, e.shiftKey);
   };
@@ -3031,12 +3315,16 @@ export class WorldScene {
       });
     }
 
-    // 7. Zombie Lairs (§5.2) — unfriendly NPC nests in round red badge
+    // 7. Zombie Lairs (§5.2) — discovered nests in a round red badge.
+    // A discovered lair stays marked once EXPLORED (fog memory), not only
+    // while a squad currently sees it — hunters must be able to navigate
+    // back to a known nest. Truly unexplored ground reveals nothing.
     for (const lair of this.zombieLairs.values()) {
       if (!lair.isDiscovered || lair.isCleared) continue;
       const bldg = this.findBuildingById(mapData, lair.buildingId);
       if (!bldg) continue;
-      if (classify(bldg.center.x, bldg.center.z) !== 'visible') continue;
+      const fogClass = classify(bldg.center.x, bldg.center.z);
+      if (fogClass === 'unexplored') continue;
 
       const topY = this.getBuildingTopY(bldg.id);
       markers.push({
@@ -3048,6 +3336,7 @@ export class WorldScene {
         y: topY + 3.0,
         anchorY: topY,
         label: 'LAIR',
+        sublabel: String(lair.population),
         // Fill vs the founding garrison (baselinePopulation) — full at/above
         // baseline; a swollen nest simply shows a full badge.
         damageRatio:
@@ -3560,4 +3849,19 @@ export class WorldScene {
       this.renderer.domElement.parentElement.removeChild(this.renderer.domElement);
     }
   }
+}
+
+/** Ray-casting point-in-polygon test (water sampler + placement checks). */
+function pointInPolygonSimple(x: number, z: number, poly: Point2D[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x;
+    const zi = poly[i].z;
+    const xj = poly[j].x;
+    const zj = poly[j].z;
+    if (zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
 }

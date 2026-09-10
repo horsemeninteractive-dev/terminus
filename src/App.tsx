@@ -446,6 +446,7 @@ export default function App() {
     handleCreateSquad,
     handleModifySquadGeneralMembers,
     handleDisbandSquad,
+    handleReplenishSquad,
     handleRecruitGroup,
     handleSelectSquad,
     handleSelectSquads,
@@ -583,7 +584,7 @@ export default function App() {
       handleBuildFreestandingRun={handleBuildFreestandingRun} handleChangeSquadStance={handleChangeSquadStance} handleConfirmHQ={handleConfirmHQ}
       handleCreateSquad={handleCreateSquad} handleDesignateGatherArea={handleDesignateGatherArea} handleDesignateSquadScavenge={handleDesignateSquadScavenge}
       handleStartTraining={handleStartTraining} handleStopTraining={handleStopTraining}
-      handleDisbandSquad={handleDisbandSquad} handleDismissAlert={handleDismissAlert} handleDismountVehicle={handleDismountVehicle}
+      handleDisbandSquad={handleDisbandSquad} handleReplenishSquad={handleReplenishSquad} handleDismissAlert={handleDismissAlert} handleDismountVehicle={handleDismountVehicle}
       handleFocusBuilding={handleFocusBuilding} handleLoadProgress={handleLoadProgress} handleMinimapPanTo={handleMinimapPanTo}
       handleModifySquadGeneralMembers={handleModifySquadGeneralMembers} handleMountVehicle={handleMountVehicle} handleOrderDeconstruction={handleOrderDeconstruction}
       handleOrderSquadAttack={handleOrderSquadAttack} handleOrderSquadMove={handleOrderSquadMove} handleOrderSquadRecall={handleOrderSquadRecall} handleOrderAllSquadsRecall={handleOrderAllSquadsRecall}

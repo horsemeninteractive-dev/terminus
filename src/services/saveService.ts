@@ -9,6 +9,7 @@ import { createEmptyOccupationState } from '../types/occupation';
 import { createEmptyWaterState } from '../types/water';
 import { createEmptyPowerState } from '../types/power';
 import { createEmptyTrainingState } from '../types/training';
+import { pickLairDominantVariant } from './rivalFactionService';
 
 const SAVE_STORAGE_KEY_PREFIX = 'terminus_ifz_save_';
 const SAVE_INDEX_KEY = 'terminus_ifz_save_index';
@@ -38,6 +39,36 @@ export function toMap<K = any, V = any>(val: any): Map<K, V> {
   if (Array.isArray(val)) return new Map<K, V>(val);
   if (typeof val === 'object') return new Map<K, V>(Object.entries(val) as any);
   return new Map<K, V>();
+}
+
+/**
+ * Infection-record sanitation (named-survivor exposure model).
+ *
+ * Infection state may only belong to PERSISTENT entities: named survivors.
+ * Older builds could write phantom anonymous records — e.g. a bite on a
+ * leaderless squad keyed by '' (empty leaderId), or records whose id no
+ * longer resolves to any named survivor. Those were the exploit where an
+ * "anonymous member" seemingly carried (or lost) an infection through
+ * disband/reform. They are dropped on load; the population illness system
+ * keeps its own records and is unaffected.
+ */
+function sanitizeInfections(infections: Map<any, any>): Map<any, any> {
+  const cleaned = new Map<any, any>();
+  for (const [key, inf] of infections.entries()) {
+    if (!inf || typeof inf !== 'object') continue;
+    const survivorId = typeof inf.survivorId === 'string' ? inf.survivorId : String(key ?? '');
+    if (!survivorId || survivorId === '' || survivorId === 'undefined' || survivorId === 'null') {
+      continue; // phantom anonymous record — discard
+    }
+    if (inf.isNamed === false && !inf.isQuarantined && inf.stage !== 'turned' && inf.stage !== 'cured') {
+      // Explicitly anonymous (non-named) active records are not part of the
+      // survivor model; the population illness system does not use this map.
+      // Keeping only resolved historical records preserves memorial data.
+      continue;
+    }
+    cleaned.set(key, inf);
+  }
+  return cleaned;
 }
 
 // Helper to convert SettlementState Maps to JSON-safe arrays
@@ -189,6 +220,17 @@ export function deserializeSettlementState(data: any): SettlementState {
       lair.hordeAccumSec = typeof lair.hordeAccumSec === 'number' ? lair.hordeAccumSec : 0;
       lair.lastActivity = typeof lair.lastActivity === 'number' ? lair.lastActivity : Date.now();
     }
+    // DOMINANT VARIANT migration — records saved before lairs carried a
+    // dominant infected type get one derived deterministically from the lair's
+    // building id and threat tier (NOT re-rolled on every load), so an old
+    // save's nests keep a stable identity and the first lair tick can
+    // immediately compose groups from it.
+    if (!lair.dominantVariant) {
+      lair.dominantVariant = pickLairDominantVariant(
+        lair.buildingId ?? lair.id,
+        lair.threatTier ?? 'medium'
+      );
+    }
   }
 
   // ------------- Production recipe migration (§7.2) -------------
@@ -244,7 +286,7 @@ export function deserializeSettlementState(data: any): SettlementState {
     adaptedBuildings,
     freestandingBuildings,
     buildingSections: toMap(data.buildingSections),
-    infections: toMap(data.infections),
+    infections: sanitizeInfections(toMap<any, any>(data.infections)),
     outbreaks: toMap(data.outbreaks),
     zombieLairs,
     rivalHideouts: toMap(data.rivalHideouts),

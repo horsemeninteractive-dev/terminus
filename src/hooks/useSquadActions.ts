@@ -6,6 +6,7 @@ import {
   disbandSquad,
   modifySquadGeneralMembers,
   recruitHiddenGroup,
+  replenishSquad,
   updateJobPriorities,
   vacateSurvivorRole,
 } from '../services/populationService';
@@ -25,6 +26,9 @@ import type { GameClockState, TacticalSquadUnit, ZombieUnit } from '../types/com
 import type { SettlementState } from '../types/settlement';
 import type { RadioDirectiveState, RadioTransmission } from '../types/radioDirective';
 import type { RoadNetworkGraph } from '../services/roadPathfinder';
+
+/** Distance from the HQ centre a squad must stand to be replenished at base. */
+export const REPLENISH_AT_HQ_RADIUS_M = 25;
 
 /** Runtime for the population & tactical-squad action handlers. */
 export interface SquadActionsRuntime {
@@ -251,8 +255,79 @@ export function useSquadActions(runtime: SquadActionsRuntime) {
       }
       setToastMessage({
         title: 'SQUAD DISBANDED',
-        desc: 'Leader and members returned to settlement pool.',
+        desc: 'Leader and surviving members returned to settlement pool.',
         type: 'info',
+      });
+    }
+  };
+
+  /**
+   * Replenishes a squad's fallen members at HQ: the dead roster slots are
+   * refilled from the free general population and the tactical unit's fallen
+   * members are revived on the spot. Only allowed while the squad is actually
+   * at the settlement HQ.
+   */
+  const handleReplenishSquad = (squadId: string) => {
+    const settlementNow = settlementRef.current || settlement;
+    const unit = combatSquadsRef.current.find((s) => s.squadId === squadId);
+    const hq = getPrimaryHQ(settlementNow)?.center;
+    const atHq =
+      !!unit &&
+      !!hq &&
+      !unit.onExpedition &&
+      unit.state !== 'combat' &&
+      Math.hypot(unit.x - hq.x, unit.z - hq.z) < REPLENISH_AT_HQ_RADIUS_M;
+    if (!atHq) {
+      setToastMessage({
+        title: 'SQUAD MUST BE AT HQ',
+        desc: 'Bring the squad back to the settlement before refilling its ranks.',
+        type: 'warn',
+      });
+      return;
+    }
+
+    let success = false;
+    let errorMsg = '';
+    setSettlement((prev) => {
+      const res = replenishSquad(prev, squadId);
+      if (!res.success) {
+        errorMsg = res.error || 'Could not replenish squad.';
+        return prev;
+      }
+      success = true;
+      settlementRef.current = res.newState;
+      // Revive the fallen members in the tactical unit immediately (roster ids
+      // are stable, so the right members come back). Only anonymous recruits
+      // are revived — a dead named leader is permanently fallen.
+      const revived = combatSquadsRef.current.map((s) =>
+        s.squadId === squadId
+          ? {
+              ...s,
+              members: s.members.map((m) =>
+                m.isAlive || m.isLeader
+                  ? m
+                  : { ...m, isAlive: true, currentHp: m.maxHp }
+              ),
+            }
+          : s
+      );
+      combatSquadsRef.current = revived;
+      setCombatSquads(revived);
+      return res.newState;
+    });
+
+    if (success) {
+      setToastMessage({
+        title: 'SQUAD REPLENISHED',
+        desc: 'Fallen members replaced from the general population.',
+        type: 'success',
+      });
+      soundService.playRecruitmentResolved();
+    } else {
+      setToastMessage({
+        title: 'REPLENISH FAILED',
+        desc: errorMsg || 'Could not replenish squad.',
+        type: 'warn',
       });
     }
   };
@@ -487,6 +562,7 @@ export function useSquadActions(runtime: SquadActionsRuntime) {
     handleCreateSquad,
     handleModifySquadGeneralMembers,
     handleDisbandSquad,
+    handleReplenishSquad,
     handleRecruitGroup,
     handleSelectSquad,
     handleSelectSquads,

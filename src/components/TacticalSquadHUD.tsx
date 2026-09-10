@@ -29,6 +29,7 @@ import {
   X,
   Droplets,
   Zap,
+  RefreshCw,
 } from 'lucide-react';
 import { WorldVehicle } from '../types/vehicle';
 import { getVehicleInventoryCapacity } from '../services/vehicleService';
@@ -58,6 +59,10 @@ interface TacticalSquadHUDProps {
   allSquads?: TacticalSquadUnit[];
   onSelectSquad?: (squadId: string) => void;
   onDisbandSquad?: (squadId: string) => void;
+  /** Refills fallen general members from the population — only works at HQ. */
+  onReplenishSquad?: (squadId: string) => void;
+  /** Whether this squad currently stands at the settlement HQ. */
+  isAtHq?: boolean;
   inventory?: { capacity: number; used: number; items: { id: string; kind?: string; label?: string; quantity: number; itemId?: string }[] };
   /** Vehicle the selected squad is currently riding in (shows condition/fuel + unmount). */
   mountedVehicle?: WorldVehicle | null;
@@ -84,6 +89,8 @@ export const TacticalSquadHUD: React.FC<TacticalSquadHUDProps> = ({
   allSquads = [],
   onSelectSquad,
   onDisbandSquad,
+  onReplenishSquad,
+  isAtHq = false,
   inventory,
   mountedVehicle,
   onDismountVehicle,
@@ -486,6 +493,22 @@ export const TacticalSquadHUD: React.FC<TacticalSquadHUDProps> = ({
           >
             <MapPin className="w-3.5 h-3.5" />
           </button>
+
+          {/* Replenish Squad — refill fallen members at HQ */}
+          {onReplenishSquad && (
+            <button
+              onClick={() => onReplenishSquad(squad.squadId)}
+              disabled={!isAtHq}
+              title={
+                isAtHq
+                  ? 'Replenish fallen members from the general population'
+                  : 'Bring the squad back to HQ to replenish its ranks'
+              }
+              className="w-8 h-8 sm:w-7 sm:h-7 bg-[#151D28] hover:bg-[#0B2E1E] border border-[#2D3B4E] hover:border-emerald-500 flex items-center justify-center text-slate-300 hover:text-emerald-400 transition-colors touch-manipulation active:scale-95 disabled:opacity-30 disabled:hover:bg-[#151D28] disabled:hover:text-slate-300 disabled:hover:border-[#2D3B4E]"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+            </button>
+          )}
 
           {/* Disband Squad */}
           <button
