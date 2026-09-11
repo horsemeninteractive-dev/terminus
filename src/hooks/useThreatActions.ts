@@ -1009,21 +1009,15 @@ export function useThreatActions(runtime: ThreatActionsRuntime) {
   const handleDirectiveAction = useCallback((actionType: string) => {
     switch (actionType) {
       case 'focus_candidate_hq':
+        // The player chooses their own HQ by clicking a building on the map —
+        // no camera flight or auto-selection here (the HQ selection card at
+        // the bottom of the screen guides the choice).
         if (mapData && mapData.buildings.length > 0) {
-          const candidate =
-            mapData.buildings.find((b) => b.polygon.length >= 4 && !settlement.adaptedBuildings?.has(String(b.id))) ||
-            mapData.buildings[0];
-          if (candidate) {
-            setSelectedBuilding(candidate);
-            if (sceneRef.current) {
-              sceneRef.current.cameraController.focusOn(candidate.center, 80);
-            }
-            setToastMessage({
-              title: 'CANDIDATE HQ IDENTIFIED',
-              desc: `Inspecting ${candidate.name || 'Structure'}. Click "CONFIRM AS SETTLEMENT HEADQUARTERS".`,
-              type: 'info',
-            });
-          }
+          setToastMessage({
+            title: 'SCANNING SATELLITE GRID',
+            desc: 'Click any building in the sector to designate it as Command HQ.',
+            type: 'info',
+          });
         }
         break;
       case 'open_squad_panel':

@@ -181,8 +181,6 @@ export function getInitialRadioDirectiveState(): RadioDirectiveState {
  * 2. Muster Tactical Fireteam (dir_squad)
  * 3. Scavenge First Urban Structure (dir_scavenge)
  * 4. Locate & Contact Survivor Group (dir_survivors)
- * 5. Hold Safe Zone Through Nightfall (dir_night)
- * 6. Expand Specialized Facilities (dir_expand) & Onward
  */
 export function updateRadioDirectiveSystem(
   currentState: RadioDirectiveState,
@@ -219,12 +217,6 @@ export function updateRadioDirectiveSystem(
   );
 
   const hasSquad = (settlement.squads?.length || 0) > 0;
-  const isNightSurvived =
-    gameClock.day > 1 ||
-    (gameClock.day === 1 &&
-      gameClock.hour >= 6 &&
-      gameClock.phase === 'day' &&
-      (gameClock.totalElapsedSeconds || 0) > 400);
 
   const hasCompletedScavenge =
     hasCompletedScavengeInput ||
@@ -262,19 +254,6 @@ export function updateRadioDirectiveSystem(
         isComplete = completedSet.has('dir_scavenge') && hasDiscoveredOrRecruitedSurvivorGroup;
         progress = isComplete ? 1 : 0;
         break;
-
-      case 'survive_night':
-        // Only valid if survivor discovery is completed
-        isComplete = completedSet.has('dir_survivors') && isNightSurvived;
-        progress = isNightSurvived ? 1 : Math.min(0.9, (gameClock.totalElapsedSeconds || 0) / 480);
-        break;
-
-      case 'build_facility': {
-        const adaptedCount = settlement.adaptedBuildings ? settlement.adaptedBuildings.size : 0;
-        isComplete = completedSet.has('dir_night') && adaptedCount >= (directive.targetCount || 2);
-        progress = Math.min(1, adaptedCount / (directive.targetCount || 2));
-        break;
-      }
 
       default:
         isComplete = false;
@@ -471,7 +450,7 @@ export function updateRadioDirectiveSystem(
     }
   }
 
-  // --- Step 4 -> Complete Survivor Discovery & Trigger Step 5 (Night Defense) ---
+  // --- Step 4 -> Complete Survivor Discovery (end of the tutorial chain) ---
   if (completedSet.has('dir_scavenge') && hasDiscoveredOrRecruitedSurvivorGroup) {
     if (!completedSet.has('dir_survivors')) {
       completedSet.add('dir_survivors');
@@ -480,117 +459,6 @@ export function updateRadioDirectiveSystem(
       if (survAct) {
         survAct.status = 'completed';
         survAct.currentCount = 1;
-      }
-    }
-
-    if (!activeAndPendingIds.has('dir_night')) {
-      const nightTx: RadioTransmission = {
-        id: 'tx_survivors_complete',
-        classification: 'EMERGENCY',
-        callsign: 'SGT. VANCE // COMMAND HQ',
-        frequency: '104.20 MHz',
-        timestamp: nowStr,
-        title: 'DUSK SETTLING — FORTIFY PERIMETER FOR NIGHT HORDE',
-        message:
-          'Chief! Survivors are accounted for and secured. But temperature is dropping fast and atmospheric sensors show dusk settling over the ruins. We can hear infected shrieking in the alleys. We need all personnel to dig in, engage defensive cover, and hold the safe zone through the night until dawn!',
-        directiveId: 'dir_night',
-        isRead: false,
-        audioCue: 'alarm',
-        requiresAcknowledgement: true,
-        responseOptions: [
-          {
-            label: 'ALL UNITS DIG IN. ENGAGE DEFENSIVE COVER AND HOLD GROUND.',
-            action: 'speed_clock',
-            responseNote: 'Perimeter armed. Squads in defensive posture.',
-          },
-        ],
-      };
-      generatedTransmissions.push(nightTx);
-
-      const nightDirective: OperationalDirective = {
-        id: 'dir_night',
-        code: 'DIR-05',
-        title: 'Hold Safe Zone Through Nightfall',
-        description: 'Maintain watch, defend against infected horde assault, and survive until dawn.',
-        classification: 'EMERGENCY',
-        status: 'active',
-        conditionType: 'survive_night',
-        rewardSummary: 'Safe Zone Tier 1 Certification + Network Expansion',
-        actionType: 'speed_clock',
-        completionTransmissionId: 'tx_night_complete',
-        isPrimary: true,
-      };
-
-      pendingDirectives.push(nightDirective);
-      activeAndPendingIds.add('dir_night');
-    }
-  }
-
-  // --- Step 5 -> Complete Night Defense & Trigger Step 6 (Facility Network & Onward Expansion) ---
-  if (completedSet.has('dir_survivors') && isNightSurvived) {
-    if (!completedSet.has('dir_night')) {
-      completedSet.add('dir_night');
-      newlyCompletedDirectiveIds.push('dir_night');
-      const nightAct = updatedDirectives.find((d) => d.id === 'dir_night');
-      if (nightAct) {
-        nightAct.status = 'completed';
-        nightAct.currentCount = 1;
-      }
-    }
-
-    if (!activeAndPendingIds.has('dir_expand')) {
-      const milestoneTx: RadioTransmission = {
-        id: 'tx_night_complete',
-        classification: 'MILESTONE',
-        callsign: 'SGT. VANCE // SAFE ZONE LEAD',
-        frequency: '104.20 MHz',
-        timestamp: nowStr,
-        title: 'DAWN CONFIRMED — NIGHT HORDE REPELLED',
-        message:
-          'Dawn is breaking over the sector, Chief! All night assaults were repelled and our barricades held firm. Morale is surging. We\'re ready to expand our perimeter and adapt surrounding structures into dedicated cookhouses and medical triage centers.',
-        directiveId: 'dir_expand',
-        isRead: false,
-        audioCue: 'morse',
-        requiresAcknowledgement: true,
-        responseOptions: [
-          {
-            label: 'OUTSTANDING WORK, VANCE. EXPAND FACILITY NETWORK.',
-            action: 'open_build_drawer',
-            responseNote: 'Directing construction labor to adapt specialized facilities.',
-          },
-        ],
-      };
-      generatedTransmissions.push(milestoneTx);
-
-      const expandDirective: OperationalDirective = {
-        id: 'dir_expand',
-        code: 'DIR-06',
-        title: 'Establish Specialized Facilities',
-        description: 'Convert surrounding structures into Cookhouses, Field Hospitals, or Workshops.',
-        classification: 'MILESTONE',
-        status: 'active',
-        conditionType: 'build_facility',
-        targetCount: 2,
-        rewardSummary: 'Sustained Morale + Infection Triage Capacity',
-        actionType: 'open_build_drawer',
-        isPrimary: false,
-      };
-
-      pendingDirectives.push(expandDirective);
-      activeAndPendingIds.add('dir_expand');
-    }
-  }
-
-  // --- Step 6 -> Complete Facility Expansion ---
-  if (completedSet.has('dir_night')) {
-    const adaptedCount = settlement.adaptedBuildings ? settlement.adaptedBuildings.size : 0;
-    if (adaptedCount >= 2 && !completedSet.has('dir_expand')) {
-      completedSet.add('dir_expand');
-      newlyCompletedDirectiveIds.push('dir_expand');
-      const expAct = updatedDirectives.find((d) => d.id === 'dir_expand');
-      if (expAct) {
-        expAct.status = 'completed';
-        expAct.currentCount = 2;
       }
     }
   }
