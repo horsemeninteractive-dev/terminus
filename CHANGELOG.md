@@ -21,7 +21,7 @@ Releasing:
 
 ---
 
-## [Unreleased]
+## [0.3.1] – 2026-09-11
 
 ### Added
 
