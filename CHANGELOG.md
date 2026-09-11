@@ -23,6 +23,34 @@ Releasing:
 
 ## [Unreleased]
 
+### Added
+
+- **3D bridges.** Roads crossing rivers and lakes now render as raised
+  bridge decks instead of sinking to the riverbed: the deck lifts to a
+  constant height above the water with entry/exit ramps at the banks,
+  parapet railings along both edges, and support piers descending into
+  the riverbed. The bridge's road surface, curbs and lane markings ride
+  the deck with it.
+- **Vehicles and all foot units ride the bridge deck.** Trucks and every
+  humanoid (squads, workers, hostile humans, infected) standing on a
+  bridge stand on the deck surface rather than the terrain beneath it.
+- **Bridge-aware unit movement.** Crossing a road bridge no longer counts
+  as being in water for ANY unit: no wading speed penalty and no swim
+  animation on the deck, matching the sim's bridge-aware water checks.
+  Open water away from a bridge keeps the existing rules — humans wade
+  at 0.45× speed, zombies are hard-blocked by pathfinding.
+- **Zombies cross rivers via bridges.** Infected pathfinding treats road
+  bridge cells as legal crossings, so hordes can reach prey across an
+  unbroken river when a bridge spans it.
+
+### Fixed
+
+- **Vehicles no longer treat bridges as water.** Route planning, route
+  validation and the drive tick all exempt road-over-water cells from
+  the water-impassable rules, restoring bridge crossings that the
+  earlier vehicle water-impassability change had blocked (trucks were
+  detouring to the nearest bank or refusing orders entirely).
+
 ### Changed
 
 - **Removed design-document section references from the UI.** Panels,

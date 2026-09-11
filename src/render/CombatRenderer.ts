@@ -58,12 +58,30 @@ export class CombatRenderer {
    * Water sampler injected by WorldScene: true when a world point sits inside
    * a water polygon (river/lake/canal). Drives the swim pose — moving units
    * over water use a front-crawl stroke instead of walk/run, and stay sunk to
-   * water level (see swimOffset).
+   * water level (see swimOffset). Bridge decks report dry (see the deck
+   * sampler below) so units cross bridges on foot at full speed.
    */
   private waterSampler: ((x: number, z: number) => boolean) | null = null;
 
   public setWaterSampler(sampler: ((x: number, z: number) => boolean) | null) {
     this.waterSampler = sampler;
+  }
+
+  /** Bridge-deck sampler injected by WorldScene: deck surface Y at a point, or
+   *  null when the point is not on a road bridge. Units standing on a bridge
+   *  ride the deck instead of sinking to the riverbed terrain below. */
+  private bridgeDeckSampler: ((x: number, z: number) => number | null) | null = null;
+
+  public setBridgeDeckSampler(sampler: ((x: number, z: number) => number | null) | null) {
+    this.bridgeDeckSampler = sampler;
+  }
+
+  /** Elevation a unit mesh should stand at: bridge-deck surface when on a
+   *  bridge, else the terrain. */
+  private unitGroundY(x: number, z: number, exaggeration: number): number {
+    const deckY = this.bridgeDeckSampler?.(x, z);
+    if (deckY !== null && deckY !== undefined) return deckY;
+    return this.terrainSample(x, z, exaggeration);
   }
 
   /** Rendered-terrain height when available, else the smooth analytic surface. */
@@ -506,7 +524,7 @@ export class CombatRenderer {
       const sm = this.squadSmoothers.get(id);
       if (!sm) continue;
       const p = sm.sample(now);
-      const elev = this.terrainSample(p.x, p.z, this.currentExaggeration);
+      const elev = this.unitGroundY(p.x, p.z, this.currentExaggeration);
       const inWater = this.waterSampler?.(p.x, p.z) ?? false;
       container.position.set(p.x, inWater ? elev - 0.35 : elev, p.z);
       if (p.rot !== null) container.rotation.y = p.rot;
@@ -526,7 +544,7 @@ export class CombatRenderer {
       const sm = this.workerSmoothers.get(id);
       if (!sm) continue;
       const p = sm.sample(now);
-      const elev = this.terrainSample(p.x, p.z, this.currentExaggeration);
+      const elev = this.unitGroundY(p.x, p.z, this.currentExaggeration);
       const inWater = this.waterSampler?.(p.x, p.z) ?? false;
       mesh.position.set(p.x, inWater ? elev - 0.35 : elev, p.z);
       const anim = this.workerAnimState.get(id);
@@ -552,7 +570,7 @@ export class CombatRenderer {
       const sm = this.zombieSmoothers.get(id);
       if (!sm) continue;
       const p = sm.sample(now);
-      const elev = this.terrainSample(p.x, p.z, this.currentExaggeration);
+      const elev = this.unitGroundY(p.x, p.z, this.currentExaggeration);
       mesh.position.set(p.x, elev, p.z);
       if (p.rot !== null) mesh.rotation.y = p.rot;
 
@@ -587,7 +605,7 @@ export class CombatRenderer {
       const sm = this.hostileHumanSmoothers.get(id);
       if (!sm) continue;
       const p = sm.sample(now);
-      const elev = this.terrainSample(p.x, p.z, this.currentExaggeration);
+      const elev = this.unitGroundY(p.x, p.z, this.currentExaggeration);
       const inWater = this.waterSampler?.(p.x, p.z) ?? false;
       mesh.position.set(p.x, inWater ? elev - 0.35 : elev, p.z);
       if (p.rot !== null) mesh.rotation.y = p.rot;

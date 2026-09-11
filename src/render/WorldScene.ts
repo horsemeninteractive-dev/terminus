@@ -617,6 +617,9 @@ export class WorldScene {
       this.groundRenderer.sampleTerrainSurface(x, z);
     this.roadRenderer = new RoadRenderer();
     this.roadRenderer.setTerrainSurfaceSampler(terrainSurfaceSampler);
+    // Bridge detection: roads crossing these lift onto a rendered deck with
+    // railings and piers.
+    this.roadRenderer.setWaterPolygons(this.waterPolygons);
     this.buildingRenderer = new BuildingRenderer();
     this.buildingRenderer.setTerrainSurfaceSampler(terrainSurfaceSampler);
     this.resourceRenderer = new ResourceRenderer();
@@ -715,9 +718,24 @@ export class WorldScene {
       .map((l) => l.polygon as Point2D[]);
     // Combat units need to know whether they are wading so the rigs switch to
     // the swim stroke (and sink to water level). Sampled against the same
-    // water polygons used to reject placement.
-    this.combatRenderer.setWaterSampler((x: number, z: number) =>
-      this.waterPolygons.some((poly) => pointInPolygonSimple(x, z, poly))
+    // water polygons used to reject placement — but road-bridge deck cells
+    // report DRY: a squad/zombie crossing a bridge walks at full speed with
+    // no swim pose, exactly like the sim's bridge-aware water check.
+    this.combatRenderer.setWaterSampler((x: number, z: number) => {
+      if (this.roadRenderer.sampleBridgeDeckY(x, z) !== null) return false;
+      return this.waterPolygons.some((poly) => pointInPolygonSimple(x, z, poly));
+    });
+    // Units on a bridge deck stand on the deck surface instead of the riverbed
+    // terrain beneath it.
+    this.combatRenderer.setBridgeDeckSampler((x: number, z: number) =>
+      this.roadRenderer.sampleBridgeDeckY(x, z)
+    );
+    // Bridge decks: the road renderer lifts roads over water onto a raised
+    // deck; vehicles and squad meshes must ride that deck instead of sinking
+    // to the riverbed. The deckY sampler returns the deck surface height at a
+    // point (null = not on a bridge).
+    this.vehicleRenderer.setBridgeDeckSampler((x: number, z: number) =>
+      this.roadRenderer.sampleBridgeDeckY(x, z)
     );
     this.showBuildingEdges = showBuildingEdges;
     this.currentExaggeration = exaggeration;

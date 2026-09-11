@@ -614,7 +614,7 @@ export function orderVehicleRoadTravel(
   const firstSnap = route[0];
   const snapReachable =
     !firstSnap ||
-    !isBlockedSegmentClearance(vehicle.position, firstSnap, mapData, blockedPolys);
+    !isBlockedSegmentClearance(vehicle.position, firstSnap, mapData, blockedPolys, pathGrid);
   const baseWaypoints =
     route.length > 1 && snapReachable
       ? route
@@ -644,9 +644,9 @@ export function orderVehicleRoadTravel(
   // PathGrid for a building-avoiding footpath-style detour. Vehicles can't
   // cross buildings (their tick forbids it), so we keep only the clear
   // stretches and verify every hop.
-  const straightBlocked = isBlockedSegmentClearance(vehicle.position, targetPos, mapData, blockedPolys);
+  const straightBlocked = isBlockedSegmentClearance(vehicle.position, targetPos, mapData, blockedPolys, pathGrid);
   const roadRouteUsable = waypoints.length > 0 && (
-    waypoints.length > 1 || !isBlockedSegmentClearance(vehicle.position, waypoints[0], mapData, blockedPolys)
+    waypoints.length > 1 || !isBlockedSegmentClearance(vehicle.position, waypoints[0], mapData, blockedPolys, pathGrid)
   );
   // The road route can be "usable" yet still dive into a river on its off-road
   // final leg (or cross one between road hops): the road graph knows nothing
@@ -666,9 +666,19 @@ export function orderVehicleRoadTravel(
       const t = i / samples;
       const px = a.x + dx * t;
       const pz = a.z + dz * t;
+      let inWater = false;
       for (const poly of waterPolys) {
-        if (poly.length >= 3 && isPointInsidePolygon({ x: px, z: pz }, poly)) return true;
+        if (poly.length >= 3 && isPointInsidePolygon({ x: px, z: pz }, poly)) {
+          inWater = true;
+          break;
+        }
       }
+      if (!inWater) continue;
+      // A road segment over the river is a BRIDGE — legal for vehicles. Trust
+      // the grid's bridge mask first; fall back to a geometric on-road test.
+      if (pathGrid && pathGrid.isWater(px, pz, true) === false) continue;
+      if (isOnRoadSegment({ x: px, z: pz }, mapData)) continue;
+      return true;
     }
     return false;
   };
@@ -699,7 +709,7 @@ export function orderVehicleRoadTravel(
       const dx = b.x - a.x;
       const dz = b.z - a.z;
       const len = Math.hypot(dx, dz);
-      if (len < 0.01) return !isBlockedByMap(b, mapData, blockedPolys);
+      if (len < 0.01) return !isBlockedByMap(b, mapData, blockedPolys, pathGrid);
       const nx = -dz / len;
       const nz = dx / len;
       const samples = Math.max(2, Math.ceil(len / 2.5));
@@ -707,7 +717,9 @@ export function orderVehicleRoadTravel(
         const t = i / samples;
         const px = a.x + dx * t;
         const pz = a.z + dz * t;
-        if (isBlockedByMap({ x: px, z: pz }, mapData, blockedPolys)) return false;
+        // Bridge cells (road deck over water) are drivable: pass pathGrid so
+        // the water rejection is bridge-aware.
+        if (isBlockedByMap({ x: px, z: pz }, mapData, blockedPolys, pathGrid)) return false;
         if (isBlockedByMapNoWater({ x: px + nx * VEHICLE_HALF_WIDTH, z: pz + nz * VEHICLE_HALF_WIDTH }, mapData, blockedPolys)) return false;
         if (isBlockedByMapNoWater({ x: px - nx * VEHICLE_HALF_WIDTH, z: pz - nz * VEHICLE_HALF_WIDTH }, mapData, blockedPolys)) return false;
       }
@@ -791,14 +803,50 @@ function isPointInsidePolygon(point: Point2D, polygon: Point2D[]): boolean {
 function isBlockedByMap(
   point: Point2D,
   mapData?: MapData,
-  freestandingPolys?: Point2D[][]
+  freestandingPolys?: Point2D[][],
+  pathGrid?: PathGrid | null
 ): boolean {
   if (!mapData) return false;
-  if ((mapData.landuse || []).some((l) => l.type === 'water' && isPointInsidePolygon(point, l.polygon))) return true;
+  // Water blocks — EXCEPT under a road segment (a bridge): the road deck is
+  // drivable. The path grid marks those cells during road rasterization; when
+  // no grid is available fall back to a geometric on-road test.
+  if ((mapData.landuse || []).some((l) => l.type === 'water' && isPointInsidePolygon(point, l.polygon))) {
+    if (pathGrid) {
+      // Bridge deck: the grid still reports water=false here even though the
+      // polygon test hit — the road rasterization marked this cell as bridge.
+      if (!pathGrid.isWater(point.x, point.z, true)) return false;
+    } else if (isOnRoadSegment(point, mapData)) {
+      return false;
+    }
+    return true;
+  }
   if (mapData.buildings.some((b) => b.polygon?.length >= 3 && isPointInsidePolygon(point, b.polygon))) return true;
   if (freestandingPolys) {
     for (const poly of freestandingPolys) {
       if (poly.length >= 3 && isPointInsidePolygon(point, poly)) return true;
+    }
+  }
+  return false;
+}
+
+/** Geometric bridge fallback (no PathGrid): true when `point` lies within the
+ *  half-width corridor of any road segment. Broad but cheap — it matches the
+ *  grid's road rasterization tolerance closely enough for drivability checks. */
+function isOnRoadSegment(point: Point2D, mapData: MapData): boolean {
+  for (const rd of mapData.roads || []) {
+    if (!rd.points || rd.points.length < 2) continue;
+    const halfWidth = Math.max(2.5, (rd.width || 6) / 2 + 1.5);
+    for (let i = 0; i < rd.points.length - 1; i++) {
+      const a = rd.points[i];
+      const b = rd.points[i + 1];
+      const dx = b.x - a.x;
+      const dz = b.z - a.z;
+      const len2 = dx * dx + dz * dz;
+      if (len2 < 1e-6) continue;
+      const t = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.z - a.z) * dz) / len2));
+      const px = a.x + dx * t;
+      const pz = a.z + dz * t;
+      if (Math.hypot(point.x - px, point.z - pz) <= halfWidth) return true;
     }
   }
   return false;
@@ -834,7 +882,8 @@ const VEHICLE_HALF_WIDTH = 1.6;
 export function isVehiclePlacementBlocked(
   point: Point2D,
   mapData?: MapData,
-  freestandingPolys?: Point2D[][]
+  freestandingPolys?: Point2D[][],
+  pathGrid?: PathGrid | null
 ): boolean {
   const nx = 0, nz = 1; // orientation-agnostic: check a small square around centre
   const off = VEHICLE_HALF_WIDTH * 0.8;
@@ -846,7 +895,9 @@ export function isVehiclePlacementBlocked(
     { x: point.x, z: point.z - off },
     { x: point.x + nx * off, z: point.z + nz * off },
   ];
-  return probes.some((p) => isBlockedByMap(p, mapData, freestandingPolys));
+  // Bridge cells are drivable deck: a truck may park on a bridge without the
+  // recovery logic nudging it off.
+  return probes.some((p) => isBlockedByMap(p, mapData, freestandingPolys, pathGrid));
 }
 
 /**
@@ -859,9 +910,10 @@ export function isVehiclePlacementBlocked(
 export function unembedVehiclePosition(
   pos: Point2D,
   mapData?: MapData,
-  freestandingPolys?: Point2D[][]
+  freestandingPolys?: Point2D[][],
+  pathGrid?: PathGrid | null
 ): Point2D {
-  if (!isVehiclePlacementBlocked(pos, mapData, freestandingPolys)) return pos;
+  if (!isVehiclePlacementBlocked(pos, mapData, freestandingPolys, pathGrid)) return pos;
   const step = 1.5;
   for (let ring = 1; ring <= 8; ring++) {
     const radius = step * ring;
@@ -869,7 +921,7 @@ export function unembedVehiclePosition(
     for (let i = 0; i < probes; i++) {
       const ang = (i / probes) * Math.PI * 2 + ring * 0.35;
       const candidate = { x: pos.x + Math.cos(ang) * radius, z: pos.z + Math.sin(ang) * radius };
-      if (!isVehiclePlacementBlocked(candidate, mapData, freestandingPolys)) return candidate;
+      if (!isVehiclePlacementBlocked(candidate, mapData, freestandingPolys, pathGrid)) return candidate;
     }
   }
   // Even the fallback beats staying embedded: the tick's blocked-step check
@@ -888,12 +940,13 @@ function isBlockedSegmentClearance(
   a: Point2D,
   b: Point2D,
   mapData?: MapData,
-  freestandingPolys?: Point2D[][]
+  freestandingPolys?: Point2D[][],
+  pathGrid?: PathGrid | null
 ): boolean {
   const dx = b.x - a.x;
   const dz = b.z - a.z;
   const len = Math.hypot(dx, dz);
-  if (len < 0.01) return isBlockedByMap(b, mapData, freestandingPolys);
+  if (len < 0.01) return isBlockedByMap(b, mapData, freestandingPolys, pathGrid);
 
   // Lateral unit vector for the clearance offsets.
   const nx = -dz / len;
@@ -904,11 +957,12 @@ function isBlockedSegmentClearance(
     const t = i / samples;
     const px = a.x + dx * t;
     const pz = a.z + dz * t;
-    // Centre + both flanks: a corner graze blocks the whole segment.
+    // Centre + both flanks: a corner graze blocks the whole segment. Bridge
+    // cells are drivable, so the water rejection is bridge-aware here too.
     if (
-      isBlockedByMap({ x: px, z: pz }, mapData, freestandingPolys) ||
-      isBlockedByMap({ x: px + nx * VEHICLE_HALF_WIDTH, z: pz + nz * VEHICLE_HALF_WIDTH }, mapData, freestandingPolys) ||
-      isBlockedByMap({ x: px - nx * VEHICLE_HALF_WIDTH, z: pz - nz * VEHICLE_HALF_WIDTH }, mapData, freestandingPolys)
+      isBlockedByMap({ x: px, z: pz }, mapData, freestandingPolys, pathGrid) ||
+      isBlockedByMap({ x: px + nx * VEHICLE_HALF_WIDTH, z: pz + nz * VEHICLE_HALF_WIDTH }, mapData, freestandingPolys, pathGrid) ||
+      isBlockedByMap({ x: px - nx * VEHICLE_HALF_WIDTH, z: pz - nz * VEHICLE_HALF_WIDTH }, mapData, freestandingPolys, pathGrid)
     ) {
       return true;
     }
@@ -959,9 +1013,9 @@ export function updateVehiclesTick(
     // step fails the blocked check, so it strands forever and is unclickable for
     // boarding. Nudge it to the nearest clear spot; a mounted squad syncs to the
     // vehicle's position later in this same tick.
-    if (mapData && !current.isMoving && isVehiclePlacementBlocked(current.position, mapData, freestandingPolys)) {
+    if (mapData && !current.isMoving && isVehiclePlacementBlocked(current.position, mapData, freestandingPolys, pathGrid)) {
       const before = { ...current.position };
-      current.position = unembedVehiclePosition(current.position, mapData, freestandingPolys);
+      current.position = unembedVehiclePosition(current.position, mapData, freestandingPolys, pathGrid);
       if (current.position.x !== before.x || current.position.z !== before.z) {
         notifications.push({
           title: 'VEHICLE RELOCATED',
@@ -1073,7 +1127,7 @@ export function updateVehiclesTick(
           // of dead-stopping on a malformed/legacy route, re-route from the
           // current position toward the original destination so the vehicle finds
           // a drivable path around the obstruction.
-          if (isBlockedByMap({ x: newX, z: newZ }, mapData, freestandingPolys)) {
+          if (isBlockedByMap({ x: newX, z: newZ }, mapData, freestandingPolys, pathGrid)) {
             if (isOffRoadStep) {
               // The off-road leg runs into a building/water footprint — the
               // destination itself is not drivable (e.g. an order targeted at a

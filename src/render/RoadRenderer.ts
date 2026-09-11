@@ -1,11 +1,20 @@
 import * as THREE from 'three';
 import { sampleElevation } from '../services/elevationService';
-import { ElevationGrid, Point2D, RoadSegment } from '../types/map';
+import { ElevationGrid, LanduseArea, Point2D, RoadSegment } from '../types/map';
 import {
   createRealisticAsphaltTexture,
   createRealisticPathTexture,
   createRealisticCurbTexture,
 } from './realisticTextures';
+
+/** Deck height above the terrain surface for bridge spans (metres). */
+const BRIDGE_DECK_RISE = 1.6;
+/** Ramp length (metres) at each end of a bridge span easing road→deck height. */
+const BRIDGE_RAMP_LEN = 10;
+/** Railings sit this far above the deck. */
+const BRIDGE_RAILING_H = 1.1;
+/** Support piers reach this far below the deck into the riverbed. */
+const BRIDGE_PIER_DEPTH = 2.5;
 
 export class RoadRenderer {
   public group = new THREE.Group();
@@ -31,6 +40,90 @@ export class RoadRenderer {
     exaggeration: number
   ): number {
     return this.terrainSurfaceSampler?.(x, z) ?? sampleElevation(elevation, x, z, exaggeration);
+  }
+
+  /** Water polygons for bridge detection (set alongside terrain sampler). */
+  private waterPolygons: Point2D[][] = [];
+
+  public setWaterPolygons(polys: Point2D[][]) {
+    this.waterPolygons = polys;
+  }
+
+  private static isInsidePolygon(x: number, z: number, poly: Point2D[]): boolean {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const a = poly[i];
+      const b = poly[j];
+      if ((a.z > z) !== (b.z > z) && x < ((b.x - a.x) * (z - a.z)) / (b.z - a.z) + a.x) inside = !inside;
+    }
+    return inside;
+  }
+
+  /** True when the point sits inside any mapped water polygon. */
+  private isOverWater(x: number, z: number): boolean {
+    for (const poly of this.waterPolygons) {
+      if (poly.length >= 3 && RoadRenderer.isInsidePolygon(x, z, poly)) return true;
+    }
+    return false;
+  }
+
+  /** Cached bridge deck samples from the last rebuildRoads: world XZ + deck
+   *  top Y. Queried per-frame by the vehicle renderer so trucks ride the deck. */
+  private deckSamples: Array<{ x: number; z: number; y: number; hw: number }> = [];
+  private deckGrid = new Map<string, number[]>();
+  private static DECK_CELL = 16;
+
+  /**
+   * Deck top surface Y at a world point, or null when the point is not on a
+   * bridge road (within the road's half-width corridor of a lifted sample).
+   */
+  public sampleBridgeDeckY(x: number, z: number): number | null {
+    if (this.deckSamples.length === 0) return null;
+    const k = Math.floor(x / RoadRenderer.DECK_CELL) + '_' + Math.floor(z / RoadRenderer.DECK_CELL);
+    const candidates = this.deckGrid.get(k);
+    if (!candidates) return null;
+    for (const idx of candidates) {
+      const s = this.deckSamples[idx];
+      if (Math.hypot(s.x - x, s.z - z) <= s.hw) return s.y;
+    }
+    return null;
+  }
+
+  /**
+   * Bridge deck height logic for one road sample: over water the road lifts
+   * onto a raised deck (with entry/exit ramps), elsewhere it hugs the terrain.
+   * Returns the extra Y the road surface should sit at (0 = normal).
+   */
+  private bridgeDeckRise(sample: Point2D, prevSample: Point2D | null, nextSample: Point2D | null): number {
+    if (this.waterPolygons.length === 0) return 0;
+    const over = this.isOverWater(sample.x, sample.z);
+    if (!over) {
+      // Near the bank a ramp eases the road up to deck height. The ramp is
+      // measured from the last dry sample toward the water — while the road is
+      // still on land but the NEXT sample is already over water, start rising.
+      const nearNext = nextSample && this.isOverWater(nextSample.x, nextSample.z);
+      const nearPrev = prevSample && this.isOverWater(prevSample.x, prevSample.z);
+      if (nearNext && nearPrev) return BRIDGE_DECK_RISE; // short island between water
+      if (nearNext || nearPrev) {
+        // Distance from this dry sample to the waterline: full rise at the
+        // bank, tapering to 0 over BRIDGE_RAMP_LEN metres.
+        const other = (nearNext ? nextSample : prevSample)!;
+        let d = 0;
+        const step = 2.0;
+        const dx = (other.x - sample.x);
+        const dz = (other.z - sample.z);
+        const total = Math.hypot(dx, dz);
+        while (d < total) {
+          d += step;
+          if (this.isOverWater(sample.x + (dx / total) * d, sample.z + (dz / total) * d)) break;
+        }
+        const ramp = Math.max(0, 1 - d / BRIDGE_RAMP_LEN);
+        return BRIDGE_DECK_RISE * ramp;
+      }
+      return 0;
+    }
+    // Fully over water: full deck height.
+    return BRIDGE_DECK_RISE;
   }
 
   // Realistic procedural textures
@@ -83,6 +176,22 @@ export class RoadRenderer {
     polygonOffsetFactor: -1.4,
     polygonOffsetUnits: -1.4,
     depthWrite: true,
+  });
+
+  // Bridge parapets: warm concrete, slightly lighter than asphalt.
+  private bridgeRailingMaterial = new THREE.MeshStandardMaterial({
+    color: 0x9aa0a8,
+    roughness: 0.85,
+    metalness: 0.05,
+    side: THREE.DoubleSide,
+  });
+
+  // Bridge piers: darker concrete rising out of the water.
+  private bridgePierMaterial = new THREE.MeshStandardMaterial({
+    color: 0x6b7076,
+    roughness: 0.95,
+    metalness: 0.02,
+    side: THREE.DoubleSide,
   });
 
   private labelMaterials: THREE.MeshBasicMaterial[] = [];
@@ -174,11 +283,15 @@ export class RoadRenderer {
     exaggeration = 1.0
   ) {
     this.clear();
+    this.deckSamples = [];
+    this.deckGrid.clear();
 
     const roadGeometries: THREE.BufferGeometry[] = [];
     const pedestrianGeometries: THREE.BufferGeometry[] = [];
     const curbGeometries: THREE.BufferGeometry[] = [];
     const markingGeometries: THREE.BufferGeometry[] = [];
+    const railingGeometries: THREE.BufferGeometry[] = [];
+    const pierGeometries: THREE.BufferGeometry[] = [];
 
     // 1. Build Spatial Index of Junctions
     interface RoadJunction {
@@ -440,6 +553,13 @@ export class RoadRenderer {
       const markingUvs: number[] = [];
       const markingIndices: number[] = [];
 
+      // Bridge geometry (railings + support piers) — only built for spans that
+      // actually cross water, so ordinary roads pay nothing.
+      const railingVertices: number[] = [];
+      const railingIndices: number[] = [];
+      const pierVertices: number[] = [];
+      const pierIndices: number[] = [];
+
       // Tight, snug vertical offsets above terrain
       const yOffset = isPedestrian ? 0.05 : 0.08;
       const curbY = yOffset + 0.055;
@@ -456,6 +576,10 @@ export class RoadRenderer {
       // Track curb state per slice
       const leftCurbClear: boolean[] = [];
       const rightCurbClear: boolean[] = [];
+      // Bridge tracking: which slices are lifted onto the deck, and the index
+      // of each lifted slice's vertices within railingVertices (4 verts each).
+      const sliceWasLifted: boolean[] = [];
+      const liftSliceIdx: number[] = [];
 
       let accumulatedDistance = 0;
 
@@ -499,9 +623,16 @@ export class RoadRenderer {
         const centerTerrainY = this.terrainY(elevation, centerX, centerZ, exaggeration);
         const rightTerrainY = this.terrainY(elevation, rightX, rightZ, exaggeration);
 
-        const leftSurfaceY = leftTerrainY + yOffset;
-        const centerSurfaceY = centerTerrainY + yOffset;
-        const rightSurfaceY = rightTerrainY + yOffset;
+        // BRIDGE: over water the road lifts onto a raised deck with ramps at
+        // the banks; over land the rise is zero and the road hugs the terrain
+        // exactly as before.
+        const deckRise = isPedestrian
+          ? 0
+          : this.bridgeDeckRise(pts[i], i > 0 ? pts[i - 1] : null, i < pts.length - 1 ? pts[i + 1] : null);
+
+        const leftSurfaceY = leftTerrainY + yOffset + deckRise;
+        const centerSurfaceY = centerTerrainY + yOffset + deckRise;
+        const rightSurfaceY = rightTerrainY + yOffset + deckRise;
 
         const vDistance = accumulatedDistance * 0.2;
 
@@ -523,8 +654,11 @@ export class RoadRenderer {
         rightCurbClear.push(isRightCurbActive);
 
         // Skirts drop below terrain only on true outer boundaries (not inside overlapping junctions)
-        const leftSkirtY = leftOverlapsRoad || inJunctionZone ? leftSurfaceY : leftTerrainY - skirtDepth;
-        const rightSkirtY = rightOverlapsRoad || inJunctionZone ? rightSurfaceY : rightTerrainY - skirtDepth;
+        // On a bridge the skirt hangs from the deck down to the terrain — the
+        // raised deck's underside reads as a solid box girder, not a floating
+        // ribbon.
+        const leftSkirtY = leftOverlapsRoad || inJunctionZone ? leftSurfaceY : Math.min(leftSurfaceY - skirtDepth, leftTerrainY - skirtDepth);
+        const rightSkirtY = rightOverlapsRoad || inJunctionZone ? rightSurfaceY : Math.min(rightSurfaceY - skirtDepth, rightTerrainY - skirtDepth);
 
         // 5 vertices per cross section:
         // 0: Left Skirt Bottom
@@ -604,7 +738,6 @@ export class RoadRenderer {
           // 1. Left Skirt
           indices.push(rowA + 0, rowB + 0, rowA + 1);
           indices.push(rowA + 1, rowB + 0, rowB + 1);
-
           // 2. Left Lane
           indices.push(rowA + 1, rowB + 1, rowA + 2);
           indices.push(rowA + 2, rowB + 1, rowB + 2);
@@ -629,6 +762,75 @@ export class RoadRenderer {
             if (rightCurbClear[i]) {
               curbIndices.push(cIdx + 2, cIdx + 6, cIdx + 3);
               curbIndices.push(cIdx + 3, cIdx + 6, cIdx + 7);
+            }
+          }
+
+          // Railing quads between consecutive lifted slices. Railing verts are
+          // stored per lifted slice in order — the last two lifted slices pair
+          // up; a slice is "lifted" when it emitted verts this iteration.
+          if (sliceWasLifted[i] && sliceWasLifted[i + 1]) {
+            const li = liftSliceIdx[i];
+            const li1 = liftSliceIdx[i + 1];
+            if (li >= 0 && li1 >= 0) {
+              const a = li * 4;
+              const b = li1 * 4;
+              // Left parapet (double-sided via reversed pair) and right.
+              railingIndices.push(a, b, a + 1, a + 1, b, b + 1);
+              railingIndices.push(a + 2, a + 3, b + 2, a + 3, b + 3, b + 2);
+            }
+          }
+        }
+
+        // BRIDGE RAILINGS: parapet walls along both deck edges wherever the
+        // road is lifted (deck rise > 0.3 m — i.e. genuinely on the bridge).
+        // 4 verts per lifted slice (left pair, right pair); quads are emitted
+        // between consecutive lifted slices in the inter-slice block below.
+        if (deckRise > 0.3) {
+          sliceWasLifted[i] = true;
+          liftSliceIdx[i] = railingVertices.length / 12;
+          // Deck sample for the vehicle renderer: centre of the slice, deck
+          // surface Y, corridor half-width (slightly wider than the road so a
+          // truck on the edge still reads as on-deck).
+          const deckIdx = this.deckSamples.length;
+          this.deckSamples.push({ x: pts[i].x, z: pts[i].z, y: centerSurfaceY, hw: halfW + 1.0 });
+          const dk = Math.floor(pts[i].x / RoadRenderer.DECK_CELL) + '_' + Math.floor(pts[i].z / RoadRenderer.DECK_CELL);
+          let bucket = this.deckGrid.get(dk);
+          if (!bucket) {
+            bucket = [];
+            this.deckGrid.set(dk, bucket);
+          }
+          bucket.push(deckIdx);
+          const railTopL = leftSurfaceY + BRIDGE_RAILING_H;
+          const railTopR = rightSurfaceY + BRIDGE_RAILING_H;
+          railingVertices.push(
+            leftX, leftSurfaceY, leftZ,
+            leftX, railTopL, leftZ,
+            rightX, rightSurfaceY, rightZ,
+            rightX, railTopR, rightZ
+          );
+          // Support piers every ~14 m of deck length: box columns from the
+          // deck underside down into the riverbed.
+          const pierStride = 14;
+          const segLen = i > 0 ? Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z) : 0;
+          const prevAccum = accumulatedDistance - segLen;
+          if (i > 0 && i < pts.length - 1 && Math.floor(accumulatedDistance / pierStride) > Math.floor(prevAccum / pierStride)) {
+            for (const sgn of [1, -1]) {
+              const bx = pts[i].x + nx * sgn * halfW * 0.7;
+              const bz = pts[i].z + nz * sgn * halfW * 0.7;
+              const baseY = this.terrainY(elevation, bx, bz, exaggeration) - BRIDGE_PIER_DEPTH;
+              const w = Math.max(0.8, width * 0.12);
+              const base = pierVertices.length / 3;
+              // Box pier: 8 corners (4 bottom, 4 top).
+              pierVertices.push(
+                bx - w, baseY, bz - w, bx + w, baseY, bz - w, bx + w, baseY, bz + w, bx - w, baseY, bz + w,
+                bx - w, centerSurfaceY, bz - w, bx + w, centerSurfaceY, bz - w, bx + w, centerSurfaceY, bz + w, bx - w, centerSurfaceY, bz + w
+              );
+              // Sides (skip top/bottom faces — hidden by deck and riverbed).
+              for (let q = 0; q < 4; q++) {
+                const b0 = base + q;
+                const b1 = base + ((q + 1) % 4);
+                pierIndices.push(b0, b0 + 4, b1, b1, b0 + 4, b1 + 4);
+              }
             }
           }
         }
@@ -662,6 +864,22 @@ export class RoadRenderer {
         mGeom.setIndex(markingIndices);
         mGeom.computeVertexNormals();
         markingGeometries.push(mGeom);
+      }
+
+      if (railingVertices.length > 0 && railingIndices.length > 0) {
+        const rGeom = new THREE.BufferGeometry();
+        rGeom.setAttribute('position', new THREE.Float32BufferAttribute(railingVertices, 3));
+        rGeom.setIndex(railingIndices);
+        rGeom.computeVertexNormals();
+        railingGeometries.push(rGeom);
+      }
+
+      if (pierVertices.length > 0 && pierIndices.length > 0) {
+        const pGeom = new THREE.BufferGeometry();
+        pGeom.setAttribute('position', new THREE.Float32BufferAttribute(pierVertices, 3));
+        pGeom.setIndex(pierIndices);
+        pGeom.computeVertexNormals();
+        pierGeometries.push(pGeom);
       }
     }
 
@@ -697,6 +915,25 @@ export class RoadRenderer {
       const mergedMarking = this.mergeBufferGeometries(markingGeometries);
       if (mergedMarking) {
         const mesh = new THREE.Mesh(mergedMarking, this.markingsMaterial);
+        this.group.add(mesh);
+      }
+    }
+
+    // Bridge railings (concrete parapets) and support piers.
+    if (railingGeometries.length > 0) {
+      const mergedRail = this.mergeBufferGeometries(railingGeometries);
+      if (mergedRail) {
+        const mesh = new THREE.Mesh(mergedRail, this.bridgeRailingMaterial);
+        mesh.receiveShadow = true;
+        mesh.castShadow = true;
+        this.group.add(mesh);
+      }
+    }
+    if (pierGeometries.length > 0) {
+      const mergedPier = this.mergeBufferGeometries(pierGeometries);
+      if (mergedPier) {
+        const mesh = new THREE.Mesh(mergedPier, this.bridgePierMaterial);
+        mesh.receiveShadow = true;
         this.group.add(mesh);
       }
     }

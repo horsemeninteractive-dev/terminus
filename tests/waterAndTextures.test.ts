@@ -185,6 +185,77 @@ test('zombies cannot cross water: no path and no line of sight through a river',
   assert.equal(path, null, 'infected findPath cannot cross an unbroken river');
 });
 
+test('bridge cells report dry: full speed and no isInWater for any unit', () => {
+  // Same unbroken river, but a road runs north-south across it — a bridge.
+  const map = makeMapWithRiver();
+  (map as unknown as { roads: unknown[] }).roads = [
+    {
+      id: 'road_bridge', highwayType: 'residential', width: 8,
+      points: [
+        { x: 0, z: -150 },
+        { x: 0, z: 0 },
+        { x: 0, z: 150 },
+      ],
+    },
+  ];
+  const grid = new PathGrid(map);
+  const onDeck = { x: 0, z: 50 }; // middle of the river band, on the bridge
+
+  assert.ok(grid.isWater(0, 50), 'river centre off-road is water');
+  assert.equal(grid.isWater(onDeck.x, onDeck.z), true, 'raw isWater still reports the deck cell as water');
+  assert.equal(
+    grid.isWater(onDeck.x, onDeck.z, true),
+    false,
+    'bridge-aware isWater(excludeBridges) reports the deck as dry'
+  );
+
+  // stepAlongPath (the shared movement model for squads, workers, hostile
+  // humans AND zombies) must treat the deck as dry: no speed penalty.
+  const step = stepAlongPath(grid, null, onDeck.x, onDeck.z, { x: 0, z: 80 }.x, 80, 4, 1.0, 1.2, {});
+  assert.equal(step.isInWater, false, 'a unit standing on the bridge deck is NOT in water');
+  // On the deck the unit moves the full 4 m/s in one 1s step (no wading).
+  assert.ok(
+    step.z > onDeck.z + 3.5,
+    `unit on bridge deck moves at full speed (z advanced to ${step.z.toFixed(2)})`
+  );
+
+  // Control: same river off the road — wading applies as before.
+  const wading = stepAlongPath(grid, null, 40, 50, 40, 60, 4, 1.0, 1.2, {});
+  assert.equal(wading.isInWater, true, 'off-bridge water still reports wading');
+});
+
+test('zombies can path across a bridge; open water away from it stays blocked', () => {
+  const map = makeMapWithRiver();
+  (map as unknown as { roads: unknown[] }).roads = [
+    {
+      id: 'road_bridge', highwayType: 'residential', width: 8,
+      points: [
+        { x: 0, z: -150 },
+        { x: 0, z: 0 },
+        { x: 0, z: 150 },
+      ],
+    },
+  ];
+  const grid = new PathGrid(map);
+  const south = { x: 0, z: 0 };
+  const north = { x: 0, z: 100 };
+
+  const path = grid.findPath(south.x, south.z, north.x, north.z, {
+    wallsImpassable: true,
+    waterImpassable: true,
+  });
+  assert.ok(path && path.length > 0, 'infected can route across the bridge');
+  // Every waypoint must be dry under the bridge-aware check — i.e. on the
+  // deck (or land), never in open water.
+  for (const wp of path) {
+    assert.equal(
+      grid.isWater(wp.x, wp.z, true),
+      false,
+      `infected waypoint (${wp.x.toFixed(0)}, ${wp.z.toFixed(0)}) avoids open water`
+    );
+  }
+});
+
 test('zombie paths never route through water cells when a dry detour exists', () => {
   // A small pond in the middle with open ground on both sides — a dry route
   // around it exists, so findPath succeeds but must avoid every water cell.

@@ -143,6 +143,11 @@ export class PathGrid {
   private cellCosts: Float32Array;
   private isBuildingCell: Uint8Array;
   private isWaterCell: Uint8Array;
+  // Cells where a road segment crosses water: bridges. Marked during road
+  // rasterization (which runs AFTER water rasterization and sets a lower cost
+  // on these cells). Vehicles treat bridge cells as dry drivable deck even
+  // though the water mask is still set beneath them.
+  private isBridgeCell: Uint8Array;
   private rawBuildings: BuildingPolygon[];
   // Cells currently occupied by player-built freestanding structures (walls,
   // fences, towers). Tracked so they can be cleared when a structure is removed
@@ -184,6 +189,7 @@ export class PathGrid {
     this.cellCosts = new Float32Array(totalCells).fill(1.0);
     this.isBuildingCell = new Uint8Array(totalCells);
     this.isWaterCell = new Uint8Array(totalCells);
+    this.isBridgeCell = new Uint8Array(totalCells);
     this.gateCells = new Uint8Array(totalCells);
     this.hazardSlow = new Float32Array(totalCells);
     this.hazardDamage = new Float32Array(totalCells);
@@ -198,7 +204,8 @@ export class PathGrid {
       }
     }
 
-    // Rasterize roads as lower-cost traversal (0.75x)
+    // Rasterize roads as lower-cost traversal (0.75x) — and record road cells
+    // over water as BRIDGES so vehicles can legally cross there.
     if (mapData.roads) {
       for (const rd of mapData.roads) {
         if (!rd.points) continue;
@@ -234,6 +241,12 @@ export class PathGrid {
         const id = this.idx(cell.col, cell.row);
         if (this.isBuildingCell[id] === 0) {
           this.cellCosts[id] = 0.72; // Faster along road network
+          // Road over water = bridge: record it so waterImpassable pathing
+          // (vehicles) can still traverse. Cells keep their water mask for
+          // humans' wading-speed model — but a bridge cell costs 0.72 < 1.0,
+          // so humans crossing there are also NOT slowed (correct: deck, not
+          // riverbed).
+          if (this.isWaterCell[id] === 1) this.isBridgeCell[id] = 1;
         }
       }
     }
@@ -455,11 +468,15 @@ export class PathGrid {
   }
 
   /** True when the given world point sits in a water cell (river/lake/canal).
-   *  Water is wadeable for humans (slower) and impassable for the infected. */
-  public isWater(x: number, z: number): boolean {
+   *  Water is wadeable for humans (slower) and impassable for the infected.
+   *  When `excludeBridges` is set, road-deck cells over water (bridges) report
+   *  false — that is the vehicle rule: a truck on a bridge is not "in water". */
+  public isWater(x: number, z: number, excludeBridges = false): boolean {
     const cell = this.worldToCell(x, z);
     if (!cell) return false;
-    return this.isWaterCell[this.idx(cell.col, cell.row)] === 1;
+    const id = this.idx(cell.col, cell.row);
+    if (excludeBridges && this.isBridgeCell[id] === 1) return false;
+    return this.isWaterCell[id] === 1;
   }
 
   /**
@@ -569,7 +586,7 @@ export class PathGrid {
       return (
         this.isBuildingCell[sameId] === 0 &&
         !(opts?.gatesOpen === false && this.gateCells[sameId] === 1) &&
-        !(opts?.waterImpassable && this.isWaterCell[sameId] === 1)
+        !(opts?.waterImpassable && this.isWaterCell[sameId] === 1 && this.isBridgeCell[sameId] !== 1)
       );
     }
 
@@ -584,7 +601,7 @@ export class PathGrid {
       const id = this.idx(cell.col, cell.row);
       if (this.isBuildingCell[id] === 1) return false;
       if (opts?.gatesOpen === false && this.gateCells[id] === 1) return false;
-      if (opts?.waterImpassable && this.isWaterCell[id] === 1) return false;
+      if (opts?.waterImpassable && this.isWaterCell[id] === 1 && this.isBridgeCell[id] !== 1) return false;
     }
     return true;
   }
@@ -649,7 +666,7 @@ export class PathGrid {
         // infected also cannot wade: water cells are hard barriers for them.
         if (opts?.wallsImpassable && this.cellCosts[nIdx] >= 1e5) continue;
         if (opts?.gatesOpen === false && this.gateCells[nIdx] === 1) continue;
-        if (opts?.waterImpassable && this.isWaterCell[nIdx] === 1) continue;
+        if (opts?.waterImpassable && this.isWaterCell[nIdx] === 1 && this.isBridgeCell[nIdx] !== 1) continue;
 
         const cellWeight = this.cellCosts[nIdx];
         const stepCost = distMult * cellWeight;
@@ -769,7 +786,7 @@ export function stepAlongPath(
         state: st,
         arrived: true,
         isIndoor: true,
-        isInWater: grid ? grid.isWater(x, z) : false,
+        isInWater: grid ? grid.isWater(x, z, true) : false,
       };
     } else {
       // Obstructed and the search failed. A common cause: the goal itself lies
@@ -801,7 +818,7 @@ export function stepAlongPath(
 
   const distToGoal = Math.hypot(goalX - x, goalZ - z);
   if (distToGoal <= arriveRadius) {
-    return { x, z, rotation: Math.atan2(goalX - x, goalZ - z), state: st, arrived: true, isIndoor: false, isInWater: grid ? grid.isWater(x, z) : false };
+    return { x, z, rotation: Math.atan2(goalX - x, goalZ - z), state: st, arrived: true, isIndoor: false, isInWater: grid ? grid.isWater(x, z, true) : false };
   }
 
   // The path's final waypoint may be a fallback (nearest walkable cell to an
@@ -819,11 +836,15 @@ export function stepAlongPath(
     st.index >= st.path.length - 1 &&
     Math.hypot(lastWp.x - x, lastWp.z - z) < 1.2
   ) {
-    return { x, z, rotation: Math.atan2(goalX - x, goalZ - z), state: st, arrived: true, isIndoor: false, isInWater: grid ? grid.isWater(x, z) : false };
+    return { x, z, rotation: Math.atan2(goalX - x, goalZ - z), state: st, arrived: true, isIndoor: false, isInWater: grid ? grid.isWater(x, z, true) : false };
   }
 
   const isIndoor = grid ? grid.isInsideBuilding(x, z) : false;
-  const isInWater = grid ? grid.isWater(x, z) : false;
+  // Bridge cells (road deck over water) count as dry for EVERY unit: a squad
+  // crossing a bridge walks at full speed with no swim pose, and a zombie
+  // shuffling across does not get the wading penalty either. Open water away
+  // from a bridge still reports wet — humans wade, zombies never enter.
+  const isInWater = grid ? grid.isWater(x, z, true) : false;
   // Wading/swimming is slower than dry ground; indoor slowdown stacks.
   let effectiveSpeed = isIndoor ? baseSpeed * INDOOR_SPEED_MULTIPLIER : baseSpeed;
   if (isInWater) effectiveSpeed *= WATER_SPEED_MULTIPLIER;
@@ -835,7 +856,7 @@ export function stepAlongPath(
 
   if (dist <= 0.01) {
     st.index = Math.min(st.index + 1, st.path.length - 1);
-    return { x, z, rotation: Math.atan2(goalX - x, goalZ - z), state: st, arrived: false, isIndoor, isInWater };
+    return { x, z, rotation: Math.atan2(goalX - x, goalZ - z), state: st, arrived: false, isIndoor, isInWater: grid ? grid.isWater(x, z, true) : false };
   }
 
   const step = Math.min(dist, effectiveSpeed * delta);

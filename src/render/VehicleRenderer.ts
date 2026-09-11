@@ -28,6 +28,24 @@ export class VehicleRenderer {
   ): number {
     return this.terrainSurfaceSampler?.(x, z) ?? sampleElevation(elevation, x, z, exaggeration);
   }
+
+  /** Bridge deck sampler (from RoadRenderer): deck surface Y at a point, or
+   *  null when the point is not on a bridge. Vehicles on a bridge ride the
+   *  deck instead of sinking to the riverbed. */
+  private bridgeDeckSampler: ((x: number, z: number) => number | null) | null = null;
+
+  public setBridgeDeckSampler(sampler: ((x: number, z: number) => number | null) | null) {
+    this.bridgeDeckSampler = sampler;
+  }
+
+  /** Ground height under a vehicle, honouring bridge decks. */
+  private vehicleGroundY(x: number, z: number): number {
+    const deckY = this.bridgeDeckSampler?.(x, z);
+    if (deckY !== null && deckY !== undefined) return deckY + 0.1;
+    return (
+      this.terrainSurfaceSampler?.(x, z) ?? sampleElevation(this.currentElevation, x, z, this.currentExaggeration)
+    ) + 0.1;
+  }
   private vehicleMeshes = new Map<string, THREE.Group>();
   private vehicleSmoothers = new Map<string, PositionSmoother>();
   private selectedVehicleId: string | null = null;

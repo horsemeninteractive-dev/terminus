@@ -124,6 +124,89 @@ test('a dry detour around a pond is planned instead of the water-crossing straig
   }
 });
 
+test('a road bridge over the river is a legal vehicle crossing — routing and tick both allow it', () => {
+  // Same unbroken river band, but a north-south road crosses it at x=0: that
+  // road-over-water stretch is a bridge and must be drivable end to end.
+  const river: Point2D[] = [
+    { x: -500, z: 40 },
+    { x: 500, z: 40 },
+    { x: 500, z: 60 },
+    { x: -500, z: 60 },
+  ];
+  const bridgeRoad: RoadSegment = {
+    id: 'rd_bridge',
+    highwayType: 'primary',
+    width: 8,
+    points: [
+      { x: 0, z: -200 },
+      { x: 0, z: 200 },
+    ],
+  };
+  const map = {
+    roads: [bridgeRoad],
+    buildings: [],
+    landuse: [{ id: 'r1', type: 'water', polygon: river }],
+    bounds: { minX: -300, maxX: 300, minZ: -300, maxZ: 300 },
+  } as unknown as MapData;
+  const grid = new PathGrid(map);
+  const roadGraph = new RoadNetworkGraph([bridgeRoad]);
+
+  // 1. The grid marks the crossing cells as bridges: bridge-aware isWater is
+  //    false there, plain isWater still true (humans keep their wading model).
+  assert.equal(grid.isWater(0, 50), true, 'river cell under the bridge is still water for humans');
+  assert.equal(grid.isWater(0, 50, true), false, 'bridge deck is NOT water for vehicles');
+
+  // 2. Routing: the vehicle (already on the road, south of the river) plans a
+  //    route across the river on the bridge.
+  const van = makeVan({ x: 0, z: -100 });
+  const ordered = orderVehicleRoadTravel(van, { x: 0, z: 100 }, roadGraph, [], map, grid);
+  assert.ok(ordered.isMoving, 'bridge route is planned (vehicle not refused)');
+  assert.ok(ordered.roadPathWaypoints.length >= 2, 'bridge route has waypoints');
+
+  // 3. The tick drives the vehicle across the river band on the bridge deck.
+  // (First tick consumes the zero-length on-position waypoint; subsequent
+  // ticks move it 12 m each along the bridge.)
+  let driven = ordered;
+  for (let i = 0; i < 80 && driven.position.z <= 62; i++) {
+    driven = updateVehiclesTick([driven], [], [], 1.0, 1000 + i, map, roadGraph, [], 0, undefined, grid).updatedVehicles[0];
+  }
+  assert.ok(driven.position.z > 60, `vehicle crossed the river (z=${driven.position.z.toFixed(1)})`);
+  assert.equal(
+    gridIsWater(map, driven.position, true),
+    false,
+    'vehicle never ends up in open water (bridge deck is fine)'
+  );
+});
+
+test('open water away from the bridge still blocks routing and driving', () => {
+  const map = makeRiverMap();
+  const grid = new PathGrid(map);
+  const roadGraph = new RoadNetworkGraph([]);
+
+  const van = makeVan({ x: 0, z: 0 });
+  const ordered = orderVehicleRoadTravel(van, { x: 0, z: 100 }, roadGraph, [], map, grid);
+  // No bridge, no dry detour: the order must be refused or avoid water.
+  if (ordered.isMoving && ordered.roadPathWaypoints.length > 0) {
+    let prev = van.position;
+    for (const wp of ordered.roadPathWaypoints) {
+      const crosses = (prev.z < 40 && wp.z > 60) || (prev.z > 60 && wp.z < 40);
+      assert.ok(!crosses, `leg (${prev.z.toFixed(1)} -> ${wp.z.toFixed(1)}) crosses open water`);
+      prev = wp;
+    }
+  }
+
+  // And the tick's step validation still rejects a hand-planned crossing.
+  const planned = {
+    ...van,
+    isMoving: true,
+    roadPathWaypoints: [{ x: 0, z: 30 }, { x: 0, z: 70 }, { x: 0, z: 100 }],
+    currentWaypointIndex: 0,
+    targetPos: { x: 0, z: 100 },
+  };
+  const result = updateVehiclesTick([planned], [], [], 1.0, 1000, map, roadGraph, [], 0, undefined, grid);
+  assert.ok(result.updatedVehicles[0].position.z < 40, 'vehicle stayed south of open water');
+});
+
 test('updateVehiclesTick: a vehicle planned across water stops at the bank instead of driving in', () => {
   const map = makeRiverMap();
   const roadGraph = new RoadNetworkGraph([]);
@@ -148,8 +231,26 @@ test('updateVehiclesTick: a vehicle planned across water stops at the bank inste
   assert.equal(gridIsWater(map, driven.position), false, 'vehicle never ends up inside water');
 });
 
-function gridIsWater(map: MapData, p: Point2D): boolean {
+function gridIsWater(map: MapData, p: Point2D, excludeBridges = false): boolean {
   const river = (map.landuse || [])[0].polygon;
   // Point-in-polygon against the river rect.
-  return p.z >= 40 && p.z <= 60 && p.x >= -500 && p.x <= 500;
+  const inRect = p.z >= 40 && p.z <= 60 && p.x >= -500 && p.x <= 500;
+  if (!inRect) return false;
+  if (excludeBridges) {
+    // Mirror the vehicle rule: on a road over the river = bridge deck = dry.
+    for (const rd of map.roads || []) {
+      const halfWidth = Math.max(2.5, (rd.width || 6) / 2 + 1.5);
+      for (let i = 0; i < rd.points.length - 1; i++) {
+        const a = rd.points[i];
+        const b = rd.points[i + 1];
+        const dx = b.x - a.x;
+        const dz = b.z - a.z;
+        const len2 = dx * dx + dz * dz;
+        if (len2 < 1e-6) continue;
+        const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.z - a.z) * dz) / len2));
+        if (Math.hypot(p.x - (a.x + dx * t), p.z - (a.z + dz * t)) <= halfWidth) return false;
+      }
+    }
+  }
+  return true;
 }
