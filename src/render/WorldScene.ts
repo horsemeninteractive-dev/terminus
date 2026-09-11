@@ -617,9 +617,6 @@ export class WorldScene {
       this.groundRenderer.sampleTerrainSurface(x, z);
     this.roadRenderer = new RoadRenderer();
     this.roadRenderer.setTerrainSurfaceSampler(terrainSurfaceSampler);
-    // Bridge detection: roads crossing these lift onto a rendered deck with
-    // railings and piers.
-    this.roadRenderer.setWaterPolygons(this.waterPolygons);
     this.buildingRenderer = new BuildingRenderer();
     this.buildingRenderer.setTerrainSurfaceSampler(terrainSurfaceSampler);
     this.resourceRenderer = new ResourceRenderer();
@@ -716,6 +713,11 @@ export class WorldScene {
     this.waterPolygons = (mapData.landuse || [])
       .filter((l) => l.type === 'water' && l.polygon?.length >= 3)
       .map((l) => l.polygon as Point2D[]);
+    // Bridge detection: roads crossing these lift onto a rendered deck with
+    // railings and piers. Must be re-pushed per load — the assignment above
+    // creates a NEW array, and the renderer would otherwise keep the stale
+    // (empty) reference from construction and never build bridges.
+    this.roadRenderer.setWaterPolygons(this.waterPolygons);
     // Combat units need to know whether they are wading so the rigs switch to
     // the swim stroke (and sink to water level). Sampled against the same
     // water polygons used to reject placement — but road-bridge deck cells
