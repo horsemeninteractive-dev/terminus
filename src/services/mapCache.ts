@@ -10,7 +10,7 @@ const DB_VERSION = 1;
  * predate the change are refetched instead of served forever. Cached entries
  * carry the stamp they were generated with; a mismatch discards the entry.
  */
-const MAP_PROCESSOR_VERSION = 2; // v2: coastline→water, cache version stamps
+const MAP_PROCESSOR_VERSION = 3; // v3: large-water crop clipping + bounded tessellation
 
 function getCacheKey(lat: number, lon: number, radius: number): string {
   return `map_${lat.toFixed(4)}_${lon.toFixed(4)}_${Math.round(radius)}`;
