@@ -23,6 +23,8 @@ Releasing:
 
 ## [Unreleased]
 
+## [0.3.5] – 2026-09-12
+
 ### Fixed
 
 - **Applying settings no longer freezes the game.** The settings modal's
