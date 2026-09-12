@@ -21,6 +21,17 @@ Releasing:
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Installed PWA no longer forces landscape.** The manifest's
+  `"orientation": "landscape"` locked the app window to landscape on
+  mobile; it is now `"any"`, so the installed app follows the device's
+  natural rotation (the responsive HUD already adapts to both).
+
+---
+
 ## [0.3.3] – 2026-09-12
 
 ### Fixed
