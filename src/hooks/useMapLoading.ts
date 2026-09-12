@@ -464,6 +464,14 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
   const handleBeginDescent = useCallback(
     (placement: SettlementPlacement, preloadedMapData?: MapData | null, scenarioSettings?: GameScenarioSettings) => {
       stopDescentTimer();
+      // Switch to the world view in the SAME state batch as activating the
+      // descent overlay. useGameState aborts an active descent when the view
+      // mode is not 'world' (the "left the world view" guard) — if the view
+      // mode only flipped later (inside handleConfirmSettlementPlacement's
+      // deferred prep), that guard fired on the first render, killed the
+      // loading screen instantly, and left the globe/map screen frozen on
+      // screen while the world scene loaded underneath.
+      setViewMode('world');
       setIsDescentActive(true);
       setDescentProgress(0);
       setDescentAltitudeKm(1200);

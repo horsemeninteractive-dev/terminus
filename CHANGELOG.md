@@ -55,6 +55,13 @@ Releasing:
   cell was "far" at low altitude and the whole city disappeared. The flat
   far-cell meshes now live in the detailed-view group, visible exactly when
   they should be.
+- **Pressing Play now shows the loading screen instantly.** The descent
+  overlay was armed while the view mode was still on the globe/map screen,
+  and the "left the world view" guard immediately aborted it — so the map
+  screen stayed frozen on screen until the world scene finished loading.
+  Play now switches to the world view in the same state batch as arming the
+  overlay, which then covers the entire load (fetch, world generation, and
+  the full 3D scene build) before revealing the game.
 - **Field-loot icons no longer appear to hang in mid-air.** They were
   correctly anchored to building rooftops, but with the buildings
   themselves invisible (previous bug) they floated over empty ground.
