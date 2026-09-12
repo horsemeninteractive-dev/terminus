@@ -11,6 +11,7 @@ import {
   ZombieUnit,
   WEAPON_CATALOG,
   getArmorDefinition,
+  AMMO_ROUNDS_PER_UNIT,
   getWeaponDefinition,
 } from '../../types/combat';
 import { AdaptedBuilding, SettlementState } from '../../types/settlement';
@@ -206,7 +207,10 @@ export function tickCombatSimulation(
     const aliveMembers = squad.members.filter((m) => m.isAlive);
     const rangedMembers = aliveMembers.filter((m) => getWeaponDefinition(m.weaponId).ammoPerVolley > 0);
     const squadAmmoPerVolley = rangedMembers.reduce((sum, m) => sum + getWeaponDefinition(m.weaponId).ammoPerVolley, 0);
-    const hasSufficientAmmo = squadAmmoPerVolley === 0 || ammoAvailable >= squadAmmoPerVolley;
+    // Stockpile ammo is measured in UNITS (multi-round boxes), not bullets:
+    // a volley of N rounds costs N / AMMO_ROUNDS_PER_UNIT units.
+    const squadVolleyUnits = squadAmmoPerVolley / AMMO_ROUNDS_PER_UNIT;
+    const hasSufficientAmmo = squadVolleyUnits === 0 || ammoAvailable >= squadVolleyUnits;
 
     // Base effective attack range:
     // If squad has guns and ammo -> weapon range (e.g. 28m pistol, 36m AR, 42m rifle)
@@ -382,14 +386,14 @@ export function tickCombatSimulation(
           squad.lastFireTime = now;
 
           const isCrit = Math.random() < (squad.critChance + moraleCritBonus);
-          const isGunfire = rangedMembers.length > 0 && ammoAvailable >= squadAmmoPerVolley;
+          const isGunfire = rangedMembers.length > 0 && ammoAvailable >= squadVolleyUnits;
 
           let damageDealt = 0;
 
           if (isGunfire) {
             // Firing guns
-            ammoAvailable = Math.max(0, ammoAvailable - squadAmmoPerVolley);
-            ammoConsumed += squadAmmoPerVolley;
+            ammoAvailable = Math.max(0, ammoAvailable - squadVolleyUnits);
+            ammoConsumed += squadVolleyUnits;
 
             const baseVolley = squad.damagePerVolley * moraleCombatMult;
             damageDealt = Math.max(1, Math.round(
@@ -1383,7 +1387,9 @@ export function tickCombatSimulation(
           // draw from the shared pool. Gates keep their built-in 20 dmg shot.
           const weapon = struct.weaponId ? getWeaponDefinition(struct.weaponId) : null;
           const isFirearm = !!weapon && weapon.ammoPerVolley > 0;
-          const ammoCost = weapon?.ammoPerVolley || struct.ammoPerShot;
+          const ammoCostRounds = weapon?.ammoPerVolley || struct.ammoPerShot;
+          // Units, not bullets (see squad volley above).
+          const ammoCost = ammoCostRounds / AMMO_ROUNDS_PER_UNIT;
           if (struct.isTower && isFirearm && ammoAvailable < ammoCost) continue;
           const towerDamage = Math.round(
             (isFirearm ? weapon!.damage : struct.isTower ? WEAPON_CATALOG.bow.damage : 20) *

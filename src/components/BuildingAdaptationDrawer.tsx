@@ -352,11 +352,11 @@ export const BuildingAdaptationDrawer: React.FC<BuildingAdaptationDrawerProps> =
       </div>
       <div>
         <span className="text-[#6b7280]">Storage Vault:</span>{' '}
-        <span className="font-bold text-white">850 Units</span>
+        <span className="font-bold text-white">1500 Units</span>
       </div>
       </div>
       <p className="text-[9px] leading-relaxed text-[#7d8a96]">
-      FIXED COMMAND CAPACITY — this primary HQ commands {settlement.squadCapacity} squads and an 850-unit vault regardless of its footprint. A larger starting HQ grants more durability, beds and defense, but never more command slots. Expand by establishing additional HQs or Squad Quarters, which scale with building size.
+      FIXED COMMAND CAPACITY — this primary HQ commands {settlement.squadCapacity} squads and a 1500-unit vault regardless of its footprint. A larger starting HQ grants more durability, beds and defense, but never more command slots. Expand by establishing additional HQs or Squad Quarters, which scale with building size.
       </p>
       </>
     )}

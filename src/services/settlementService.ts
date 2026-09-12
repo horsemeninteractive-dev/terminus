@@ -413,10 +413,10 @@ export function recalculateSettlementStats(
   // not provide storage, shelter, defense or squad slots until re-established.
   if (primary && isHQOperational(primary)) {
     const hqDefinition = FUNCTIONAL_BUILDING_DEFINITIONS.headquarters;
-    // The primary HQ's vault is a fixed 850 storage units regardless of the
+    // The primary HQ's vault is a fixed 1500 storage units regardless of the
     // physical footprint of the building it was established in, so settlement
-    // storage is exactly 850 (plus warehouses etc.) once an HQ exists.
-    storageCap = 850;
+    // storage is exactly 1500 (plus warehouses etc.) once an HQ exists.
+    storageCap = 1500;
     // The primary HQ's squad complement is a fixed 2 slots regardless of the
     // physical footprint of the building it was established in — like the
     // vault, a large starting HQ must not confer an early-game squad-capacity

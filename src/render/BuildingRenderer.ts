@@ -557,6 +557,14 @@ export class BuildingRenderer {
    * individual building meshes, so this collapses them to ~12 merged meshes.
    */
   public lodGroup = new THREE.Group();
+  /** Detailed-mode distance LOD: per-cell merged flat-colour meshes. Lives as
+   *  a child of `group` (NOT lodGroup — these were originally attached to
+   *  lodGroup, which setLodMode('detailed') hides, so every 'far' cell
+   *  vanished entirely at ground level and building-anchored loot badges
+   *  appeared to hang in mid-air over empty ground). Being inside `group`
+   *  means distant mode hides them automatically with the parent, and
+   *  detailed mode shows them per-cell via setDetailedDistance(). */
+  public farCellGroup = new THREE.Group();
 
   public buildingMeshes = new Map<string | number, THREE.Mesh>();
   /** Pitched roof meshes are added to `group` as SIBLINGS of the building body
@@ -762,9 +770,11 @@ export class BuildingRenderer {
     this.edgeGroup.name = 'BuildingEdgesGroup';
     this.overlayGroup.name = 'BuildingOverlayGroup';
     this.regionOverlayGroup.name = 'AdaptedRegionOverlayGroup';
+    this.farCellGroup.name = 'DistanceLodFarCells';
     this.group.add(this.edgeGroup);
     this.group.add(this.overlayGroup);
     this.group.add(this.regionOverlayGroup);
+    this.group.add(this.farCellGroup);
   }
 
   /**
@@ -1260,9 +1270,9 @@ export class BuildingRenderer {
   /**
    * Builds the flat-colour far-field merged meshes for one cell (same merge
    * layout as rebuildCell, but with 2-material batches instead of the full
-   * textured material stack). Attached to lodGroup so the existing altitude
-   * LOD and visibility toggles keep working; shown per-cell by
-   * setDetailedDistance() only when the cell is 'far'.
+   * textured material stack). Attached to farCellGroup (inside `group`) so
+   * they are visible in detailed mode and hidden with the parent in distant
+   * mode; shown per-cell by setDetailedDistance() only when the cell is 'far'.
    */
   private rebuildCellFar(cellKey: string, sources: (typeof this.lodSources)[number][]) {
     this.clearCellFarMeshes(cellKey);
@@ -1298,7 +1308,7 @@ export class BuildingRenderer {
       mesh.frustumCulled = true;
       mesh.visible = false;
       mesh.name = name;
-      this.lodGroup.add(mesh);
+      this.farCellGroup.add(mesh);
       created.push(mesh);
     };
     for (const [, entry] of byMats) {
@@ -1313,7 +1323,7 @@ export class BuildingRenderer {
     const old = this.cellFarMeshes.get(cellKey);
     if (!old) return;
     for (const m of old) {
-      this.lodGroup.remove(m);
+      this.farCellGroup.remove(m);
       const mesh = m as THREE.Mesh;
       if (mesh.geometry) mesh.geometry.dispose();
     }
@@ -1445,9 +1455,10 @@ export class BuildingRenderer {
     // merged distant LOD only merges OSM buildings, so their bodies inside
     // `group` used to vanish when the camera rose past the LOD switch.
     this.freestandingGroup.visible = true;
-    // The per-cell far-field meshes also live in lodGroup: in distant mode the
-    // whole-city merged meshes already cover them (else they'd double-draw),
-    // and back in detailed mode each cell resumes its distance-LOD state.
+    // The per-cell far-field meshes live in farCellGroup inside `group`: in
+    // distant mode the parent is hidden (the whole-city merged meshes already
+    // cover them, else they'd double-draw), and back in detailed mode each
+    // cell resumes its distance-LOD state.
     for (const [cellKey, meshes] of this.cellFarMeshes) {
       const show = mode === 'detailed' && this.cellDistance.get(cellKey) === 'far';
       for (const m of meshes) m.visible = show;
@@ -4102,6 +4113,13 @@ export class BuildingRenderer {
       if (c.geometry) c.geometry.dispose();
       this.lodGroup.remove(c);
     }
+    // Distance-LOD far-cell meshes live in their own sub-group of `group`
+    // (detailed-mode LOD), separate from the whole-city distant meshes above.
+    while (this.farCellGroup.children.length > 0) {
+      const c = this.farCellGroup.children[0] as THREE.Mesh;
+      if (c.geometry) c.geometry.dispose();
+      this.farCellGroup.remove(c);
+    }
 
     // Clear edge lines
     while (this.edgeGroup.children.length > 0) {
@@ -4121,7 +4139,7 @@ export class BuildingRenderer {
     // Clear building meshes
     const meshesToRemove: THREE.Object3D[] = [];
     this.group.children.forEach((c) => {
-      if (c !== this.edgeGroup && c !== this.overlayGroup) meshesToRemove.push(c);
+      if (c !== this.edgeGroup && c !== this.overlayGroup && c !== this.farCellGroup) meshesToRemove.push(c);
     });
     // Freestanding bodies live in their own group (distant-LOD survival), so
     // clear them separately.

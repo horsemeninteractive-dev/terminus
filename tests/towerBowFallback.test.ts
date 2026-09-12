@@ -138,7 +138,11 @@ test('a firearm-mounted tower fires the FIREARM and consumes ammo', () => {
   const r = tickCombatSimulation([zombie], [], new Map(), [], clock, null, 2, state);
 
   assert.ok(r.updatedZombies[0].currentHp < before, 'the mounted pistol fired');
-  assert.equal(r.ammoConsumed, 1, 'a real firearm draws 1 ammo per volley');
+  // 1 volley = 1 round = 1/10 of a stockpile UNIT (multi-round boxes).
+  assert.ok(
+    Math.abs(r.ammoConsumed - 0.1) < 1e-9,
+    `a real firearm draws 1 round = 0.1 units per volley, got ${r.ammoConsumed}`
+  );
 });
 
 test('a firearm-mounted tower with no ammo stays silent — the bow is a no-FIREARM fallback only', () => {

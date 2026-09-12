@@ -31,6 +31,17 @@ Releasing:
   OSM convention (land left, water right) and the sea side is converted to a
   water polygon. Tagged lakes, rivers and ponds are unaffected.
 
+### Changed
+
+- **Initial storage raised to 1500.** The primary HQ vault is now a fixed
+  1500 storage units (was 850), so an early colony has breathing room before
+  warehouses become necessary.
+- **Ammunition is now counted in multi-round units, not single bullets.**
+  One stockpile ammo unit contains 10 rounds: a pistol volley costs 0.1
+  units, an assault rifle burst 0.3. Guns burn through the shared pool at a
+  tenth of the previous rate; production, training, caravans and brass
+  recycling all operate on units as before.
+
 ### Fixed
 
 - **Stale map caches are invalidated.** Cached maps now carry a processor
@@ -38,6 +49,16 @@ Releasing:
   fetched before the coastline and water improvements) are discarded and
   refetched instead of being served forever. This should also resolve lakes
   not recognised as water on maps searched before v0.3.5.
+- **Buildings no longer vanish when zooming close to ground level.** The
+  distance-LOD far-cell meshes were attached to the zoomed-out overview
+  group, which is hidden in the normal ground-level view — so nearly every
+  cell was "far" at low altitude and the whole city disappeared. The flat
+  far-cell meshes now live in the detailed-view group, visible exactly when
+  they should be.
+- **Field-loot icons no longer appear to hang in mid-air.** They were
+  correctly anchored to building rooftops, but with the buildings
+  themselves invisible (previous bug) they floated over empty ground.
+  Fixed as a side effect of the LOD attachment fix.
 
 ## [0.3.5] – 2026-09-12
 

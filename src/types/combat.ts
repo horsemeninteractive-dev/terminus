@@ -256,6 +256,12 @@ export type WeaponItemId =
   | 'sniper_rifle'
   | 'heavy_machine_gun';
 
+/** One stockpile ammo unit contains this many individual rounds (bullets /
+ *  shells). Firing consumes rounds but the pool counts units, so a weapon
+ *  with ammoPerVolley 1 spends only 1/AMMO_ROUNDS_PER_UNIT of a unit per
+ *  volley — 1 ammo is a magazine's worth, not a single bullet. */
+export const AMMO_ROUNDS_PER_UNIT = 10;
+
 export interface WeaponItemDef {
   id: WeaponItemId;
   name: string;

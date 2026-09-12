@@ -49,7 +49,7 @@ const CODEX_TOPICS: CodexTopic[] = [
  overview:
  'The Headquarters (HQ) is the heartbeat of the settlement. If your HQ falls, the colony collapses. Choose a building with large floor space, multi-floor levels, and solid masonry for a higher structural defense rating.',
  keyPoints: [
- 'The PRIMARY HQ is command infrastructure, not a warehouse: its vault is a fixed 850 storage units and it commands a fixed squad complement of 2 — no matter how vast the building is.',
+ 'The PRIMARY HQ is command infrastructure, not a warehouse: its vault is a fixed 1500 storage units and it commands a fixed squad complement of 2 — no matter how vast the building is.',
  'Larger footprints still raise the HQ\'s defense rating and initial bunk capacity; ADDITIONAL HQs and SQUAD QUARTERS scale with their size.',
  'Masonry (brick/stone) buildings resist zombie breaches better than light wooden structures.',
  'Initial HQ selection provides starting stockpile drop points and safe bunk rooms for your initial survivor detachment.',

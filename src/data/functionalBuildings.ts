@@ -94,7 +94,7 @@ export const FUNCTIONAL_BUILDING_DEFINITIONS: Record<
     freestandingCost: { wood: 150, metal: 90, bricks: 120, tools: 5 },
     durability: { adaptationBase: 800, freestandingBase: 500 },
     functions: ['Command & Administration', 'Drop-off & Resupply', 'Living Quarters', 'Squad Capacity'],
-    storageCapacity: 850,
+    storageCapacity: 1500,
     housingCapacity: 16,
     squadCapacity: 2,
     baseDefense: 75,

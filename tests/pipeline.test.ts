@@ -524,7 +524,7 @@ test('resource nodes deplete cumulatively across consecutive pipeline ticks', ()
   );
 });
 
-test('primary HQ always provides 850 storage regardless of footprint', () => {
+test('primary HQ always provides 1500 storage regardless of footprint', () => {
   const tinyHq = {
     buildingId: 'hq_tiny', buildingName: 'Tiny HQ', establishedAt: 0,
     footprintAreaM2: 10, levels: 1, center: { x: 0, z: 0 },
@@ -534,8 +534,8 @@ test('primary HQ always provides 850 storage regardless of footprint', () => {
   const bigHq = { ...tinyHq, buildingId: 'hq_big', footprintAreaM2: 4000, maxCapacity: 800 };
   const tiny = recalculateSettlementStats([tinyHq], tinyHq.buildingId, new Map(), []);
   const big = recalculateSettlementStats([bigHq], bigHq.buildingId, new Map(), []);
-  assert.equal(tiny.storageCap, 850, 'tiny HQ must still grant 850 storage');
-  assert.equal(big.storageCap, 850, 'large HQ must still grant exactly 850 storage');
+  assert.equal(tiny.storageCap, 1500, 'tiny HQ must still grant 1500 storage');
+  assert.equal(big.storageCap, 1500, 'large HQ must still grant exactly 1500 storage');
   // Warehouses still add capacity on top of the HQ vault.
   const warehouse = {
     buildingId: 'wh_1', typeId: 'warehouse' as const, isHQ: false, name: 'WH',
@@ -552,7 +552,7 @@ test('primary HQ always provides 850 storage regardless of footprint', () => {
     new Map([[warehouse.buildingId, warehouse as any]]),
     []
   );
-  assert.equal(withWarehouse.storageCap, 850 + 500);
+  assert.equal(withWarehouse.storageCap, 1500 + 500);
 });
 
 test('a breached HQ contributes no storage, housing, defense or squad slots', () => {
@@ -563,7 +563,7 @@ test('a breached HQ contributes no storage, housing, defense or squad slots', ()
     maxDurability: 800, currentDurability: 800,
   };
   const healthy = recalculateSettlementStats([hq], hq.buildingId, new Map(), []);
-  assert.equal(healthy.storageCap, 850, 'standing HQ grants the 850 vault');
+  assert.equal(healthy.storageCap, 1500, 'standing HQ grants the 1500 vault');
   assert.equal(healthy.livingCap, 40);
   // The primary HQ's squad complement is FIXED (2 slots) — the footprint of
   // the building it was established in grants no extra slots. Only
@@ -578,7 +578,7 @@ test('a breached HQ contributes no storage, housing, defense or squad slots', ()
     new Map(),
     []
   );
-  assert.equal(destroyed.storageCap, 250, 'destroyed HQ must not grant the 850 vault');
+  assert.equal(destroyed.storageCap, 250, 'destroyed HQ must not grant the 1500 vault');
   assert.equal(destroyed.livingCap, 0, 'destroyed HQ shelters nobody');
   assert.equal(destroyed.squadCapacity, 0, 'destroyed HQ commands no squads');
   assert.equal(destroyed.defenseRating, 0, 'destroyed HQ provides no defense');
@@ -587,7 +587,7 @@ test('a breached HQ contributes no storage, housing, defense or squad slots', ()
   const extraDestroyed = { ...hq, buildingId: 'hq_2', currentDurability: 0 };
   const extraHealthy = { ...hq, buildingId: 'hq_2' };
   const mixed = recalculateSettlementStats([hq, extraDestroyed, extraHealthy], hq.buildingId, new Map(), []);
-  assert.equal(mixed.storageCap, 850 + 850, 'only the standing secondary HQ adds its 850 vault; the breached one adds nothing');
+  assert.equal(mixed.storageCap, 1500 + 1500, 'only the standing secondary HQ adds its 1500 vault; the breached one adds nothing');
   assert.equal(mixed.squadCapacity, healthy.squadCapacity + 3, 'only the standing secondary HQ adds its squad slots');
   assert.equal(mixed.defenseRating, healthy.defenseRating + 55);
   assert.equal(mixed.livingCap, healthy.livingCap + 40);
@@ -606,8 +606,8 @@ test('primary HQ squad capacity is fixed regardless of building size', () => {
   const huge = recalculateSettlementStats([mkHq('hq_huge', 5000)], 'hq_huge', new Map(), []);
   assert.equal(tiny.squadCapacity, 2, 'small primary HQ still grants the fixed 2 slots');
   assert.equal(huge.squadCapacity, 2, 'large primary HQ gains NO footprint-scaled slots');
-  assert.equal(tiny.storageCap, 850, 'storage stays fixed too');
-  assert.equal(huge.storageCap, 850, 'storage stays fixed too');
+  assert.equal(tiny.storageCap, 1500, 'storage stays fixed too');
+  assert.equal(huge.storageCap, 1500, 'storage stays fixed too');
 
   // The same large building re-established as an ADDITIONAL HQ does scale.
   const extra = recalculateSettlementStats(
@@ -646,21 +646,21 @@ test('production never consumes inputs when its output cannot fit in storage', (
     primaryHQId: 'hq_1',
     namedSurvivors: [],
     generalPopulation: { total: 0, children: [], inSquads: 0, unassigned: 0 },
-    totalStorageCapacity: 850,
+    totalStorageCapacity: 1500,
     // Everything else zeroed so the cookhouse inputs are the only stock:
-    // 10 grain + 5 wood + 835 ammo = exactly 850 / 850 units.
+    // 10 grain + 5 wood + 1485 ammo = exactly 1500 / 1500 units.
     stockpile: {
       food: { canned_goods: 0, mre_rations: 0, dried_rations: 0, fresh_harvest: 0, grain: 10 },
       water: { bottled_water: 0, purified_water: 0, rainwater: 0 },
       medical: { first_aid_kits: 0, sterile_bandages: 0, antibiotics: 0, painkillers: 0 },
       fuel: { gasoline: 0, diesel: 0, biofuel: 0 },
-      ammo: { sharedPool: 835 },
+      ammo: { sharedPool: 1485 },
       materials: { wood: 5, metal: 0, bricks: 0, tools: 0 },
     },
     adaptedBuildings: new Map([[cookhouse.buildingId, cookhouse as any]]),
   } as unknown as SettlementState;
   const runEconomyTick = (s: SettlementState) => runEconomyStages(s, 600, 1, 1, false).newState;
-  // Stockpile is exactly full: 10 grain + 5 wood + 835 ammo = 850 / 850.
+  // Stockpile is exactly full: 10 grain + 5 wood + 1485 ammo = 1500 / 1500.
   assert.equal(runEconomyTick(seed).stockpile.materials.wood, 5, 'seed sanity: 5 wood');
 
   // Full-day tick with zero free space: the recipe must NOT run, so neither
@@ -945,7 +945,7 @@ test('re-establishing HQ after a breach promotes the new command center to prima
       String(h.buildingId) === String(b1.id) ? { ...h, currentDurability: 0 } : h
     ),
   };
-  assert.equal(state.totalStorageCapacity, 850, 'aggregate is stale until recomputed');
+  assert.equal(state.totalStorageCapacity, 1500, 'aggregate is stale until recomputed');
   const breached = recalculateSettlementStats(
     state.headquarters, state.primaryHQId, state.adaptedBuildings, state.freestandingBuildings
   );
@@ -956,7 +956,7 @@ test('re-establishing HQ after a breach promotes the new command center to prima
   const reclaimed = establishSettlementHQ(state, b2);
   assert.equal(String(getPrimaryHQ(reclaimed)?.buildingId), String(b2.id), 'new HQ becomes primary after reclaim');
   assert.ok(reclaimed.headquarters.length >= 2, 'the breached HQ stays recorded in headquarters');
-  assert.equal(reclaimed.totalStorageCapacity, 850, 'restored vault from the standing new HQ');
+  assert.equal(reclaimed.totalStorageCapacity, 1500, 'restored vault from the standing new HQ');
 });
 
 test('infected can besiege and damage the command center at night', () => {
@@ -1121,7 +1121,7 @@ test('multi-recipe buildings run only the player-selected recipe', () => {
     primaryHQId: 'hq_1',
     namedSurvivors: [],
     generalPopulation: { total: 0, children: [], inSquads: 0, unassigned: 0 },
-    totalStorageCapacity: 850,
+    totalStorageCapacity: 1500,
     // Raw meat + wood available, but NO grain: the grain recipe cannot run.
     stockpile: {
       food: { canned_goods: 0, mre_rations: 0, dried_rations: 0, fresh_harvest: 0, raw_meat: 10, grain: 0 },
@@ -1183,7 +1183,7 @@ test('fertilizer is consumed per crop cycle, not a permanent aura', () => {
     primaryHQId: 'hq_1',
     namedSurvivors: [],
     generalPopulation: { total: 0, children: [], inSquads: 0, unassigned: 0 },
-    totalStorageCapacity: 850,
+    totalStorageCapacity: 1500,
     stockpile: {
       food: { canned_goods: 0, mre_rations: 0, dried_rations: 0, fresh_harvest: 0, grain: 0 },
       water: { bottled_water: 0, purified_water: 0, rainwater: 0 },
@@ -1596,7 +1596,7 @@ test('deconstruction refresh uses the ONE authoritative stat calculation — no 
   // The authoritative calc on the pre-demolition state counts EVERY facility —
   // the old inline copy only knew storage_depot / shelter_bunkhouse.
   const before = recalculateSettlementStats(state.headquarters, state.primaryHQId, state.adaptedBuildings, state.freestandingBuildings);
-  assert.equal(before.storageCap, 850 + 500, 'Warehouse storage counted on top of the HQ vault');
+  assert.equal(before.storageCap, 1500 + 500, 'Warehouse storage counted on top of the HQ vault');
   assert.equal(before.livingCap, 40 + 30 + 8, 'Shelter AND Squad Quarters living counted on top of the HQ');
   assert.equal(before.defenseRating, 55 + 40 + 10 + 5 + 20 + 60, 'all operational buildings contribute defense');
 
@@ -1610,7 +1610,7 @@ test('deconstruction refresh uses the ONE authoritative stat calculation — no 
   // The refresh MUST equal the authoritative calculation — no competing copy.
   const expected = recalculateSettlementStats(after.headquarters, after.primaryHQId, after.adaptedBuildings, after.freestandingBuildings);
   assert.equal(after.totalStorageCapacity, expected.storageCap, 'storage equals the authoritative calc');
-  assert.equal(after.totalStorageCapacity, 850 + 500, 'HQ vault 850 + Warehouse 500 — NOT just the HQ');
+  assert.equal(after.totalStorageCapacity, 1500 + 500, 'HQ vault 1500 + Warehouse 500 — NOT just the HQ');
   assert.equal(after.totalLivingCapacity, expected.livingCap, 'living equals the authoritative calc');
   assert.equal(after.totalLivingCapacity, 40 + 30 + 8, 'HQ 40 + Shelter 30 + Squad Quarters 8 — none dropped');
   assert.equal(after.totalDefenseRating, expected.defenseRating, 'defense equals the authoritative calc');
@@ -1656,7 +1656,7 @@ test('storage/living/defense only count operational buildings — destroyed, rep
     );
 
   const healthy = run([warehouse, shelter, tower]);
-  assert.equal(healthy.storageCap, 850 + 500, 'operational Warehouse adds its vault');
+  assert.equal(healthy.storageCap, 1500 + 500, 'operational Warehouse adds its vault');
   assert.equal(healthy.livingCap, 40 + 30, 'operational Shelter adds its beds');
   assert.equal(healthy.defenseRating, 55 + 40 + 10 + 60, 'operational tower and shelter stand guard');
 
@@ -1667,7 +1667,7 @@ test('storage/living/defense only count operational buildings — destroyed, rep
     { ...tower, currentDurability: 0 },
   ]);
   assert.equal(breached.defenseRating, 55 + 10, 'destroyed tower contributes no defense');
-  assert.equal(breached.storageCap, 850, 'destroyed Warehouse contributes no storage');
+  assert.equal(breached.storageCap, 1500, 'destroyed Warehouse contributes no storage');
 
   // Under repair: same as destroyed — the facility is closed.
   const repairing = run([
@@ -1675,7 +1675,7 @@ test('storage/living/defense only count operational buildings — destroyed, rep
     { ...shelter, isUnderRepair: true },
     { ...tower, isUnderRepair: true },
   ]);
-  assert.equal(repairing.storageCap, 850, 'repair-stalled Warehouse contributes no storage');
+  assert.equal(repairing.storageCap, 1500, 'repair-stalled Warehouse contributes no storage');
   assert.equal(repairing.livingCap, 40, 'repair-stalled Shelter contributes no beds');
   assert.equal(repairing.defenseRating, 55, 'repair-stalled tower and shelter contribute no defense');
 
@@ -1684,6 +1684,6 @@ test('storage/living/defense only count operational buildings — destroyed, rep
     { ...warehouse, constructionStatus: 'in_progress', constructionProgress: 40 },
     { ...tower, constructionStatus: 'planned', isFreestanding: true },
   ]);
-  assert.equal(incomplete.storageCap, 850, 'in-progress Warehouse contributes no storage');
+  assert.equal(incomplete.storageCap, 1500, 'in-progress Warehouse contributes no storage');
   assert.equal(incomplete.defenseRating, 55, 'planned tower contributes no defense');
 });

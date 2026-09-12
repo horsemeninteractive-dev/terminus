@@ -8,7 +8,7 @@ import {
   VehicleType,
   WorldVehicle,
 } from '../types/vehicle';
-import { CombatVisualFx, NoiseEvent, TacticalSquadUnit, ZombieUnit, getWeaponDefinition } from '../types/combat';
+import { CombatVisualFx, NoiseEvent, TacticalSquadUnit, ZombieUnit, getWeaponDefinition, AMMO_ROUNDS_PER_UNIT } from '../types/combat';
 import { emitNoiseEvent } from './combatService';
 import { RoadNetworkGraph } from './roadPathfinder';
 import type { PathGrid } from './pathfindingService';
@@ -1295,14 +1295,16 @@ export function updateVehiclesTick(
         return weapon.ammoPerVolley > 0;
       });
       const volleyAmmo = rangedMembers.reduce((sum, member) => sum + getWeaponDefinition(member.weaponId).ammoPerVolley, 0);
+      // Stockpile ammo is measured in UNITS (multi-round boxes), not bullets.
+      const volleyAmmoUnits = volleyAmmo / AMMO_ROUNDS_PER_UNIT;
       const target = zombiesList
         .filter((z) => z.currentHp > 0)
         .map((z) => ({ zombie: z, distance: Math.hypot(z.x - current.position.x, z.z - current.position.z) }))
         .filter(({ distance }) => distance <= Math.max(8.5, mountedSquad.attackRange))
         .sort((a, b) => a.distance - b.distance)[0];
-      if (target && rangedMembers.length > 0 && (ammoPool?.value ?? 0) >= volleyAmmo && now - mountedSquad.lastFireTime >= mountedSquad.fireRate * 1000) {
+      if (target && rangedMembers.length > 0 && (ammoPool?.value ?? 0) >= volleyAmmoUnits && now - mountedSquad.lastFireTime >= mountedSquad.fireRate * 1000) {
         mountedSquad.lastFireTime = now;
-        if (ammoPool) ammoPool.value -= volleyAmmo;
+        if (ammoPool) ammoPool.value -= volleyAmmoUnits;
         const damage = Math.max(1, Math.round(mountedSquad.damagePerVolley * (0.85 + Math.random() * 0.3)));
         target.zombie.currentHp = Math.max(0, target.zombie.currentHp - damage);
         mountedSquad.killCount += target.zombie.currentHp <= 0 ? 1 : 0;
