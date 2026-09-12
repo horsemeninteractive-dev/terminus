@@ -23,6 +23,8 @@ Releasing:
 
 ## [Unreleased]
 
+## [0.3.6] – 2026-09-12
+
 ### Added
 
 - **Oceans and coastlines now render as water.** Map areas with
