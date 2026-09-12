@@ -21,7 +21,7 @@ Releasing:
 
 ---
 
-## [0.3.2] – 2026-09-12
+## [0.3.3] – 2026-09-12
 
 ### Fixed
 
@@ -41,6 +41,10 @@ Releasing:
   detected on the next visit, revalidates static assets in the background,
   and `skipWaiting()` + `clients.claim()` swap the new worker in — the update
   banner now fires on reload after a deploy.
+
+---
+
+## [0.3.2] – 2026-09-12
 
 ### Added
 
