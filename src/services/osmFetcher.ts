@@ -90,6 +90,7 @@ export function buildOverpassBBoxQuery(lat: number, lon: number, halfSideMeters:
   way["landuse"];
   way["leisure"];
   way["natural"];
+  way["natural"="coastline"];
   way["waterway"];
   way["water"];
   way["amenity"];

@@ -69,7 +69,7 @@ export interface RoadSegment {
 
 export interface LanduseArea {
   id: string | number;
-  type: 'park' | 'water' | 'forest' | 'grass' | 'parking' | 'industrial' | 'commercial' | 'residential' | 'other';
+  type: 'park' | 'water' | 'forest' | 'grass' | 'parking' | 'industrial' | 'commercial' | 'residential' | 'coastline' | 'other';
   polygon: Point2D[];
   name?: string;
 }

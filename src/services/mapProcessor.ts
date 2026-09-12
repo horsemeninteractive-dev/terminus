@@ -485,6 +485,13 @@ export function processOsmData(
       ''
     ).toLowerCase();
 
+    // Ocean/coast: a 'coastline' way is a directed shoreline arc (land on the
+    // right, water on the left in OSM's direction convention). It has no
+    // closed polygon of its own — the water side must be derived.
+    if (tags.natural === 'coastline') {
+      return 'coastline' as LanduseArea['type'];
+    }
+
     if (
       typeStr === 'water' ||
       typeStr === 'basin' ||
@@ -725,6 +732,128 @@ export function processOsmData(
           polygon: simplifyPoints(points, 0.8),
           name: tags.name,
         });
+      }
+    }
+  }
+
+  // 2C. Coastline → water (oceans and tidal waters have no tagged polygon in
+  // OSM — only directed shoreline arcs with land on the LEFT and water on the
+  // RIGHT). Derive the sea side by classifying a coarse grid around each
+  // coastline arc via signed side-of-line tests, then marching the grid cells
+  // into a water polygon that hugs the shore.
+  const coastlineWays: Point2D[][] = [];
+  for (const lu of landuse) {
+    if (lu.type === 'coastline') {
+      coastlineWays.push(lu.polygon);
+    }
+  }
+  if (coastlineWays.length > 0) {
+    // Remove the raw arcs so they don't render as landuse.
+    for (let i = landuse.length - 1; i >= 0; i--) {
+      if (landuse[i].type === 'coastline') landuse.splice(i, 1);
+    }
+
+    // Sample grid step: fine enough to hug the shore within a few metres,
+    // coarse enough that a 8km map stays ~200×200 cells (40k point-in-arc
+    // tests, well under a frame budget with the bbox pre-filter below).
+    const gridStep = Math.max(30, radius / 100);
+    const minXc = -radius;
+    const minZc = -radius;
+    const cols = Math.ceil((2 * radius) / gridStep);
+    const rows = cols;
+    const waterGrid = new Uint8Array(cols * rows);
+
+    // For each grid cell centre, find its NEAREST coastline segment and use
+    // that segment's water side (cross > 0 = right of direction = sea). No
+    // distance cap: cells far from any shore inherit the classification of
+    // the closest shoreline piece, so deep ocean and deep inland both resolve
+    // correctly, not just a thin ribbon along the coast.
+    for (let gz = 0; gz < rows; gz++) {
+      for (let gx = 0; gx < cols; gx++) {
+        const px = minXc + (gx + 0.5) * gridStep;
+        const pz = minZc + (gz + 0.5) * gridStep;
+        let bestDist2 = Infinity;
+        let bestCross = 0;
+        for (const arc of coastlineWays) {
+          for (let i = 0; i < arc.length - 1; i++) {
+            const a = arc[i];
+            const b = arc[i + 1];
+            const ex = b.x - a.x;
+            const ez = b.z - a.z;
+            const len2 = ex * ex + ez * ez;
+            if (len2 < 1e-6) continue;
+            const t = Math.max(0, Math.min(1, ((px - a.x) * ex + (pz - a.z) * ez) / len2));
+            const dx = px - (a.x + t * ex);
+            const dz = pz - (a.z + t * ez);
+            const dist2 = dx * dx + dz * dz;
+            if (dist2 < bestDist2) {
+              bestDist2 = dist2;
+              // Water is on the RIGHT of the way direction (OSM convention:
+              // land left, water right). In this projection (+x east, +z
+              // south) a point on the right of a→b has cross > 0.
+              bestCross = ex * dz - ez * dx;
+            }
+          }
+        }
+        if (bestDist2 < Infinity && bestCross > 0) {
+          waterGrid[gz * cols + gx] = 1;
+        }
+      }
+    }
+
+    // Marching-squares contour of the water cells → sea polygon(s). The
+    // nearest-segment classification above already covers the full grid, so
+    // deep ocean, bays and inland water pockets all resolve correctly.
+    const cellCenter = (gx: number, gz: number): Point2D => ({
+      x: minXc + (gx + 0.5) * gridStep,
+      z: minZc + (gz + 0.5) * gridStep,
+    });
+    const isSea = (gx: number, gz: number): boolean =>
+      gx >= 0 && gz >= 0 && gx < cols && gz < rows && waterGrid[gz * cols + gx] === 1;
+    const segByKey = new Map<string, { a: Point2D; b: Point2D }>();
+    for (let gz = 0; gz < rows; gz++) {
+      for (let gx = 0; gx < cols; gx++) {
+        if (!isSea(gx, gz)) continue;
+        // Emit boundary segments between sea cells and non-sea neighbours.
+        const c = cellCenter(gx, gz);
+        const half = gridStep / 2;
+        const edges: [Point2D, Point2D][] = [];
+        if (!isSea(gx, gz - 1)) edges.push([{ x: c.x - half, z: c.z - half }, { x: c.x + half, z: c.z - half }]);
+        if (!isSea(gx + 1, gz)) edges.push([{ x: c.x + half, z: c.z - half }, { x: c.x + half, z: c.z + half }]);
+        if (!isSea(gx, gz + 1)) edges.push([{ x: c.x + half, z: c.z + half }, { x: c.x - half, z: c.z + half }]);
+        if (!isSea(gx - 1, gz)) edges.push([{ x: c.x - half, z: c.z + half }, { x: c.x - half, z: c.z - half }]);
+        for (const [a, b] of edges) {
+          segByKey.set(`${a.x.toFixed(1)},${a.z.toFixed(1)}`, { a, b });
+        }
+      }
+    }
+    // Stitch segments into rings.
+    const used = new Set<string>();
+    for (const [startKey, seg] of segByKey) {
+      if (used.has(startKey)) continue;
+      const ring: Point2D[] = [seg.a];
+      let cursor = seg.b;
+      used.add(startKey);
+      let guard = 0;
+      while (guard++ < 100000) {
+        ring.push(cursor);
+        const k = `${cursor.x.toFixed(1)},${cursor.z.toFixed(1)}`;
+        if (k === startKey) break;
+        const next = segByKey.get(k);
+        if (!next || used.has(k)) break;
+        used.add(k);
+        cursor = next.b;
+      }
+      if (ring.length >= 4) {
+        const area = polygonSignedArea(ring);
+        if (Math.abs(area) > gridStep * gridStep * 4) {
+          landuse.push({
+            id: `l_coast_${landuse.length}`,
+            type: 'water',
+            polygon: simplifyPoints(ring, gridStep),
+            name: 'Sea',
+          });
+        }
       }
     }
   }
