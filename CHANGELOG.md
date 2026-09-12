@@ -23,6 +23,25 @@ Releasing:
 
 ## [0.3.2] – 2026-09-12
 
+### Fixed
+
+- **PWA installs with the real Terminus icon.** The web manifest pointed at
+  SVG icons, which Android/Chrome ignores when generating install/launcher
+  icons — installed apps fell back to the default blank/globe icon. The skull
+  SVG is now rasterized into proper PNG launchers (192 & 512, plus maskable
+  variants with safe-zone padding and a 32px favicon) via a one-off sharp
+  script (`scripts/generate-icons.mjs`), and the manifest + HTML reference the
+  PNGs. Re-install (remove the app, then install again) to pick up the icon.
+- **Update banner never appeared for PWA installs.** The old service worker
+  cached everything cache-first forever and registered no update flow: a new
+  deploy kept serving the stale app shell, so the "newer build is ready"
+  prompt (which only fired when a *waiting* worker installed while a
+  controller was active) could never trigger. The SW now versions its cache
+  (`terminus-cache-v2`), serves navigations network-first so a new deploy is
+  detected on the next visit, revalidates static assets in the background,
+  and `skipWaiting()` + `clients.claim()` swap the new worker in — the update
+  banner now fires on reload after a deploy.
+
 ### Added
 
 - **Satellite imagery follows the played grid.** Downloaded maps cropped
