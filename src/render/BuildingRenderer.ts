@@ -531,6 +531,12 @@ function remapWallUvs(geom: THREE.BufferGeometry) {
 
 export class BuildingRenderer {
   public group = new THREE.Group();
+  /** Player-built freestanding structures (walls, gates, towers, facilities)
+   *  live in their own top-level group so the distant-view LOD can hide the
+   *  OSM city detail while keeping these gameplay objects on screen — they are
+   *  things the player placed, and losing your colony behind an LOD swap made
+   *  the map read as if the buildings had vanished entirely. */
+  public freestandingGroup = new THREE.Group();
   public edgeGroup = new THREE.Group();
   /** Per-building edge silhouettes (detailed mode) so updateAdaptedStates can
    *  recolor an outline when a structure completes — the amber under-construction
@@ -744,6 +750,7 @@ export class BuildingRenderer {
 
   constructor() {
     this.group.name = 'BuildingsGroup';
+    this.freestandingGroup.name = 'FreestandingGroup';
     this.edgeGroup.name = 'BuildingEdgesGroup';
     this.overlayGroup.name = 'BuildingOverlayGroup';
     this.regionOverlayGroup.name = 'AdaptedRegionOverlayGroup';
@@ -1237,6 +1244,10 @@ export class BuildingRenderer {
     this.lodMode = mode;
     this.group.visible = mode === 'detailed';
     this.lodGroup.visible = mode === 'distant';
+    // Keep player-built freestanding structures visible in BOTH modes: the
+    // merged distant LOD only merges OSM buildings, so their bodies inside
+    // `group` used to vanish when the camera rose past the LOD switch.
+    this.freestandingGroup.visible = true;
   }
 
   /**
@@ -2815,7 +2826,9 @@ export class BuildingRenderer {
       baseElevation: centerElev,
       constructionStatus: free.constructionStatus,
     };
-    this.group.add(root);
+    // Freestanding bodies go in their own always-visible group so the distant
+    // LOD (which hides `group` entirely) never hides player-built structures.
+    this.freestandingGroup.add(root);
     // buildingMeshes is typed as Mesh (material/geometry reads elsewhere); the
     // gate root is a Group, so cast — three.js treats both as Object3D at runtime.
     this.buildingMeshes.set(free.buildingId, root as unknown as THREE.Mesh);
@@ -2844,7 +2857,7 @@ export class BuildingRenderer {
   private destroyFreestandingBody(buildingId: string | number) {
     const root = this.buildingMeshes.get(buildingId);
     if (root) {
-      this.group.remove(root);
+      this.freestandingGroup.remove(root);
       this.buildingMeshes.delete(buildingId);
       this.buildingData.delete(buildingId);
       this.freestandingMeshes.delete(buildingId);
@@ -3897,6 +3910,12 @@ export class BuildingRenderer {
     this.group.children.forEach((c) => {
       if (c !== this.edgeGroup && c !== this.overlayGroup) meshesToRemove.push(c);
     });
+    // Freestanding bodies live in their own group (distant-LOD survival), so
+    // clear them separately.
+    while (this.freestandingGroup.children.length > 0) {
+      meshesToRemove.push(this.freestandingGroup.children[0]);
+      this.freestandingGroup.remove(this.freestandingGroup.children[0]);
+    }
     meshesToRemove.forEach((c) => {
       if (c instanceof THREE.Mesh && c.geometry) c.geometry.dispose();
       this.group.remove(c);

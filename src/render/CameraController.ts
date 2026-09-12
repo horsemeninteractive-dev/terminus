@@ -53,6 +53,11 @@ export class CameraController {
   private lastPinchAngle = 0;
   private lastPinchMidX = 0;
   private lastPinchMidY = 0;
+  /** Set once a two-finger vertical drag wins the gesture-ambiguity race —
+   *  that drag then controls camera PITCH (perspective) instead of pinch
+   *  zoom/twist until all fingers lift. Lets mobile players tilt the camera
+   *  like a desktop right-drag, which the old gestures never covered. */
+  private twoFingerPitchMode = false;
 
   // Pan inertia velocity
   private panVelocity = new THREE.Vector3(0, 0, 0);
@@ -138,6 +143,7 @@ export class CameraController {
       // Pinch zoom / 2-finger touch
       this.isDraggingPan = false;
       this.isDraggingOrbit = false;
+      this.twoFingerPitchMode = false;
       const pts = Array.from(this.activePointers.values());
       this.lastPinchDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
       this.lastPinchAngle = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
@@ -153,13 +159,52 @@ export class CameraController {
     if (this.placementActive) return;
     this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-    // Handle Two-Finger Pinch, Twist & Pan Gesture
+    // Handle Two-Finger Pinch, Twist, Pan & Pitch Gesture
     if (this.activePointers.size === 2) {
       const pts = Array.from(this.activePointers.values());
       const currentDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
       const currentAngle = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
       const currentMidX = (pts[0].x + pts[1].x) / 2;
       const currentMidY = (pts[0].y + pts[1].y) / 2;
+
+      // Gesture arbitration: the first dominant movement decides what a
+      // two-finger drag means. A mostly-VERTICAL drag (fingers moving in the
+      // same direction, little pinch/twist) tilts the camera — the mobile
+      // equivalent of the desktop right-drag orbit. Once claimed, the whole
+      // gesture stays pitch until every finger lifts, so a slight sideways
+      // drift mid-drag doesn't flip the camera between behaviours.
+      if (!this.twoFingerPitchMode && this.lastPinchDist > 0 && currentDist > 0) {
+        const distDelta = Math.abs(currentDist - this.lastPinchDist);
+        let angleDelta = Math.abs(currentAngle - this.lastPinchAngle);
+        while (angleDelta > Math.PI) angleDelta = Math.abs(angleDelta - Math.PI * 2);
+        const midDeltaX = Math.abs(currentMidX - this.lastPinchMidX);
+        const midDeltaY = Math.abs(currentMidY - this.lastPinchMidY);
+        const verticalDrift = midDeltaY > midDeltaX * 1.6;
+        if (
+          verticalDrift &&
+          midDeltaY > 6 &&
+          distDelta < 14 &&
+          angleDelta < 0.06 &&
+          midDeltaY > distDelta
+        ) {
+          this.twoFingerPitchMode = true;
+        }
+      }
+
+      if (this.twoFingerPitchMode) {
+        // Two-finger vertical drag: tilt the camera (perspective).
+        const deltaMidY = currentMidY - this.lastPinchMidY;
+        this.pitchGoal = THREE.MathUtils.clamp(
+          this.pitchGoal + deltaMidY * 0.004,
+          this.minPitch,
+          this.maxPitch
+        );
+        this.lastPinchMidX = currentMidX;
+        this.lastPinchMidY = currentMidY;
+        this.lastPinchDist = currentDist;
+        this.lastPinchAngle = currentAngle;
+        return;
+      }
 
       // 1. Pinch to Zoom
       if (this.lastPinchDist > 0 && currentDist > 0) {
@@ -252,6 +297,7 @@ export class CameraController {
       this.lastPinchAngle = 0;
       this.lastPinchMidX = 0;
       this.lastPinchMidY = 0;
+      this.twoFingerPitchMode = false;
     } else if (this.activePointers.size === 1) {
       // Transitioned from 2-finger to 1-finger: reset lastMouseX/Y to remaining touch
       const remaining = Array.from(this.activePointers.values())[0];
@@ -259,6 +305,9 @@ export class CameraController {
       this.lastMouseY = remaining.y;
       this.isDraggingPan = true;
       this.lastPinchDist = 0;
+      // A pitch drag that ends with one finger still down becomes a pan of the
+      // remaining finger — do NOT carry the pitch lock into it.
+      this.twoFingerPitchMode = false;
     }
   };
 

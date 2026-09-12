@@ -23,6 +23,28 @@ Releasing:
 
 ## [Unreleased]
 
+### Fixed
+
+- **Player-built structures no longer vanish when zooming out.** Freestanding
+  walls, gates, towers and facilities were rendered inside the OSM-city
+  group, which the camera's distant-view LOD hides entirely past ~380 m —
+  swapping to merged overview meshes that only contain OSM buildings, so the
+  whole colony appeared to evaporate at high zoom. Freestanding bodies now
+  live in their own always-visible group, their edge outlines ride along in
+  distant mode, and the Medium/Low quality distance detail-cull explicitly
+  skips them (they are gameplay objects the player placed, not scenery).
+
+### Changed
+
+- **Two-finger vertical drag tilts the camera on mobile.** Touch had no way
+  to change camera perspective: one finger pans, two fingers pinch-zoom,
+  twist-rotate and pan — but pitch was desktop-only (right-drag / R-F keys /
+  UI buttons). A two-finger drag that moves predominantly vertically (with
+  little pinch or twist) now tilts the camera up/down; the gesture is locked
+  in until all fingers lift so a slight sideways drift mid-drag doesn't flip
+  between tilting and zooming. Strong pinches and twists still behave
+  exactly as before.
+
 ### Added
 
 - **Server-side Overpass proxy with edge caching.** Live map fetches now go

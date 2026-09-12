@@ -635,6 +635,9 @@ export class WorldScene {
     this.scene.add(this.roadRenderer.group);
     this.scene.add(this.buildingRenderer.group);
     this.scene.add(this.buildingRenderer.lodGroup);
+    // Player-built freestanding structures render in their own group so the
+    // distant-LOD swap (which hides the OSM city group) keeps them on screen.
+    this.scene.add(this.buildingRenderer.freestandingGroup);
     this.scene.add(this.resourceRenderer.group);
     this.scene.add(this.fogOfWarRenderer.group);
     this.scene.add(this.smokeSystem.group);
@@ -1117,6 +1120,9 @@ export class WorldScene {
     for (const [id, mesh] of this.buildingRenderer.buildingMeshes) {
       const bldg = this.buildingRenderer.getBuildingById(id);
       if (!bldg) continue;
+      // Freestanding structures (walls, towers, facilities) are player-built
+      // gameplay objects — never distance-cull them.
+      if (mesh.userData?.isFreestanding) continue;
       const dx = bldg.center.x - focus.x;
       const dz = bldg.center.z - focus.z;
       const within = dx * dx + dz * dz <= r2;
