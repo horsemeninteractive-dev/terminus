@@ -23,6 +23,19 @@ Releasing:
 
 ## [Unreleased]
 
+### Added
+
+- **Server-side Overpass proxy with edge caching.** Live map fetches now go
+  through `/api/overpass`, a Cloudflare Pages Function deployed alongside the
+  static site (`functions/api/overpass.ts`). It caches each query's response
+  at the edge for 7 days — so once any player has fetched an area, every
+  later search there is instant and loads zero traffic on Overpass — and
+  retries all six mirrors from Cloudflare's network instead of the player's
+  connection. Truncated mirror runs are never cached, and the response's
+  `x-overpass-source` header says where the data came from (`cache` or
+  `mirror`). The direct browser→mirror chain remains as a fallback for dev
+  preview and if the proxy itself is unreachable.
+
 ### Fixed
 
 - **Daytime map searches no longer fail so easily.** Live map surveys hit

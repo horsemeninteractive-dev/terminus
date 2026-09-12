@@ -1,5 +1,15 @@
 import { GeoPoint } from '../types/map';
 
+/**
+ * Edge proxy deployed as a Cloudflare Pages Function (`functions/api/overpass.ts`).
+ * It caches responses per query for 7 days and retries all mirrors from
+ * Cloudflare's network, so daytime searches hit warm cache or a server-side
+ * retry chain instead of racing busy mirrors from the browser. The direct
+ * mirror chain below remains the fallback for dev/preview (where the function
+ * doesn't exist) and if the proxy itself errors.
+ */
+const OVERPASS_PROXY = '/api/overpass';
+
 const OVERPASS_ENDPOINTS = [
   'https://overpass.kumi.systems/api/interpreter',
   'https://overpass.private.coffee/api/interpreter',
@@ -126,8 +136,49 @@ export async function fetchFromOverpass(
   }
 
   const query = buildOverpassQuery(center.lat, center.lon, radius);
-  const endpoints = availableEndpoints();
   let lastError: Error | null = null;
+
+  // 1. Edge proxy (production): cached + server-side mirror fallback.
+  try {
+    const proxy = await fetch(OVERPASS_PROXY, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        Accept: 'application/json',
+      },
+      body: 'data=' + encodeURIComponent(query),
+      signal,
+    });
+    if (proxy.ok) {
+      const data = (await proxy.json()) as RawOsmResponse;
+      if (data && Array.isArray(data.elements)) {
+        console.info(`Overpass via proxy (${proxy.headers.get('x-overpass-source') || 'unknown'})`);
+        // Truncated proxy responses (server-side remark error with few
+        // elements) are not worth accepting — fall through to direct mirrors.
+        const truncated =
+          data.remark &&
+          (data.remark.includes('timed out') ||
+            data.remark.includes('out of memory') ||
+            data.remark.includes('runtime error'));
+        if (!truncated || data.elements.length >= 500) {
+          return data;
+        }
+        lastError = new Error(`Overpass data truncated via proxy: ${data.remark}`);
+      }
+    }
+  } catch (err) {
+    // The proxy can legitimately not exist (dev/preview) or be unreachable;
+    // either way the direct mirror chain below still applies.
+    if (signal?.aborted) {
+      const abortErr = new Error('Operation aborted');
+      abortErr.name = 'AbortError';
+      throw abortErr;
+    }
+    lastError = err instanceof Error ? err : new Error(String(err));
+  }
+
+  // 2. Direct mirror chain (fallback / dev).
+  const endpoints = availableEndpoints();
 
   for (const endpoint of endpoints) {
     if (signal?.aborted) {
