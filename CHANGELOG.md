@@ -73,6 +73,12 @@ Releasing:
   cell was "far" at low altitude and the whole city disappeared. The flat
   far-cell meshes now live in the detailed-view group, visible exactly when
   they should be.
+- **The loading screen no longer vanishes into a black scene on replay.**
+  Starting a new colony (or relaunching a preset) re-armed the descent
+  overlay while the PREVIOUS world's "scene rendered" flag was still set,
+  so the overlay faded out after 700 ms and exposed a pure-black,
+  half-built scene. Arming a descent now resets that flag; the overlay
+  stays up until the new world has actually drawn.
 - **Pressing Play now shows the loading screen instantly.** The descent
   overlay was armed while the view mode was still on the globe/map screen,
   and the "left the world view" guard immediately aborted it — so the map

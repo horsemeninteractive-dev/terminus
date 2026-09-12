@@ -86,6 +86,19 @@ export function useGameState() {
   const [descentAltitudeKm, setDescentAltitudeKm] = useState(1200);
   const descentTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // A newly-armed descent must never inherit the PREVIOUS scene's "rendered"
+  // flag. isSceneRendered only resets when mapData changes, but a new descent
+  // (Press START / select colony / preset launch) commits BEFORE the new map
+  // payload arrives — so the fade effect below would see the stale `true`,
+  // close the overlay after 700ms, and expose a pure-black unrendered world.
+  // Reset it the moment any descent starts; the fresh scene build will set it
+  // again via onMapRendered when the new world has actually drawn.
+  useEffect(() => {
+    if (isDescentActive) {
+      setIsSceneRendered(false);
+    }
+  }, [isDescentActive]);
+
   const stopDescentTimer = useCallback(() => {
     if (descentTimerRef.current) {
       clearInterval(descentTimerRef.current);
