@@ -212,19 +212,20 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [
-    mapKey,
-    showBuildingEdges,
-    elevationExaggeration,
-    disableElevation,
-  ]);
+    // Only mapKey + showBuildingEdges trigger a full rebuild (edge geometry is
+    // created during the build; the setter merely toggles visibility). The
+    // elevation toggles have a single combined setter below — these all used
+    // to be separate triggers here AND in their own effects, so one
+    // settings-modal Apply could kick off 2-3 synchronous full city rebuilds
+    // (the freeze the player saw when applying settings).
+  }, [mapKey, showBuildingEdges]);
 
   // Disable elevation toggle
   useEffect(() => {
     if (sceneRef.current) {
-      sceneRef.current.setDisableElevation(disableElevation);
+      sceneRef.current.setElevationSettings(disableElevation, elevationExaggeration);
     }
-  }, [disableElevation]);
+  }, [disableElevation, elevationExaggeration]);
 
   // Graphics quality preset (also applied on scene creation below)
   useEffect(() => {

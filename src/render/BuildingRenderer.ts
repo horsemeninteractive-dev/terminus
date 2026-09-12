@@ -8,6 +8,8 @@ import { AdaptedBuilding, FunctionalCategory } from '../types/settlement';
 import { getPrimaryAdaptedEntry, isBuildingOperational } from '../services/buildingOperational';
 import {
   getBuildingTextureSet,
+  facadeStyleFor,
+  roofStyleFor,
   getFreestandingMaterialTexture,
   getFreestandingMaterialTextureVariant,
   getFreestandingBumpTexture,
@@ -657,6 +659,12 @@ export class BuildingRenderer {
   private lodCellMeshes = new Map<string, THREE.Object3D[]>();
   private lodBuilt = false;
   private lodMode: 'detailed' | 'distant' = 'detailed';
+  /** Detailed-mode distance LOD state: per-cell flat-colour merged meshes for
+   *  far cells + which mode each cell is currently rendered in. Far cells draw
+   *  ~3 merged meshes instead of hundreds of individual textured ones. */
+  private cellFarMeshes = new Map<string, THREE.Object3D[]>();
+  private cellDistance = new Map<string, 'near' | 'far'>();
+  private flatMaterialCache = new Map<string, THREE.MeshLambertMaterial[]>();
 
   /**
    * Spatial LOD cell size (metres). The distant-view merge groups buildings by
@@ -1216,6 +1224,193 @@ export class BuildingRenderer {
     }
 
     if (created.length > 0) this.lodCellMeshes.set(cellKey, created);
+
+    // A rebuilt cell (adaptation / demolition / power change) must refresh its
+    // far-field twin too, or the flat LOD would keep showing the old layout.
+    if (this.cellDistance.get(cellKey) === 'far') {
+      this.rebuildCellFar(cellKey, sources);
+      this.showCellFar(cellKey);
+    }
+  }
+
+  /**
+   * Average flat colour pair [roof, wall] for a building's texture variant —
+   * the albedo base colours the procedural textures are painted from, without
+   * any GPU texture work. Far-field cells render with these instead of the
+   * full material stack (map + bump + emissive/roughness), collapsing their
+   * draw cost to a couple of untextured Lambert batches.
+   */
+  private flatMaterialsFor(src: (typeof this.lodSources)[number]): THREE.MeshLambertMaterial[] {
+    const bldg = this.buildingData.get(src.buildingId);
+    const type = bldg?.type ?? 'other';
+    const variant = buildingVariantForId(src.buildingId);
+    const key = `${type}_${variant}`;
+    const cached = this.flatMaterialCache.get(key);
+    if (cached) return cached;
+
+    const style = facadeStyleFor(type, variant);
+    const roofStyle = roofStyleFor(type, variant);
+    const wall = new THREE.MeshLambertMaterial({ color: new THREE.Color(style.base) });
+    const roof = new THREE.MeshLambertMaterial({ color: new THREE.Color(roofStyle.base) });
+    const mats = [roof, wall];
+    this.flatMaterialCache.set(key, mats);
+    return mats;
+  }
+
+  /**
+   * Builds the flat-colour far-field merged meshes for one cell (same merge
+   * layout as rebuildCell, but with 2-material batches instead of the full
+   * textured material stack). Attached to lodGroup so the existing altitude
+   * LOD and visibility toggles keep working; shown per-cell by
+   * setDetailedDistance() only when the cell is 'far'.
+   */
+  private rebuildCellFar(cellKey: string, sources: (typeof this.lodSources)[number][]) {
+    this.clearCellFarMeshes(cellKey);
+    if (sources.length === 0) return;
+    const created: THREE.Object3D[] = [];
+    const byMats = new Map<string, { mats: THREE.MeshLambertMaterial[]; caps: THREE.BufferGeometry[]; sides: THREE.BufferGeometry[]; gables: THREE.BufferGeometry[] }>();
+    for (const src of sources) {
+      const mats = this.flatMaterialsFor(src);
+      const k = `${mats[0].uuid}|${mats[1].uuid}`;
+      let entry = byMats.get(k);
+      if (!entry) {
+        entry = { mats, caps: [], sides: [], gables: [] };
+        byMats.set(k, entry);
+      }
+      const g0 = src.geom.groups[0];
+      const g1 = src.geom.groups[1];
+      if (g0) entry.caps.push(extractGroupGeometry(src.geom, g0.start, g0.count).translate(0, src.baseY, 0));
+      if (g1) entry.sides.push(extractGroupGeometry(src.geom, g1.start, g1.count).translate(0, src.baseY, 0));
+      if (src.roofGeom) {
+        const rg0 = src.roofGeom.groups[0];
+        if (rg0) entry.caps.push(extractGroupGeometry(src.roofGeom, rg0.start, rg0.count).translate(0, src.baseY, 0));
+        // Gable triangles fold into the far wall batch (flat colour anyway).
+        const rg1 = src.roofGeom.groups[1];
+        if (rg1) entry.gables.push(extractGroupGeometry(src.roofGeom, rg1.start, rg1.count).translate(0, src.baseY, 0));
+      }
+    }
+    const addMesh = (geoms: THREE.BufferGeometry[], mat: THREE.Material, name: string) => {
+      if (geoms.length === 0) return;
+      const merged = mergeGeometries(geoms, false);
+      geoms.forEach((g) => g.dispose());
+      if (!merged) return;
+      const mesh = new THREE.Mesh(merged, mat);
+      mesh.frustumCulled = true;
+      mesh.visible = false;
+      mesh.name = name;
+      this.lodGroup.add(mesh);
+      created.push(mesh);
+    };
+    for (const [, entry] of byMats) {
+      addMesh(entry.caps, entry.mats[0], `lod-cell-${cellKey}-far-caps`);
+      addMesh(entry.sides, entry.mats[1], `lod-cell-${cellKey}-far-walls`);
+      addMesh(entry.gables, entry.mats[1], `lod-cell-${cellKey}-far-gables`);
+    }
+    if (created.length > 0) this.cellFarMeshes.set(cellKey, created);
+  }
+
+  private clearCellFarMeshes(cellKey: string) {
+    const old = this.cellFarMeshes.get(cellKey);
+    if (!old) return;
+    for (const m of old) {
+      this.lodGroup.remove(m);
+      const mesh = m as THREE.Mesh;
+      if (mesh.geometry) mesh.geometry.dispose();
+    }
+    this.cellFarMeshes.delete(cellKey);
+  }
+
+  /**
+   * Detailed-mode distance LOD (quality-gated, driven from WorldScene's frame
+   * loop at 4 Hz): cells within `radius` of the camera focus render their
+   * full-detail meshes, everything else swaps to the cell's merged flat-colour
+   * meshes. This is true LOD — the far geometry still draws, so nothing
+   * vanishes at the transition — but far cells cost a couple of draw calls
+   * instead of hundreds of textured per-building ones.
+   */
+  public setDetailedDistance(
+    focus: { x: number; z: number },
+    radius: number,
+    selectedId: string | null = null
+  ) {
+    if (!this.lodBuilt || this.lodSources.length === 0) return;
+    if (radius <= 0) {
+      // LOD disabled (High quality): restore any far cell to near.
+      for (const [cellKey, mode] of this.cellDistance) {
+        if (mode !== 'near') this.showCellNear(cellKey);
+      }
+      return;
+    }
+    const r2 = radius * radius;
+    const byCell = this.sourcesByCell();
+    const s = BuildingRenderer.LOD_CELL_SIZE;
+    // The selected building's cell always stays full-detail so interaction,
+    // overlays and its edge silhouette never drop to the flat LOD.
+    let keepNearKey: string | null = null;
+    if (selectedId) {
+      // buildingData keys keep their original type (string OSM ids, numeric
+      // synthetic ones), so match by string form rather than Map identity.
+      let sel: BuildingPolygon | undefined;
+      for (const [k, v] of this.buildingData) {
+        if (String(k) === String(selectedId)) {
+          sel = v;
+          break;
+        }
+      }
+      if (sel) keepNearKey = this.cellKeyFor(sel.center.x, sel.center.z);
+    }
+    // Budget cell conversions per tick: the first far merge of a dense cell is
+    // real geometry work, so converting the whole city in one frame would
+    // itself stutter. 6 cells × 4 Hz sweeps the map in about a second.
+    let budget = 6;
+    for (const [cellKey, sources] of byCell) {
+      // The cell key IS a bucket of the cell grid, so its centre is derivable
+      // without recomputing per-building centroids.
+      const [cx, cz] = cellKey.split('_').map(Number);
+      const cellCx = (cx + 0.5) * s;
+      const cellCz = (cz + 0.5) * s;
+      const dx = cellCx - focus.x;
+      const dz = cellCz - focus.z;
+      const isFar = dx * dx + dz * dz > r2 && cellKey !== keepNearKey;
+      const current = this.cellDistance.get(cellKey) || 'near';
+      if (isFar && current !== 'far') {
+        if (budget <= 0) continue;
+        budget--;
+        this.rebuildCellFar(cellKey, sources);
+        this.showCellFar(cellKey, byCell);
+      } else if (!isFar && current !== 'near') {
+        this.showCellNear(cellKey, byCell);
+      }
+    }
+  }
+
+  private showCellFar(cellKey: string, byCell?: Map<string, (typeof this.lodSources)[number][]>) {
+    this.cellDistance.set(cellKey, 'far');
+    // Hide the cell's full-detail bodies/roofs/edges; show the merged flats.
+    const far = this.cellFarMeshes.get(cellKey);
+    if (far) for (const m of far) m.visible = true;
+    for (const src of (byCell || this.sourcesByCell()).get(cellKey) || []) {
+      const mesh = this.buildingMeshes.get(src.buildingId);
+      if (mesh) mesh.visible = false;
+      const roof = this.roofMeshes.get(src.buildingId);
+      if (roof) roof.visible = false;
+      const edge = this.buildingEdgeObjs.get(src.buildingId);
+      if (edge) edge.visible = false;
+    }
+  }
+
+  private showCellNear(cellKey: string, byCell?: Map<string, (typeof this.lodSources)[number][]>) {
+    this.cellDistance.set(cellKey, 'near');
+    const far = this.cellFarMeshes.get(cellKey);
+    if (far) for (const m of far) m.visible = false;
+    for (const src of (byCell || this.sourcesByCell()).get(cellKey) || []) {
+      const mesh = this.buildingMeshes.get(src.buildingId);
+      if (mesh) mesh.visible = true;
+      const roof = this.roofMeshes.get(src.buildingId);
+      if (roof) roof.visible = true;
+      const edge = this.buildingEdgeObjs.get(src.buildingId);
+      if (edge) edge.visible = true;
+    }
   }
 
   /**
@@ -1224,6 +1419,8 @@ export class BuildingRenderer {
    */
   public buildLod() {
     for (const cellKey of Array.from(this.lodCellMeshes.keys())) this.clearCellMeshes(cellKey);
+    for (const cellKey of Array.from(this.cellFarMeshes.keys())) this.clearCellFarMeshes(cellKey);
+    this.cellDistance.clear();
     this.lodCellSignatures.clear();
 
     const byCell = this.sourcesByCell();
@@ -1248,6 +1445,13 @@ export class BuildingRenderer {
     // merged distant LOD only merges OSM buildings, so their bodies inside
     // `group` used to vanish when the camera rose past the LOD switch.
     this.freestandingGroup.visible = true;
+    // The per-cell far-field meshes also live in lodGroup: in distant mode the
+    // whole-city merged meshes already cover them (else they'd double-draw),
+    // and back in detailed mode each cell resumes its distance-LOD state.
+    for (const [cellKey, meshes] of this.cellFarMeshes) {
+      const show = mode === 'detailed' && this.cellDistance.get(cellKey) === 'far';
+      for (const m of meshes) m.visible = show;
+    }
   }
 
   /**
@@ -3856,6 +4060,13 @@ export class BuildingRenderer {
     for (const roof of this.roofMeshes.values()) {
       if (!roof.visible) roof.visible = true;
     }
+    // Distance-LOD far cells also hide their bodies: reset every cell to near
+    // and re-show its flat meshes as hidden (WorldScene re-applies the far set
+    // on its next 4 Hz tick when the mode is active again).
+    for (const [cellKey, meshes] of this.cellFarMeshes) {
+      this.cellDistance.set(cellKey, 'near');
+      for (const m of meshes) m.visible = false;
+    }
   }
 
   public setVisible(visible: boolean) {
@@ -3883,6 +4094,8 @@ export class BuildingRenderer {
     this.lodSources = [];
     this.lodCellSignatures.clear();
     this.lodCellMeshes.clear();
+    this.cellFarMeshes.clear();
+    this.cellDistance.clear();
     this.lodBuilt = false;
     while (this.lodGroup.children.length > 0) {
       const c = this.lodGroup.children[0] as THREE.Mesh;

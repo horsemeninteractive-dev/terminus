@@ -25,6 +25,20 @@ Releasing:
 
 ### Fixed
 
+- **Applying settings no longer freezes the game.** The settings modal's
+  elevation toggles were both direct dependencies of the full map-rebuild
+  effect *and* wired to their own incremental setters, so one Apply could
+  kick off 2–3 synchronous full city rebuilds back-to-back (with the browser
+  declaring the page unresponsive on bigger maps). The elevation toggles now
+  go through a single combined rebuild, and only genuinely rebuild-requiring
+  settings trigger one.
+- **Pressing Play no longer hangs with zero feedback on big maps.** The
+  descent loading screen's state was set in the same click handler that then
+  synchronously built the road graph, path grid and world state — the main
+  thread blocked before the first paint, so the browser showed a frozen page
+  instead of a loader. Colony preparation now starts only after the descent
+  overlay has actually painted, and the load pipeline yields a full frame
+  between heavy stages so the loading screen stays alive throughout.
 - **Player-built structures no longer vanish when zooming out.** Freestanding
   walls, gates, towers and facilities were rendered inside the OSM-city
   group, which the camera's distant-view LOD hides entirely past ~380 m —
@@ -36,6 +50,16 @@ Releasing:
 
 ### Changed
 
+- **Real distance-based LOD for far buildings (major FPS win on Low/Medium).**
+  The old Medium/Low "distance detail cull" simply hid buildings beyond a
+  radius — pop-in skyline holes, and no help at all on High. Far cells of the
+  city now swap to merged flat-colour meshes (facade/roof albedo base colours
+  from the same procedural texture palette, no texture sampling): true LOD,
+  where the far geometry still draws — the horizon keeps its skyline — but a
+  dense cell costs a couple of draw calls instead of hundreds of textured
+  per-building ones. Conversions are budgeted per tick (≈6 cells at 4 Hz) so
+  panning doesn't stutter, and the selected building's cell always stays
+  full-detail.
 - **Two-finger vertical drag tilts the camera on mobile.** Touch had no way
   to change camera perspective: one finger pans, two fingers pinch-zoom,
   twist-rotate and pan — but pitch was desktop-only (right-drag / R-F keys /

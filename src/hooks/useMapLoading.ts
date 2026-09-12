@@ -146,6 +146,12 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
       setPendingAdaptType(null);
       setLoadingMessage('Checking local cache database...');
 
+      // Yield a full frame before any heavy synchronous work: the descent
+      // overlay state above must actually PAINT before the road graph / path
+      // grid / world generation block the main thread, or the browser shows a
+      // frozen dead page instead of a loading screen (the "Play hangs" bug).
+      await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+
       // 1. Check Cache first (unless forceLive)
       if (!forceLive) {
         try {
@@ -163,7 +169,7 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
             setIsLoading(false);
             // Yield so the loading overlay paints the new status line before the
             // (heavy) settlement prep below blocks the main thread again.
-            await new Promise((r) => setTimeout(r, 0));
+            await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
 
             setSettlement((prev) => {
               const prepared = ensureBuildingSearchStates(prev, cached.buildings, prev.scavengingResourceMultiplier);
@@ -192,7 +198,7 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
           setDescentProgress((p) => Math.max(p, 0.3));
           // Yield so the loading overlay paints the new status line before the
           // (heavy) road graph + settlement prep below blocks the main thread again.
-          await new Promise((r) => setTimeout(r, 0));
+          await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
           roadGraphRef.current = new RoadNetworkGraph(bundled.roads);
           pathGridRef.current = new PathGrid(bundled);
           setCacheSource('Bundled Offline Map');
@@ -262,7 +268,7 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
       setMapData(processed);
       setLoadingMessage('Preparing settlement & tactical grid...');
       setDescentProgress((p) => Math.max(p, 0.6));
-      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
       roadGraphRef.current = new RoadNetworkGraph(processed.roads);
       pathGridRef.current = new PathGrid(processed);
       setCacheSource(
@@ -298,7 +304,7 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
             setMapData(bundled);
             setLoadingMessage('Preparing road network & tactical grid...');
             setDescentProgress((p) => Math.max(p, 0.3));
-            await new Promise((r) => setTimeout(r, 0));
+            await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
             roadGraphRef.current = new RoadNetworkGraph(bundled.roads);
             pathGridRef.current = new PathGrid(bundled);
             setCacheSource('Bundled Offline Map');
@@ -462,8 +468,6 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
       setDescentProgress(0);
       setDescentAltitudeKm(1200);
 
-      handleConfirmSettlementPlacement(placement, preloadedMapData, scenarioSettings);
-
       const startTime = performance.now();
       const durationMs = 2400;
       descentTimerRef.current = setInterval(() => {
@@ -475,6 +479,15 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
         const alt = Math.round(1200 * Math.pow(1 - progress, 2.5));
         setDescentAltitudeKm(Math.max(1, alt));
       }, 40);
+
+      // Defer the heavy colony prep (settlement state + road graph + path grid
+      // + world generation) until the descent overlay has actually PAINTED.
+      // Running it synchronously from the click handler blocked the main
+      // thread before the first paint, so big maps showed a frozen page with
+      // zero feedback (browser "page unresponsive") instead of the loader.
+      setTimeout(() => {
+        handleConfirmSettlementPlacement(placement, preloadedMapData, scenarioSettings);
+      }, 0);
     },
     [handleConfirmSettlementPlacement, stopDescentTimer]
   );

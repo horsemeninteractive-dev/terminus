@@ -1103,38 +1103,54 @@ export class WorldScene {
   }
 
   /**
-   * Hides full-detail building bodies beyond `detailCullRadius × camera
-   * distance` from the camera focus point. Runs at 4 Hz — far cheaper than
-   * per-frame, and pop-in at the cull horizon is masked by fog + distance.
-   * Roof meshes ride along with their body; the selected/hovered building is
-   * always kept visible so interaction never breaks.
+   * Detailed-mode distance LOD: swaps far cells of the city to merged
+   * flat-colour meshes (BuildingRenderer.setDetailedDistance). Unlike the old
+   * hide-only detail cull, far geometry STILL DRAWS — it just costs a couple
+   * of draw calls per cell instead of hundreds of textured per-building ones,
+   * so the horizon keeps its skyline instead of vanishing into fog. Runs at
+   * 4 Hz with an internal per-tick conversion budget.
    */
   private applyDistanceDetailCull() {
     const mapData = this.currentMapData;
     if (!mapData || this.detailCullRadius <= 0) return;
     const focus = this.cameraController.target;
     const radius = this.cameraController.distance * this.detailCullRadius;
-    const r2 = radius * radius;
-    let anyCulled = false;
+    this.detailCullActive = true;
+    this.buildingRenderer.setDetailedDistance(
+      { x: focus.x, z: focus.z },
+      radius,
+      String(this.buildingRenderer.getSelectedId() ?? '')
+    );
+  }
 
-    for (const [id, mesh] of this.buildingRenderer.buildingMeshes) {
-      const bldg = this.buildingRenderer.getBuildingById(id);
-      if (!bldg) continue;
-      // Freestanding structures (walls, towers, facilities) are player-built
-      // gameplay objects — never distance-cull them.
-      if (mesh.userData?.isFreestanding) continue;
-      const dx = bldg.center.x - focus.x;
-      const dz = bldg.center.z - focus.z;
-      const within = dx * dx + dz * dz <= r2;
-      const keep = within || String(id) === String(this.buildingRenderer.getSelectedId());
-      if (mesh.visible !== keep) {
-        mesh.visible = keep;
-        anyCulled = true;
-      }
-      const roof = this.buildingRenderer.getRoofMesh(id);
-      if (roof && roof.visible !== keep) roof.visible = keep;
+  /**
+   * Combined elevation-settings switch so a settings-modal apply that changes
+   * both toggles rebuilds the world exactly once (each individual setter
+   * rebuilds too, and GameCanvas previously fired them on top of a full
+   * effect-driven rebuild — three full city rebuilds per Apply).
+   */
+  public setElevationSettings(disable: boolean, exaggeration: number) {
+    const disableChanged = this.disableElevation !== disable;
+    const exaggerationChanged = this.currentExaggeration !== exaggeration;
+    if (!disableChanged && !exaggerationChanged) return;
+    this.disableElevation = disable;
+    this.currentExaggeration = exaggeration;
+    if (!this.currentMapData) return;
+    if (disableChanged) {
+      const activeElevation = disable ? null : this.currentMapData.elevation;
+      this.combatRenderer.setElevation(activeElevation, this.currentExaggeration);
+      this.vehicleRenderer.setElevation(activeElevation, this.currentExaggeration);
     }
-    this.detailCullActive = anyCulled || this.detailCullActive;
+    this.loadMapData(
+      this.currentMapData,
+      this.showBuildingEdges,
+      this.currentExaggeration,
+      this.hqBuildingId,
+      this.adaptedBuildings,
+      this.freestandingBuildings,
+      this.demolishedBuildings,
+      disable
+    );
   }
 
   public setDisableElevation(disable: boolean) {
