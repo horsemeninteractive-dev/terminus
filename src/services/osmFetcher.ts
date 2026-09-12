@@ -9,6 +9,33 @@ const OVERPASS_ENDPOINTS = [
   'https://overpass.openstreetmap.ru/api/interpreter',
 ];
 
+/**
+ * Per-session cooldown for mirrors that just failed: European daytime load
+ * makes the popular mirrors return 429/504 for minutes at a time, and the old
+ * fixed order always retried the same two first — burning the survey window
+ * on known-busy mirrors. A failed mirror sits out for COOLDOWN_MS before it
+ * is tried again, so subsequent attempts start with the mirrors that work
+ * right now. In-memory only; each fresh page load starts clean.
+ */
+const MIRROR_COOLDOWN_MS = 90_000;
+const mirrorCooldowns = new Map<string, number>();
+
+function availableEndpoints(): string[] {
+  const now = Date.now();
+  const available = OVERPASS_ENDPOINTS.filter((e) => (mirrorCooldowns.get(e) ?? 0) <= now);
+  // All mirrors cooling down (rapid consecutive surveys): keep the fixed order
+  // rather than returning nothing — a busy mirror sometimes still answers.
+  return available.length > 0 ? available : OVERPASS_ENDPOINTS;
+}
+
+function markMirrorFailed(endpoint: string): void {
+  mirrorCooldowns.set(endpoint, Date.now() + MIRROR_COOLDOWN_MS);
+}
+
+function markMirrorOk(endpoint: string): void {
+  mirrorCooldowns.delete(endpoint);
+}
+
 export interface RawOsmResponse {
   version: number;
   generator: string;
@@ -99,9 +126,10 @@ export async function fetchFromOverpass(
   }
 
   const query = buildOverpassQuery(center.lat, center.lon, radius);
+  const endpoints = availableEndpoints();
   let lastError: Error | null = null;
 
-  for (const endpoint of OVERPASS_ENDPOINTS) {
+  for (const endpoint of endpoints) {
     if (signal?.aborted) {
       const abortErr = new Error('Operation aborted');
       abortErr.name = 'AbortError';
@@ -154,6 +182,7 @@ export async function fetchFromOverpass(
         }
       }
 
+      markMirrorOk(endpoint);
       return data;
     } catch (err: unknown) {
       // Only a genuine parent abort (user navigated away) stops the chain here.
@@ -166,7 +195,8 @@ export async function fetchFromOverpass(
         throw abortErr;
       }
 
-      // Quietly record error and proceed to next mirror
+      // Quietly record error, cool the mirror down, and proceed to next mirror
+      markMirrorFailed(endpoint);
       lastError = err instanceof Error ? err : new Error(String(err));
     } finally {
       if (timeoutId) clearTimeout(timeoutId);

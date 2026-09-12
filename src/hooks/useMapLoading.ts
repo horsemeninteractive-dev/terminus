@@ -229,7 +229,11 @@ export function useMapLoading(runtime: MapLoadingRuntime) {
       const deadline = new Promise<never>((_, reject) => {
         deadlineId = setTimeout(
           () => reject(new Error('Live map survey timed out.')),
-          60000
+          // Must exceed the worst-case mirror chain: 6 mirrors × 25s timeout
+          // each. The old 60s deadline only ever let the first two mirrors
+          // answer, so busy European-daytime Overpass load failed the whole
+          // survey even though later mirrors would have succeeded.
+          170000
         );
       });
 

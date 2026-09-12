@@ -21,6 +21,24 @@ Releasing:
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Daytime map searches no longer fail so easily.** Live map surveys hit
+  the volunteer-run Overpass mirrors, which are heavily loaded during
+  European daytime and routinely return 429/504 — while late evening and
+  night queries sail through. Two code limits made that worse: the survey's
+  60 s global deadline could only ever let the **first two** of the six
+  configured mirrors answer (each mirror gets a 25 s timeout), and the fixed
+  mirror order always retried the same busy mirrors first. The deadline now
+  covers the full mirror chain (6 × 25 s) and a failed mirror sits out for
+  90 s in a per-session cooldown, so later attempts start with the mirrors
+  that are actually responding. Busy-mirror fetches take longer to complete
+  rather than failing outright.
+
+---
+
 ## [0.3.4] – 2026-09-12
 
 ### Fixed
