@@ -34,9 +34,10 @@ import {
 import { IFZ_IMAGES } from '../assets/images';
 import { GeoPoint, MapData, Point2D, SettlementPlacement, ZoneGridSize } from '../types/map';
 import { fetchFromOverpass } from '../services/osmFetcher';
-import { cropMapDataToGrid, processOsmData } from '../services/mapProcessor';
+import { cropMapDataToGrid, processOsmData, recenterMapDataToGrid } from '../services/mapProcessor';
 import { fetchElevationGrid } from '../services/elevationService';
 import { getBundledMapData } from '../services/bundledMapData';
+import { metersToLatLon } from '../services/projection';
 
 interface StreetViewSelectorProps {
   selectedLocation: GeoPoint;
@@ -150,6 +151,15 @@ export const StreetViewSelector: React.FC<StreetViewSelectorProps> = ({
   const [mapError, setMapError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState<number>(0);
 
+  // Aborts the in-flight Overpass/elevation fetches when the player cancels
+  // loading or leaves this screen.
+  const mapFetchAbortRef = useRef<AbortController | null>(null);
+
+  const handleCancelMapLoad = useCallback(() => {
+    mapFetchAbortRef.current?.abort();
+    onBackToGlobe();
+  }, [onBackToGlobe]);
+
   // Live telemetry counts based on grid position
   const [telemetry, setTelemetry] = useState({
     allBuildings: 0,
@@ -174,6 +184,8 @@ export const StreetViewSelector: React.FC<StreetViewSelectorProps> = ({
     setLoadedMapData(null);
 
     const loadRealCityMap = async () => {
+      const controller = new AbortController();
+      mapFetchAbortRef.current = controller;
       try {
         const bundled = await getBundledMapData(selectedLocation.lat, selectedLocation.lon);
         if (isCancelled) return;
@@ -183,12 +195,12 @@ export const StreetViewSelector: React.FC<StreetViewSelectorProps> = ({
           return;
         }
 
-        const rawOsm = await fetchFromOverpass(selectedLocation, 4000);
+        const rawOsm = await fetchFromOverpass(selectedLocation, 4000, controller.signal);
         if (isCancelled) return;
 
         let elevation = null;
         try {
-          elevation = await fetchElevationGrid(selectedLocation, 4000, 16);
+          elevation = await fetchElevationGrid(selectedLocation, 4000, 16, controller.signal);
         } catch {
           elevation = null;
         }
@@ -210,6 +222,8 @@ export const StreetViewSelector: React.FC<StreetViewSelectorProps> = ({
           setMapFeatures(toStreetFeatures(processed));
         }
       } catch (err: any) {
+        // A user-cancelled fetch is not an error: the screen is being left.
+        if (err?.name === 'AbortError' || err?.message?.includes('aborted')) return;
         if (!isCancelled) {
           const msg =
             err instanceof Error && err.message
@@ -228,6 +242,7 @@ export const StreetViewSelector: React.FC<StreetViewSelectorProps> = ({
 
     return () => {
       isCancelled = true;
+      mapFetchAbortRef.current?.abort();
     };
   }, [selectedLocation.lat, selectedLocation.lon, cityName, reloadKey]);
 
@@ -566,7 +581,24 @@ export const StreetViewSelector: React.FC<StreetViewSelectorProps> = ({
       maxZ: gridOffsetMeters.z + expeditionHalfMeters,
     };
 
-    const preservedMap = loadedMapData ? cropMapDataToGrid(loadedMapData, expeditionBounds) : null;
+    // Geographic center of the dragged grid: gridOffsetMeters is the grid
+    // center's displacement from the city center in projected meters.
+    const playCenter = metersToLatLon(
+      gridOffsetMeters.x,
+      gridOffsetMeters.z,
+      selectedLocation.lat,
+      selectedLocation.lon
+    );
+
+    // Crop the downloaded map to the dragged grid area, then recenter it so the
+    // played grid — not the city download center — is world origin. This keeps
+    // the satellite layer (projected from mapData.center) covering the actual
+    // play area instead of the original city center.
+    const croppedMap = loadedMapData ? cropMapDataToGrid(loadedMapData, expeditionBounds) : null;
+    const preservedMap =
+      croppedMap && (gridOffsetMeters.x !== 0 || gridOffsetMeters.z !== 0)
+        ? recenterMapDataToGrid(croppedMap, gridOffsetMeters, playCenter.lat, playCenter.lon)
+        : croppedMap;
 
     const finalPlacement: SettlementPlacement = {
       center: selectedLocation,
@@ -724,6 +756,12 @@ export const StreetViewSelector: React.FC<StreetViewSelectorProps> = ({
           <div className="text-[11px] font-tech text-[#8C9BAE] max-w-md text-center">
             Downloading streets, buildings and terrain from OpenStreetMap (Overpass API).
           </div>
+          <button
+            onClick={handleCancelMapLoad}
+            className="mt-2 px-6 py-2 bg-[#14171C]/95 hover:bg-[#1A2634] border border-[#262F3D] hover:border-[#8C9BAE] text-[#E8E8E8] hover:text-white text-xs font-heading uppercase tracking-wider transition-colors clip-tactical-bracket surface-bevel"
+          >
+            CANCEL — BACK TO GLOBE
+          </button>
         </div>
       )}
 

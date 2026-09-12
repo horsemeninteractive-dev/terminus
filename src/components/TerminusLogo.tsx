@@ -83,14 +83,14 @@ export const TerminusLogo: React.FC<TerminusLogoProps> = ({
   const fontSizes = {
     sm: 'text-3xl md:text-4xl',
     md: 'text-5xl md:text-6xl',
-    lg: 'text-6xl md:text-7xl',
+    lg: 'text-5xl md:text-7xl',
     xl: 'text-7xl sm:text-8xl md:text-9xl',
   };
 
   const skullSizes = {
     sm: 'w-6 h-6',
     md: 'w-10 h-10 md:w-12 md:h-12',
-    lg: 'w-12 h-12 md:w-16 md:h-16',
+    lg: 'w-10 h-10 md:w-16 md:h-16',
     xl: 'w-16 h-16 sm:w-20 sm:h-20 md:w-28 md:h-28',
   };
 
@@ -150,7 +150,11 @@ export const TerminusLogo: React.FC<TerminusLogoProps> = ({
       {showSubtitle && (
         <div
           className={`mt-2.5 md:mt-3 ${
-            className.includes('items-start') ? 'self-start' : 'self-center text-center'
+            className.includes('md:items-start')
+              ? 'self-center text-center md:self-start md:text-left'
+              : className.includes('items-start')
+                ? 'self-start'
+                : 'self-center text-center'
           }`}
         >
           <div

@@ -8,11 +8,18 @@ import {
 } from './realisticTextures';
 
 /** Deck height above the terrain surface for bridge spans (metres). */
-const BRIDGE_DECK_RISE = 1.6;
+const BRIDGE_DECK_RISE = 2.0;
 /** Ramp length (metres) at each end of a bridge span easing road→deck height. */
-const BRIDGE_RAMP_LEN = 10;
-/** Railings sit this far above the deck. */
+const BRIDGE_RAMP_LEN = 12;
+/** Total railing height above the deck surface. */
 const BRIDGE_RAILING_H = 1.1;
+/** Slim edge-beam (fascia) depth under the deck edges — the old full-height
+ * skirt hang turned the whole span into a solid grey box girder. */
+const BRIDGE_FASCIA_H = 0.45;
+/** Height of the under-deck arch ribs at their crest. */
+const BRIDGE_ARCH_RISE = 1.0;
+/** Spacing between the pickets of the open railing (metres). */
+const BRIDGE_BALUSTER_STRIDE = 2.6;
 /** Support piers reach this far below the deck into the riverbed. */
 const BRIDGE_PIER_DEPTH = 2.5;
 
@@ -178,11 +185,11 @@ export class RoadRenderer {
     depthWrite: true,
   });
 
-  // Bridge parapets: warm concrete, slightly lighter than asphalt.
+  // Bridge railings: painted-steel posts and rails, lighter than the asphalt.
   private bridgeRailingMaterial = new THREE.MeshStandardMaterial({
-    color: 0x9aa0a8,
-    roughness: 0.85,
-    metalness: 0.05,
+    color: 0xc2c7cf,
+    roughness: 0.55,
+    metalness: 0.35,
     side: THREE.DoubleSide,
   });
 
@@ -553,12 +560,18 @@ export class RoadRenderer {
       const markingUvs: number[] = [];
       const markingIndices: number[] = [];
 
-      // Bridge geometry (railings + support piers) — only built for spans that
-      // actually cross water, so ordinary roads pay nothing.
+      // Bridge geometry (railings, arches, support piers) — only built for
+      // spans that actually cross water, so ordinary roads pay nothing.
       const railingVertices: number[] = [];
       const railingIndices: number[] = [];
       const pierVertices: number[] = [];
       const pierIndices: number[] = [];
+      /** Lifted slices, in order — consumed after the loop to lay out the open
+       * balustrade and the under-deck arches along the span. */
+      const liftedSlices: {
+        cx: number; cz: number; lx: number; lz: number; rx: number; rz: number;
+        surfaceY: number; dist: number;
+      }[] = [];
 
       // Tight, snug vertical offsets above terrain
       const yOffset = isPedestrian ? 0.05 : 0.08;
@@ -576,10 +589,6 @@ export class RoadRenderer {
       // Track curb state per slice
       const leftCurbClear: boolean[] = [];
       const rightCurbClear: boolean[] = [];
-      // Bridge tracking: which slices are lifted onto the deck, and the index
-      // of each lifted slice's vertices within railingVertices (4 verts each).
-      const sliceWasLifted: boolean[] = [];
-      const liftSliceIdx: number[] = [];
 
       let accumulatedDistance = 0;
 
@@ -647,18 +656,29 @@ export class RoadRenderer {
         const leftOverlapsRoad = isPointInOtherRoad({ x: leftX, z: leftZ }, rIdx);
         const rightOverlapsRoad = isPointInOtherRoad({ x: rightX, z: rightZ }, rIdx);
 
-        const isLeftCurbActive = !isPedestrian && !inJunctionZone && !leftOverlapsRoad;
-        const isRightCurbActive = !isPedestrian && !inJunctionZone && !rightOverlapsRoad;
+        // Curbs are suppressed on the bridge itself — a curb quad would else
+        // stretch from the riverbed up to the deck edge, another solid wall.
+        const isLeftCurbActive = !isPedestrian && !inJunctionZone && !leftOverlapsRoad && deckRise <= 0.05;
+        const isRightCurbActive = !isPedestrian && !inJunctionZone && !rightOverlapsRoad && deckRise <= 0.05;
 
         leftCurbClear.push(isLeftCurbActive);
         rightCurbClear.push(isRightCurbActive);
 
         // Skirts drop below terrain only on true outer boundaries (not inside overlapping junctions)
-        // On a bridge the skirt hangs from the deck down to the terrain — the
-        // raised deck's underside reads as a solid box girder, not a floating
-        // ribbon.
-        const leftSkirtY = leftOverlapsRoad || inJunctionZone ? leftSurfaceY : Math.min(leftSurfaceY - skirtDepth, leftTerrainY - skirtDepth);
-        const rightSkirtY = rightOverlapsRoad || inJunctionZone ? rightSurfaceY : Math.min(rightSurfaceY - skirtDepth, rightTerrainY - skirtDepth);
+        // On a bridge the skirt is only a slim fascia below the deck edge, so
+        // water stays visible beneath the span instead of the deck reading as
+        // a solid box down to the riverbed.
+        const onBridgeEdge = deckRise > 0.05;
+        const leftSkirtY = leftOverlapsRoad || inJunctionZone
+          ? leftSurfaceY
+          : onBridgeEdge
+            ? leftSurfaceY - BRIDGE_FASCIA_H
+            : Math.min(leftSurfaceY - skirtDepth, leftTerrainY - skirtDepth);
+        const rightSkirtY = rightOverlapsRoad || inJunctionZone
+          ? rightSurfaceY
+          : onBridgeEdge
+            ? rightSurfaceY - BRIDGE_FASCIA_H
+            : Math.min(rightSurfaceY - skirtDepth, rightTerrainY - skirtDepth);
 
         // 5 vertices per cross section:
         // 0: Left Skirt Bottom
@@ -765,29 +785,12 @@ export class RoadRenderer {
             }
           }
 
-          // Railing quads between consecutive lifted slices. Railing verts are
-          // stored per lifted slice in order — the last two lifted slices pair
-          // up; a slice is "lifted" when it emitted verts this iteration.
-          if (sliceWasLifted[i] && sliceWasLifted[i + 1]) {
-            const li = liftSliceIdx[i];
-            const li1 = liftSliceIdx[i + 1];
-            if (li >= 0 && li1 >= 0) {
-              const a = li * 4;
-              const b = li1 * 4;
-              // Left parapet (double-sided via reversed pair) and right.
-              railingIndices.push(a, b, a + 1, a + 1, b, b + 1);
-              railingIndices.push(a + 2, a + 3, b + 2, a + 3, b + 3, b + 2);
-            }
-          }
         }
 
-        // BRIDGE RAILINGS: parapet walls along both deck edges wherever the
-        // road is lifted (deck rise > 0.3 m — i.e. genuinely on the bridge).
-        // 4 verts per lifted slice (left pair, right pair); quads are emitted
-        // between consecutive lifted slices in the inter-slice block below.
+        // BRIDGE: this slice is genuinely on the span (deck rise > 0.3 m).
+        // Record it for the post-loop balustrade/arch layout and keep feeding
+        // the vehicle deck sampler.
         if (deckRise > 0.3) {
-          sliceWasLifted[i] = true;
-          liftSliceIdx[i] = railingVertices.length / 12;
           // Deck sample for the vehicle renderer: centre of the slice, deck
           // surface Y, corridor half-width (slightly wider than the road so a
           // truck on the edge still reads as on-deck).
@@ -800,17 +803,14 @@ export class RoadRenderer {
             this.deckGrid.set(dk, bucket);
           }
           bucket.push(deckIdx);
-          const railTopL = leftSurfaceY + BRIDGE_RAILING_H;
-          const railTopR = rightSurfaceY + BRIDGE_RAILING_H;
-          railingVertices.push(
-            leftX, leftSurfaceY, leftZ,
-            leftX, railTopL, leftZ,
-            rightX, rightSurfaceY, rightZ,
-            rightX, railTopR, rightZ
-          );
-          // Support piers every ~14 m of deck length: box columns from the
-          // deck underside down into the riverbed.
-          const pierStride = 14;
+          liftedSlices.push({
+            cx: pts[i].x, cz: pts[i].z,
+            lx: leftX, lz: leftZ, rx: rightX, rz: rightZ,
+            surfaceY: centerSurfaceY, dist: accumulatedDistance,
+          });
+          // Support piers every ~20 m of deck length: slim box columns from
+          // just under the deck fascia down into the riverbed.
+          const pierStride = 20;
           const segLen = i > 0 ? Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z) : 0;
           const prevAccum = accumulatedDistance - segLen;
           if (i > 0 && i < pts.length - 1 && Math.floor(accumulatedDistance / pierStride) > Math.floor(prevAccum / pierStride)) {
@@ -818,12 +818,13 @@ export class RoadRenderer {
               const bx = pts[i].x + nx * sgn * halfW * 0.7;
               const bz = pts[i].z + nz * sgn * halfW * 0.7;
               const baseY = this.terrainY(elevation, bx, bz, exaggeration) - BRIDGE_PIER_DEPTH;
-              const w = Math.max(0.8, width * 0.12);
+              const w = Math.max(0.55, width * 0.09);
+              const pierTop = centerSurfaceY - BRIDGE_FASCIA_H;
               const base = pierVertices.length / 3;
               // Box pier: 8 corners (4 bottom, 4 top).
               pierVertices.push(
                 bx - w, baseY, bz - w, bx + w, baseY, bz - w, bx + w, baseY, bz + w, bx - w, baseY, bz + w,
-                bx - w, centerSurfaceY, bz - w, bx + w, centerSurfaceY, bz - w, bx + w, centerSurfaceY, bz + w, bx - w, centerSurfaceY, bz + w
+                bx - w, pierTop, bz - w, bx + w, pierTop, bz - w, bx + w, pierTop, bz + w, bx - w, pierTop, bz + w
               );
               // Sides (skip top/bottom faces — hidden by deck and riverbed).
               for (let q = 0; q < 4; q++) {
@@ -831,6 +832,73 @@ export class RoadRenderer {
                 const b1 = base + ((q + 1) % 4);
                 pierIndices.push(b0, b0 + 4, b1, b1, b0 + 4, b1 + 4);
               }
+            }
+          }
+        }
+      }
+
+      // BRIDGE DRESSING — laid out after the main loop now that every lifted
+      // slice of the span is known:
+      //  • an OPEN balustrade (two horizontal rails + slim pickets) instead of
+      //    the old solid parapet wall,
+      //  • arch ribs under the deck between supports for a classic span look.
+      if (liftedSlices.length >= 2) {
+        const firstDist = liftedSlices[0].dist;
+        const span = Math.max(1, liftedSlices[liftedSlices.length - 1].dist - firstDist);
+        const archCount = Math.min(6, Math.max(1, Math.round(span / 18)));
+
+        for (let s = 0; s < liftedSlices.length; s++) {
+          const p = liftedSlices[s];
+          const base = railingVertices.length / 3;
+
+          // Rail bands: per edge a lower bar (0.12–0.30) and a top bar
+          // (0.82–BRIDGE_RAILING_H). Quads pair with the previous slice.
+          railingVertices.push(
+            p.lx, p.surfaceY + 0.12, p.lz, p.lx, p.surfaceY + 0.30, p.lz,
+            p.lx, p.surfaceY + 0.82, p.lz, p.lx, p.surfaceY + BRIDGE_RAILING_H, p.lz,
+            p.rx, p.surfaceY + 0.12, p.rz, p.rx, p.surfaceY + 0.30, p.rz,
+            p.rx, p.surfaceY + 0.82, p.rz, p.rx, p.surfaceY + BRIDGE_RAILING_H, p.rz
+          );
+          if (s > 0) {
+            const prev = base - 8;
+            for (const pair of [[0, 1], [2, 3], [4, 5], [6, 7]]) {
+              railingIndices.push(
+                prev + pair[0], base + pair[0], prev + pair[1],
+                prev + pair[1], base + pair[0], base + pair[1]
+              );
+            }
+          }
+
+          // Pickets every ~2.6 m: slim vertical quads on both edges.
+          if (s === 0 || p.dist - liftedSlices[s - 1].dist >= BRIDGE_BALUSTER_STRIDE) {
+            const n = liftedSlices[s + 1] ?? liftedSlices[s - 1];
+            let tx = n.cx - p.cx;
+            let tz = n.cz - p.cz;
+            const tl = Math.hypot(tx, tz) || 1;
+            tx /= tl;
+            tz /= tl;
+            for (const [ex, ez] of [[p.lx, p.lz], [p.rx, p.rz]]) {
+              const bv = railingVertices.length / 3;
+              railingVertices.push(
+                ex - tx * 0.045, p.surfaceY + 0.06, ez - tz * 0.045,
+                ex + tx * 0.045, p.surfaceY + 0.06, ez + tz * 0.045,
+                ex - tx * 0.045, p.surfaceY + BRIDGE_RAILING_H - 0.08, ez - tz * 0.045,
+                ex + tx * 0.045, p.surfaceY + BRIDGE_RAILING_H - 0.08, ez + tz * 0.045
+              );
+              railingIndices.push(bv, bv + 2, bv + 1, bv + 1, bv + 2, bv + 3);
+            }
+          }
+
+          // Arch ribs: vertical bands under each deck edge. Height follows a
+          // repeated sine arc — zero at the supports, crest mid-span.
+          const t = (p.dist - firstDist) / span;
+          const arch = Math.abs(Math.sin(Math.PI * archCount * t)) * BRIDGE_ARCH_RISE;
+          const topY = p.surfaceY - BRIDGE_FASCIA_H - 0.03;
+          for (const [ex, ez] of [[p.lx, p.lz], [p.rx, p.rz]]) {
+            const av = pierVertices.length / 3;
+            pierVertices.push(ex, topY, ez, ex, topY - arch, ez);
+            if (s > 0) {
+              pierIndices.push(av - 2, av, av - 1, av - 1, av, av + 1);
             }
           }
         }

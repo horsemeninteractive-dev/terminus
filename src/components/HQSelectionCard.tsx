@@ -14,7 +14,7 @@ export const HQSelectionCard: React.FC<HQSelectionCardProps> = ({
   return (
     <div
       id="hq-selection-card"
-      className="fixed bottom-4 md:bottom-11 left-1/2 -translate-x-1/2 z-40 pointer-events-auto w-[calc(100%-31rem)] min-w-[360px] max-w-3xl select-none"
+      className="fixed bottom-16 sm:bottom-20 md:bottom-11 left-1/2 -translate-x-1/2 z-40 pointer-events-auto w-[calc(100%-31rem)] min-w-[360px] max-w-3xl select-none"
     >
       {selectedBuilding ? (
         <button

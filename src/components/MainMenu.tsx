@@ -367,8 +367,8 @@ export const MainMenu: React.FC<MainMenuProps> = ({
  <div className="absolute inset-0 bg-gradient-to-r from-[#0A0A0A]/90 via-[#0A0A0A]/55 to-transparent pointer-events-none" />
  <div className="absolute inset-0 bg-gradient-to-t from-[#0A0A0A]/75 via-transparent to-[#0A0A0A]/60 pointer-events-none" />
 
- {/* 2. Top Right Telemetry Bar */}
- <div className="absolute top-4 right-6 z-30 flex items-center gap-3">
+ {/* 2. Top Left: Version + Changelog Alert */}
+ <div className="absolute top-3 left-4 sm:top-4 sm:left-6 z-30 flex items-center gap-3">
  <span className="text-xs font-tech font-bold tracking-widest text-[#E8E8E8]">        VER {typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''} BETA+
  </span>
 
@@ -381,7 +381,10 @@ export const MainMenu: React.FC<MainMenuProps> = ({
  !
  </button>
 
- {/* Roadmap button */}
+ </div>
+
+ {/* Top Right: Roadmap Button */}
+ <div className="absolute top-3 right-4 sm:top-4 sm:right-6 z-30">
  <button
  onClick={() => setActiveExtrasModal('roadmap')}
  className="px-4 py-1.5 bg-[#0E1013]/90 hover:bg-[#14171C] border border-[#262F3D] hover:border-[#E8E8E8] text-[#E8E8E8] hover:text-white font-heading text-xs uppercase tracking-widest transition-colors clip-tactical-bracket surface-bevel"
@@ -390,15 +393,19 @@ export const MainMenu: React.FC<MainMenuProps> = ({
  </button>
  </div>
 
- {/* 3. Left Navigation Menu */}
- <div className="relative z-20 h-full flex flex-col justify-between p-8 md:p-12 w-full max-w-sm">
+ {/* 3. Navigation Menu — horizontally centered on mobile, left-anchored on desktop */}
+ <div className="relative z-20 h-full flex flex-col justify-between items-center md:items-start px-6 py-6 sm:px-8 sm:py-8 md:p-12 w-full max-w-sm mx-auto md:mx-0">
+ {/* Top rhythm spacer — clears the telemetry row and participates in the
+      justify-between distribution so the telemetry→logo, logo→menu and
+      menu→bottom gaps all come out equal. */}
+ <div aria-hidden className="h-10 shrink-0 sm:h-12 md:h-2" />
  {/* Terminus Title Logo */}
  <div className="pt-2">
- <TerminusLogo size="lg" showSubtitle={true} className="items-start" />
+ <TerminusLogo size="lg" showSubtitle={true} className="items-center md:items-start" />
  </div>
 
  {/* Vertical Menu Buttons */}
- <nav className="flex flex-col gap-1.5 my-auto w-64 md:w-72">
+ <nav className="flex flex-col gap-1.5 w-64 md:w-72">
  {/* CONTINUE GAME */}
  <button
  onClick={() => {
@@ -472,8 +479,15 @@ export const MainMenu: React.FC<MainMenuProps> = ({
  </button>
  </nav>
 
- {/* Bottom Left: Screaming Zombie Portrait & SEND FEEDBACK */}
- <div className="pt-4 flex items-end gap-0">
+ {/* Bottom rhythm spacer — reserves room for the corner overlays so the
+      menu→bottom-section gap matches the gaps above. */}
+ <div aria-hidden className="h-28 shrink-0" />
+ </div>
+
+ {/* 3b. Bottom Left: Screaming Zombie Portrait & SEND FEEDBACK — pinned to the
+      bottom-left corner, mirroring the social links' bottom-right corner:
+      identical 24px bottom/left insets at every breakpoint. */}
+ <div className="absolute bottom-6 left-6 z-30 flex items-end gap-0">
  <div className="relative w-20 h-24 overflow-hidden border border-[#B31217]/80 bg-[#0A0A0A] surface-bevel">
  <img
  src={IFZ_IMAGES.infectedFace}
@@ -493,7 +507,6 @@ export const MainMenu: React.FC<MainMenuProps> = ({
  <span className="pl-1">SEND FEEDBACK</span>
  <span className="text-white font-bold text-sm">»</span>
  </button>
- </div>
  </div>
 
  {/* 4. Extras Submenu Column Flyout */}
@@ -549,13 +562,15 @@ export const MainMenu: React.FC<MainMenuProps> = ({
  </div>
  )}
 
- {/* 5. Bottom Right Social Links */}
+ {/* 5. Bottom Right Social Links — corner-mirrors the feedback block (same
+      24px bottom/right insets); slightly narrower on mobile so both corner
+      blocks fit side by side on phone-width screens. */}
  <div className="absolute bottom-6 right-6 z-20 flex flex-col gap-2.5">
  <a
  href="https://facebook.com"
  target="_blank"
  rel="noopener noreferrer"
- className="group flex items-center justify-between gap-3 px-4 py-2 bg-[#0E1013]/90 hover:bg-[#14171C] border border-[#262F3D] hover:border-[#B31217] text-xs font-heading tracking-wider text-[#E8E8E8] transition-all clip-tactical-bracket surface-bevel w-44"
+ className="group flex items-center justify-between gap-3 px-4 py-2 bg-[#0E1013]/90 hover:bg-[#14171C] border border-[#262F3D] hover:border-[#B31217] text-xs font-heading tracking-wider text-[#E8E8E8] transition-all clip-tactical-bracket surface-bevel w-36 sm:w-44"
  >
  <span className="group-hover:text-[#EF4444]">FACEBOOK</span>
  <div className="w-5 h-5 bg-[#B31217] group-hover:bg-[#EF4444] flex items-center justify-center text-white font-bold text-xs clip-card-chip">
@@ -567,7 +582,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
  href="https://discord.com"
  target="_blank"
  rel="noopener noreferrer"
- className="group flex items-center justify-between gap-3 px-4 py-2 bg-[#0E1013]/90 hover:bg-[#14171C] border border-[#262F3D] hover:border-[#B31217] text-xs font-heading tracking-wider text-[#E8E8E8] transition-all clip-tactical-bracket surface-bevel w-44"
+ className="group flex items-center justify-between gap-3 px-4 py-2 bg-[#0E1013]/90 hover:bg-[#14171C] border border-[#262F3D] hover:border-[#B31217] text-xs font-heading tracking-wider text-[#E8E8E8] transition-all clip-tactical-bracket surface-bevel w-36 sm:w-44"
  >
  <span className="group-hover:text-[#EF4444]">DISCORD</span>
  <div className="w-5 h-5 bg-[#B31217] group-hover:bg-[#EF4444] flex items-center justify-center text-white font-bold text-xs clip-card-chip">

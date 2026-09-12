@@ -1,5 +1,5 @@
 import React from 'react';
-import { Footprints, Car, Plus, Crosshair, Shield } from 'lucide-react';
+import { Footprints, Car, Plus, Crosshair, Shield, Radio } from 'lucide-react';
 import { TacticalSquadUnit, getWeaponDefinition } from '../types/combat';
 import { soundEngine } from '../services/soundService';
 
@@ -12,6 +12,10 @@ interface TacticalSquadSelectorStripProps {
   /** A tutorial/mission task is asking the player to muster a squad — the
    *  '+' button glows so the player knows exactly what to press. */
   highlightMuster?: boolean;
+  /** Expeditions (§IFZ) — off-map scavenging via the Antenna. Rendered above
+   *  the muster '+' and only once an operational Antenna exists. */
+  onOpenExpeditionModal?: () => void;
+  antennaOperational?: boolean;
 }
 
 export const TacticalSquadSelectorStrip: React.FC<TacticalSquadSelectorStripProps> = ({
@@ -21,6 +25,8 @@ export const TacticalSquadSelectorStrip: React.FC<TacticalSquadSelectorStripProp
   onCreateSquad,
   onPanToSquad,
   highlightMuster = false,
+  onOpenExpeditionModal,
+  antennaOperational = false,
 }) => {
   const handleSquadClick = (squad: TacticalSquadUnit) => {
     soundEngine.playRadioChirp();
@@ -44,6 +50,23 @@ export const TacticalSquadSelectorStrip: React.FC<TacticalSquadSelectorStripProp
         selectedSquadId ? 'hidden sm:flex' : 'flex'
       }`}
     >
+      {/* Expeditions (§IFZ) — off-map scavenging areas. Only shown once an
+          operational Antenna exists; hidden entirely instead of greyed out so
+          the strip stays clean before the feature unlocks. */}
+      {onOpenExpeditionModal && antennaOperational && (
+        <button
+          id="expeditions-btn"
+          onClick={() => {
+            soundEngine.playClick();
+            onOpenExpeditionModal();
+          }}
+          title="Expeditions — off-map scavenging areas (Antenna)"
+          className="w-10 h-10 min-w-[40px] min-h-[40px] border flex items-center justify-center transition-all group self-start touch-manipulation active:scale-95 bg-[#0A0D12]/95 hover:bg-[#1E1430] border-[#2D3B4E] hover:border-[#A78BFA] text-[#A78BFA]"
+        >
+          <Radio className="w-4 h-4" />
+        </button>
+      )}
+
       {/* Form Squad Button — square '+' with a dotted add-box */}
       {onCreateSquad && squads.length < 8 && (
         <button

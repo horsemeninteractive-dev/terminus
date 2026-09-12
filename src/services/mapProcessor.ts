@@ -1241,6 +1241,84 @@ export function processOsmData(
  * Accurately clips and crops MapData (buildings, roads, landuse, resource nodes)
  * strictly into the defined grid boundary rectangle.
  */
+/**
+ * Recenter a cropped play-area map so the played grid is the world origin and
+ * `center` is the grid's true geographic center.
+ *
+ * StreetViewSelector crops the downloaded city map around the dragged grid, but
+ * the geometry keeps city-relative coordinates and `center` keeps the original
+ * city coordinates. Downstream, the satellite layer projects imagery around
+ * `center` — i.e. around the download center, not the actual play area — so
+ * imagery covers the wrong ground and is cut off wherever the grid was dragged
+ * away from the city center. Shifting every coordinate by -offset AND moving
+ * `center` to the grid's real lat/lon makes world origin == grid center, so
+ * satellite coverage, terrain sampling and elevation all line up with the
+ * played area.
+ */
+export function recenterMapDataToGrid(
+  mapData: MapData,
+  offsetMeters: Point2D,
+  centerLat: number,
+  centerLon: number
+): MapData {
+  const shift = (p: Point2D): Point2D => ({ x: p.x - offsetMeters.x, z: p.z - offsetMeters.z });
+
+  const buildings = mapData.buildings.map((b) => ({
+    ...b,
+    center: shift(b.center),
+    polygon: b.polygon.map(shift),
+  }));
+
+  const roads = mapData.roads.map((r) => ({
+    ...r,
+    points: r.points.map(shift),
+  }));
+
+  const landuse = mapData.landuse.map((l) => ({
+    ...l,
+    polygon: l.polygon.map(shift),
+  }));
+
+  const resourceNodes = mapData.resourceNodes.map((n) => ({
+    ...n,
+    position: shift(n.position),
+  }));
+
+  // Elevation samples cover the full downloaded square; keep its bounds aligned
+  // with the shifted world so sampleElevation maps (x,z) to the same terrain.
+  const elevation: ElevationGrid | undefined = mapData.elevation
+    ? {
+        ...mapData.elevation,
+        bounds: {
+          minX: mapData.elevation.bounds.minX - offsetMeters.x,
+          maxX: mapData.elevation.bounds.maxX - offsetMeters.x,
+          minZ: mapData.elevation.bounds.minZ - offsetMeters.z,
+          maxZ: mapData.elevation.bounds.maxZ - offsetMeters.z,
+        },
+      }
+    : undefined;
+
+  // Grow the old bounds by the offset (they were already cropped around the
+  // grid, so shifting them by -offset re-centers them on the new origin).
+  const bounds = {
+    minX: mapData.bounds.minX - offsetMeters.x,
+    maxX: mapData.bounds.maxX - offsetMeters.x,
+    minZ: mapData.bounds.minZ - offsetMeters.z,
+    maxZ: mapData.bounds.maxZ - offsetMeters.z,
+  };
+
+  return {
+    ...mapData,
+    center: { lat: centerLat, lon: centerLon },
+    bounds,
+    elevation: elevation ?? mapData.elevation,
+    buildings,
+    roads,
+    landuse,
+    resourceNodes,
+  };
+}
+
 export function cropMapDataToGrid(
   mapData: MapData,
   bounds: { minX: number; maxX: number; minZ: number; maxZ: number }

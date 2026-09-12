@@ -21,6 +21,58 @@ Releasing:
 
 ---
 
+## [0.3.2] – 2026-09-12
+
+### Added
+
+- **Satellite imagery follows the played grid.** Downloaded maps cropped
+  around a dragged grid kept city-relative coordinates and the original city
+  center, so satellite layers projected imagery around the download center —
+  covering ground the player wasn't on and cutting off where they were. The
+  cropped map is now recentered (`recenterMapDataToGrid`): every building,
+  road, landuse and resource coordinate shifts by the grid offset and `center`
+  moves to the grid's real geographic position, so satellite coverage,
+  elevation sampling and terrain all align with the actual play area.
+
+### Fixed
+
+- **Map loading can be cancelled.** Fetching a real-city map (Overpass +
+  elevation) had no way back — leaving the selector mid-load was the only
+  escape. The fetches now run under an abort controller: a cancel goes
+  straight back to the globe, an aborted fetch is not reported as an error,
+  and leaving the screen aborts in-flight requests automatically.
+- **Bridges read as bridges, not grey boxes.** The solid full-height skirt
+  under the deck turned every span into a featureless grey box girder. It is
+  now a slim edge-beam fascia, with arched under-deck ribs spanning between
+  piers and an open balustrade — painted-steel posts and rails with pickets
+  at 2.6 m — replacing the closed parapet walls. The deck rises slightly
+  higher with longer, gentler ramps.
+
+### Changed
+
+- **Expeditions moved out of the header into the squad strip.** The EXP
+  button now sits above the form-squad `+` button in the bottom squad selector
+  strip and is hidden entirely until an operational Antenna exists, instead of
+  greyed-out in the header.
+- **Header armor counter removed.** The green armor count next to firearms is
+  gone from the header strip; the weapons hover dropdown still shows the full
+  weapons & armor breakdown.
+- **Mobile HUD stacking.** The Choose-HQ card now sits neatly above the bottom
+  action row (build buttons, radio, minimap) with the building info panel
+  resting directly above it; when the HQ card isn't shown, panels (building,
+  squad, …) sit directly above the bottom row instead of hiding behind it.
+- **Mobile notification drawer.** Toasts no longer stack over the map on
+  phones: the tray becomes a slide-out drawer toggled by a compact left-edge
+  bell tab (with an unread badge that pulses red for danger alerts), keeping
+  the battlefield clear. Desktop keeps the existing bottom-left stack.
+- **Main menu mobile layout.** The menu column centers horizontally on
+  phones (left-anchored on desktop), the version/changelog badge moved to the
+  top-left with the Roadmap button top-right, and the zombie-portrait feedback
+  block and social links pin to the bottom corners with matching insets. The
+  logo scales down on narrow screens.
+
+---
+
 ## [0.3.1] – 2026-09-11
 
 ### Added

@@ -647,8 +647,6 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                     onOpenLawModal={() => setIsLawModalOpen(true)}
                     lawsUnlocked={lawsUnlock.unlocked}
                     lawsUnlockReason={lawsUnlock.reason}
-                    onOpenExpeditionModal={() => setIsExpeditionModalOpen(true)}
-                    antennaOperational={antennaOperational}
                     onOpenRadio={() => {
                       const unread =
                         radioDirectiveState?.transmissionLog?.find((t) => !t.isRead) ||
@@ -705,6 +703,8 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                     onSelectSquad={handleSelectSquad}
                     onCreateSquad={() => setIsSquadModalOpen(true)}
                     highlightMuster={squadMusterActive}
+                    onOpenExpeditionModal={() => setIsExpeditionModalOpen(true)}
+                    antennaOperational={antennaOperational}
                     onPanToSquad={(sq) => {
                       handleMinimapPanTo({ x: sq.position ? sq.position.x : sq.x, z: sq.position ? sq.position.z : sq.z });
                     }}
@@ -802,7 +802,14 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                     return (
                     <div
                       id="selection-info-dock"
-                      className="fixed bottom-14 left-2 right-2 md:top-12 md:left-auto md:right-16 md:bottom-auto z-40 flex flex-col gap-2 pointer-events-none max-h-[calc(100vh-72px)] overflow-y-auto no-scrollbar"
+                      className={`fixed left-2 right-2 md:top-12 md:left-auto md:right-16 md:bottom-auto z-40 flex flex-col gap-2 pointer-events-none max-h-[calc(100vh-72px)] overflow-y-auto no-scrollbar ${
+                        // Mobile: sit directly above the bottom action row; the
+                        // HQ confirm card (rendered between them) pushes the dock
+                        // up only while it is on screen.
+                        !hqOperational && isHQSelectionUnlocked
+                          ? 'bottom-[10.5rem]'
+                          : 'bottom-[4.75rem]'
+                      }`}
                     >
                       {dockTabs.length > 1 && (
                         <div className="w-full md:w-[min(94vw,340px)] shrink-0 flex items-stretch gap-1 pointer-events-auto select-none">

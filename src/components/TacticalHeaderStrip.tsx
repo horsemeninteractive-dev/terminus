@@ -14,9 +14,7 @@ import {
   Pause,
   Pill,
   Play,
-  Radio,
   Scale,
-  Shield,
   Sun,
   TriangleAlert,
   Wheat,
@@ -67,9 +65,6 @@ interface TacticalHeaderStripProps {
   onOpenLawModal?: () => void;
   lawsUnlocked?: boolean;
   lawsUnlockReason?: string;
-  /** Expeditions (§IFZ) — off-map scavenging via the Antenna */
-  onOpenExpeditionModal?: () => void;
-  antennaOperational?: boolean;
 }
 
 interface ResourceDropdownItem {
@@ -139,8 +134,6 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
   onOpenLawModal,
   lawsUnlocked = false,
   lawsUnlockReason,
-  onOpenExpeditionModal,
-  antennaOperational = false,
 }) => {
   const {
     stockpile,
@@ -587,13 +580,11 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
         </div>
       </div>
 
-      {/* Firearms & Armor (count = total weapons + total armor pieces) */}
+      {/* Firearms (count = total weapons; armor breakdown lives in the dropdown) */}
       <div className="relative group">
-        <div className="flex items-center gap-1 text-slate-200 cursor-default" title={`Equipped & Armory Firearms + Armor: ${totalWeapons} weapons / ${totalArmor} armor`}>
+        <div className="flex items-center gap-1 text-slate-200 cursor-default" title={`Equipped & Armory Firearms: ${totalWeapons} — hover for weapons & armor breakdown`}>
           <Crosshair className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-[#CBD5E1]" />
           <span className="font-bold">{totalWeapons}</span>
-          <Shield className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-[#34d399]" />
-          <span className="font-bold text-[#34d399]">{totalArmor}</span>
         </div>
         <div className="hidden group-hover:block">
           <ResourceDropdown title="Weapons & Armor" icon={<Crosshair className="w-3 h-3 text-[#CBD5E1]" />} items={[...weaponItems, { label: '— Armor —', value: 0 }, ...armorItems]} align="right" />
@@ -718,20 +709,6 @@ export const TacticalHeaderStrip: React.FC<TacticalHeaderStripProps> = ({
             >
               <span className={`text-[8px] font-mono tracking-tighter uppercase leading-none ${lawsUnlocked ? 'text-[#FDE68A]' : 'text-slate-600'}`}>LAW</span>
               <Scale className={`w-3.5 h-3.5 mt-0.5 ${lawsUnlocked ? 'text-[#FBBF24]' : 'text-slate-600'}`} />
-            </button>
-
-            {/* 3b. Expeditions (§IFZ) — off-map scavenging revealed via the Antenna */}
-            <button
-              onClick={onOpenExpeditionModal}
-              title={antennaOperational ? 'Expeditions — off-map scavenging areas (Antenna)' : 'Expeditions — locked: build an operational Antenna (Basic Antenna research)'}
-              className={`w-8 sm:w-9 h-full flex flex-col items-center justify-center border-r border-[#1E293B] transition-colors select-none ${
-                antennaOperational
-                  ? 'text-[#DDD6FE] hover:bg-[#1E1430] hover:text-[#C4B5FD] cursor-pointer'
-                  : 'text-slate-600 cursor-not-allowed opacity-40'
-              }`}
-            >
-              <span className={`text-[8px] font-mono tracking-tighter uppercase leading-none ${antennaOperational ? 'text-[#DDD6FE]' : 'text-slate-600'}`}>EXP</span>
-              <Radio className={`w-3.5 h-3.5 mt-0.5 ${antennaOperational ? 'text-[#A78BFA]' : 'text-slate-600'}`} />
             </button>
 
             {/* 4. Weather & Temperature */}
