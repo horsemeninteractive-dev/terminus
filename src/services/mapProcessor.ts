@@ -16,6 +16,7 @@ import {
   distancePointToSegment,
   ensureCCW,
   ensureCW,
+  clipPolygonToRect,
   isPointInPolygon,
   latLonToMeters,
   polygonSignedArea,
@@ -1488,17 +1489,34 @@ export function cropMapDataToGrid(
     }
   }
 
-  // Filter landuse areas
-  const landuse = mapData.landuse.filter((l) => {
-    if (!l.polygon || l.polygon.length === 0) return false;
-    const center = calculateCentroid(l.polygon);
-    return (
-      center.x >= minX &&
-      center.x <= maxX &&
-      center.z >= minZ &&
-      center.z <= maxZ
+  // Filter landuse areas: keep every polygon that actually OVERLAPS the grid,
+  // not just ones whose centroid lands inside it. A huge water body (e.g. Lake
+  // Constance around Lindau) has its centroid kilometres away while covering
+  // the entire play grid — filtering by centroid silently deleted the lake and
+  // the water rendered as ground.
+  //
+  // Overlapping polygons are also CLIPPED to the grid: a 537 km² lake outline
+  // (11k+ points) would otherwise be handed to the terrain tessellator, whose
+  // O(n²) point-in-polygon tests stall the whole map build for minutes.
+  const landuse: LanduseArea[] = [];
+  for (const l of mapData.landuse) {
+    if (!l.polygon || l.polygon.length === 0) continue;
+    const cx = (minX + maxX) / 2;
+    const cz = (minZ + maxZ) / 2;
+    const anyVertexInside = l.polygon.some(
+      (p) => p.x >= minX && p.x <= maxX && p.z >= minZ && p.z <= maxZ
     );
-  });
+    const containsGridCenter = isPointInPolygon({ x: cx, z: cz }, l.polygon);
+    if (!anyVertexInside && !containsGridCenter) continue;
+
+    const clipped = clipPolygonToRect(l.polygon, { minX, maxX, minZ, maxZ });
+    if (clipped.length >= 3) {
+      landuse.push({ ...l, polygon: clipped });
+    } else if (anyVertexInside) {
+      // Clipping failed but the polygon overlaps — keep the original shape.
+      landuse.push(l);
+    }
+  }
 
   // Filter resource nodes
   const resourceNodes = mapData.resourceNodes.filter((n) => {

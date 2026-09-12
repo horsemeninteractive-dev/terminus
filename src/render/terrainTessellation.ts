@@ -228,11 +228,20 @@ export function tessellatePolygonConformal(
   const width = maxX - minX;
   const depth = maxZ - minZ;
 
-  // Calculate appropriate internal sampling step based on polygon area & dimensions
+  // Calculate appropriate internal sampling step based on polygon area & dimensions.
+  // The old hard clamp at 10m meant a city-scale polygon (4.5 km² lake) generated
+  // ~200k internal points and the Delaunay below (superlinear) stalled the whole
+  // map build. The step now grows with polygon size so the total point count
+  // stays bounded (~<= 15k points per polygon); small polygons keep their
+  // fine 3.5–10m grid and terrain hugging is unaffected.
   const maxSpan = Math.max(width, depth);
   const areaApprox = width * depth;
   const targetStep = Math.max(gridStep, Math.sqrt(areaApprox / 650));
-  const effectiveGridStep = Math.min(Math.max(targetStep, 3.5), 10.0);
+  const effectiveGridStep = Math.max(
+    targetStep,
+    Math.sqrt(areaApprox / 12000),
+    3.5
+  );
 
   const allPoints: Point2D[] = [...boundaryPoints];
 

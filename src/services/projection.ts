@@ -169,6 +169,75 @@ export function isPointInPolygon(pt: Point2D, polygon: Point2D[]): boolean {
 }
 
 /**
+ * Clips a polygon to an axis-aligned rectangle (Sutherland–Hodgman). Used to
+ * trim enormous map features (e.g. a lake whose mapped outline spans dozens
+ * of kilometres) down to the portion inside the play grid, so downstream
+ * tessellation and rendering only ever see local geometry. Returns the
+ * clipped ring; empty if the polygon lies entirely outside the rect.
+ */
+export function clipPolygonToRect(
+  polygon: Point2D[],
+  bounds: { minX: number; maxX: number; minZ: number; maxZ: number }
+): Point2D[] {
+  if (!polygon || polygon.length < 3) return [];
+  type Edge = { inside: (p: Point2D) => boolean; intersect: (a: Point2D, b: Point2D) => Point2D };
+  const edges: Edge[] = [
+    // Left: keep x >= minX
+    {
+      inside: (p) => p.x >= bounds.minX,
+      intersect: (a, b) => ({
+        x: bounds.minX,
+        z: a.z + ((b.z - a.z) * (bounds.minX - a.x)) / (b.x - a.x),
+      }),
+    },
+    // Right: keep x <= maxX
+    {
+      inside: (p) => p.x <= bounds.maxX,
+      intersect: (a, b) => ({
+        x: bounds.maxX,
+        z: a.z + ((b.z - a.z) * (bounds.maxX - a.x)) / (b.x - a.x),
+      }),
+    },
+    // Bottom: keep z >= minZ
+    {
+      inside: (p) => p.z >= bounds.minZ,
+      intersect: (a, b) => ({
+        x: a.x + ((b.x - a.x) * (bounds.minZ - a.z)) / (b.z - a.z),
+        z: bounds.minZ,
+      }),
+    },
+    // Top: keep z <= maxZ
+    {
+      inside: (p) => p.z <= bounds.maxZ,
+      intersect: (a, b) => ({
+        x: a.x + ((b.x - a.x) * (bounds.maxZ - a.z)) / (b.z - a.z),
+        z: bounds.maxZ,
+      }),
+    },
+  ];
+
+  let output = polygon;
+  for (const edge of edges) {
+    const input = output;
+    output = [];
+    if (input.length === 0) break;
+    for (let i = 0; i < input.length; i++) {
+      const current = input[i];
+      const prev = input[(i + input.length - 1) % input.length];
+      const curIn = edge.inside(current);
+      const prevIn = edge.inside(prev);
+      if (curIn) {
+        if (!prevIn) output.push(edge.intersect(prev, current));
+        output.push(current);
+      } else if (prevIn) {
+        output.push(edge.intersect(prev, current));
+      }
+    }
+  }
+  return output;
+}
+
+/**
  * Shortest distance from a 2D point to a finite line segment (p1 to p2)
  */
 export function distancePointToSegment(pt: Point2D, p1: Point2D, p2: Point2D): number {

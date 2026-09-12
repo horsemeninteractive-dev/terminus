@@ -23,6 +23,18 @@ Releasing:
 
 ## [Unreleased]
 
+### Fixed
+
+- **Large lakes now actually render.** Two stacked failures hid big water
+  bodies on maps like Lindau (Lake Constance): the street-recon crop step
+  discarded any landuse polygon whose centroid fell outside the play grid
+  (the lake's mapped centroid is ~24 km away), and even when kept, the
+  terrain tessellator's hard 10 m internal sampling clamp generated ~200k
+  points for a city-scale polygon, stalling the map build so the water never
+  drew. Overlapping polygons are now clipped to the play grid
+  (Sutherland–Hodgman) and internal sampling density scales with polygon
+  size — Lake Constance tessellates in seconds and renders as water.
+
 ## [0.3.6] – 2026-09-12
 
 ### Added
