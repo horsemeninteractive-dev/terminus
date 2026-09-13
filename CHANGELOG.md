@@ -23,6 +23,8 @@ Releasing:
 
 ## [Unreleased]
 
+## [0.3.7] – 2026-09-13
+
 ### Added
 
 - **Railways and footpaths now render.** OSM `railway` corridors (rail,
@@ -70,6 +72,7 @@ Releasing:
   maps are discarded and refetched. Note: existing SAVE FILES that embed the
   old lake-less map keep it — start a new colony at the location (or use
   Refetch) to see the water.
+
 
 ## [0.3.6] – 2026-09-12
 
