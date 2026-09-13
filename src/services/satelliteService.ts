@@ -16,7 +16,12 @@ const RAD = Math.PI / 180;
 const PER_TILE_TIMEOUT_MS = 6000; // per endpoint attempt
 const STREAM_DEADLINE_MS = 90000; // keep streaming tiles up to this long
 const INITIAL_RENDER_MS = 2500; // return the texture after this much wall time
-const WORKERS = 12; // concurrent tile fetches
+const WORKERS = 8; // concurrent tile fetches (12 starved the main thread)
+/** Canvas-texture re-upload throttle: a needsUpdate uploads the WHOLE canvas
+ *  to the GPU (up to 8192² RGBA = 268 MB). Setting it per tile or every 250 ms
+ *  froze the main thread with gigabytes of uploads per second; 1 s caps the
+ *  worst case at ~268 MB/s while keeping the layer visibly sharpening. */
+const TEX_FLUSH_INTERVAL_MS = 1000;
 
 // Per-tier render profiles. The maps are 8km x 8km squares matching
 // mapData.bounds; each tier keeps full-square coverage and only trades how
@@ -60,13 +65,12 @@ const SATELLITE_PROFILES: Record<SatelliteQuality, SatelliteProfile> = {
   },
 };
 
-// Canvas pixel budget. The old single 8192px canvas stretched across an 8km
-// sector at ~1.07 m/px, so even native zoom-17/18 tiles were downsampled into
-// visible pixel blocks. Quadrupling to 16384 for large sectors drops the base
-// sampling to ~0.54 m/px and lets the focal zoom tiers actually reach the
-// screen at native density. Mid-size sectors are sized to match the zoom-18
-// source (~0.30–0.45 m/px) so their whole canvas is natively sharp.
-const CANVAS_MAX = 16384;
+// Canvas pixel budget. 16384² RGBA was 1.07 GB of RAM plus an equally huge
+// GPU upload on EVERY needsUpdate flush (each tile draw batches into one),
+// which froze the tab and crashed modest GPUs outright. 8192 caps the canvas
+// at 268 MB — still ~0.9 m/px on an 8 km sector, and mipmap-less upload keeps
+// the per-flush cost linear.
+const CANVAS_MAX = 8192;
 
 /**
  * Estimated GPU memory cost of the satellite canvas texture for a quality tier
@@ -157,10 +161,13 @@ export async function loadSatelliteTexture(
   const texture = new THREE.CanvasTexture(canvas);
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
-  texture.generateMipmaps = true;
-  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  // Mipmap generation (and its GPU upload) on an 8192² canvas doubles the
+  // per-flush cost for no visible benefit at gameplay zooms — plain linear
+  // filtering is what the overlay uses in practice.
+  texture.generateMipmaps = false;
+  texture.minFilter = THREE.LinearFilter;
   texture.magFilter = THREE.LinearFilter;
-  texture.anisotropy = 16;
+  texture.anisotropy = 4;
   texture.needsUpdate = true;
   satelliteCache.set(cacheKey, texture);
 
@@ -276,7 +283,7 @@ export async function loadSatelliteTexture(
           // ignore draw errors for a single tile
         }
       }
-      if (performance.now() - lastFlush > 250) {
+      if (performance.now() - lastFlush > TEX_FLUSH_INTERVAL_MS) {
         lastFlush = performance.now();
         texture.needsUpdate = true;
       }
@@ -541,6 +548,7 @@ export function updateSatelliteCamera(x: number, z: number): void {
   // tiles immediately, queue the rest for a small concurrent fetch.
   tiles.sort((a, b) => a.zoom - b.zoom);
   let dirty = false;
+  let lastPoolFlush = 0;
   const missing: Array<{ tx: number; ty: number; zoom: number }> = [];
 
   const cacheHitDraw = async () => {
@@ -567,11 +575,18 @@ export function updateSatelliteCamera(x: number, z: number): void {
           const img = await fetchTileImageCached(t.tx, t.ty, t.zoom);
           if (img) {
             drawTileFromCache(img, t.tx, t.ty, t.zoom);
-            state.texture.needsUpdate = true;
+            // needsUpdate re-uploads the whole canvas to the GPU — per-tile
+            // uploads froze the game on every re-burn. Throttle to 1/s.
+            const now = performance.now();
+            if (now - lastPoolFlush > TEX_FLUSH_INTERVAL_MS) {
+              lastPoolFlush = now;
+              state.texture.needsUpdate = true;
+            }
           }
         }
       });
       await Promise.all(pool);
+      state.texture.needsUpdate = true;
     } finally {
       cameraBusy = false;
     }

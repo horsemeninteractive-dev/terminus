@@ -9,6 +9,7 @@ import {
   Flashlight,
   Footprints,
   HelpCircle,
+  LocateFixed,
   Lock,
   LogOut,
   MapPin,
@@ -110,6 +111,23 @@ export const TacticalSquadHUD: React.FC<TacticalSquadHUDProps> = ({
   const aliveCount = squad.members.filter((m) => m.isAlive).length;
   const totalSlots = 4;
 
+  // Derived from the camera controller (not state) so the button stays honest:
+  // manual panning cancels follow inside CameraController, and this panel
+  // re-renders on every squad position tick.
+  const isFollowing = !!sceneRef?.current?.cameraController.isFollowing();
+
+  /** Camera follows the squad at near-ground level; press again (or pan) to stop. */
+  const toggleFollow = () => {
+    const scene = sceneRef?.current;
+    if (!scene) return;
+    if (scene.cameraController.isFollowing()) {
+      scene.cameraController.stopFollow();
+    } else {
+      scene.cameraController.startFollow({ x: squad.x, z: squad.z }, 55);
+    }
+    soundEngine.playClick();
+  };
+
   const currentSquadIndex = allSquads.findIndex((s) => s.squadId === squad.squadId);
   const squadDisplayIndex = currentSquadIndex >= 0 ? currentSquadIndex + 1 : 1;
   const totalSquadsCount = Math.max(allSquads.length, 1);
@@ -147,7 +165,19 @@ export const TacticalSquadHUD: React.FC<TacticalSquadHUDProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 shrink-0 ml-2">            <button
+        <div className="flex items-center gap-1.5 shrink-0 ml-2">
+          <button
+            onClick={toggleFollow}
+            title={isFollowing ? 'Stop Camera Follow' : 'Follow Squad (near-ground camera)'}
+            className={`p-1 border transition-colors ${
+              isFollowing
+                ? 'text-[#042417] bg-[#10B981] border-[#34D399] animate-pulse'
+                : 'text-[#10B981] hover:text-white bg-[#064E3B]/40 hover:bg-[#064E3B] border-[#10B981]'
+            }`}
+          >
+            <LocateFixed className="w-4 h-4" />
+          </button>
+          <button
             onClick={() => {
               setIsMinimized(false);
               soundEngine.playClick();
@@ -223,6 +253,18 @@ export const TacticalSquadHUD: React.FC<TacticalSquadHUDProps> = ({
             </button>
           </div>
             <button
+            onClick={toggleFollow}
+            title={isFollowing ? 'Stop Camera Follow' : 'Follow Squad (near-ground camera)'}
+            className={`p-1 border transition-colors ${
+              isFollowing
+                ? 'text-[#042417] bg-[#10B981] border-[#34D399] animate-pulse'
+                : 'text-[#10B981] hover:text-white'
+            }`}
+          >
+            <LocateFixed className="w-3.5 h-3.5" />
+          </button>
+
+          <button
             onClick={() => {
               setIsMinimized(true);
               soundEngine.playClick();

@@ -23,6 +23,30 @@ Releasing:
 
 ## [Unreleased]
 
+### Added
+
+- **Follow-squad camera button.** Both the expanded and minimised squad
+  panels now carry a Locate/Follow toggle that locks the camera to the
+  squad at near-ground level (~55 m orbit) and tracks it as it moves;
+  press again or pan manually to release. The button reflects the live
+  follow state, so manual cancellation is shown honestly.
+
+### Fixed
+
+- **Railways now read as train tracks.** The first pass rendered the steel
+  rails as criss-crossing diagonal bands (broken quad pairing). Rails are
+  now clean parallel twin ribbons following the track, laid on creosoted
+  wooden sleepers spaced along the ballast bed — the sleeper/parallel-rail
+  pairing is what makes the corridor read as a railway.
+- **Satellite layer no longer freezes or crashes the app.** The overlay
+  canvas could reach 16384² (1.07 GB of RAM, and an equally large GPU
+  re-upload on every texture flush — which fired per tile while streaming
+  and per re-burn while panning), stalling the main thread for seconds and
+  exhausting GPU memory on modest devices. The canvas is now capped at
+  8192² (268 MB), mipmaps are off (no visible loss at gameplay zooms),
+  tile uploads are throttled to one per second, and the fetch worker pool
+  is trimmed from 12 to 8.
+
 ## [0.3.7] – 2026-09-13
 
 ### Added

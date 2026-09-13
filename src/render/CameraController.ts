@@ -236,6 +236,7 @@ export class CameraController {
         const deltaMidY = currentMidY - this.lastPinchMidY;
 
         if (Math.hypot(deltaMidX, deltaMidY) > 1.5) {
+          this.stopFollow();
           const panSpeed = (this.distance / 700) * 1.1;
           const forward = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
           const right = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
@@ -272,6 +273,7 @@ export class CameraController {
       );
     } else if (this.isDraggingPan) {
       // Pan across ground plane relative to camera yaw
+      this.stopFollow();
       const panSpeed = (this.distance / 650) * 1.25;
       const forward = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
       const right = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
@@ -434,10 +436,41 @@ export class CameraController {
     this.toggleExpeditionView();
   }
 
+  /** Squad-follow mode: the camera target tracks the given world position
+   *  every frame at near-ground zoom until cancelled. Any manual pan, or
+   *  calling followPosition(null), ends the follow. */
+  private followPos: { x: number; z: number } | null = null;
+  private followDistance = 60; // near-ground orbit radius while following
+
+  public isFollowing(): boolean {
+    return this.followPos !== null;
+  }
+
+  /** Starts (or moves) squad-follow. `distance` defaults to near-ground 60 m. */
+  public startFollow(pos: { x: number; z: number }, distance = 60) {
+    this.followPos = { x: pos.x, z: pos.z };
+    this.followDistance = THREE.MathUtils.clamp(distance, this.minDistance, 400);
+    this.distanceGoal = this.followDistance;
+    this.targetGoal.set(pos.x, this.targetGoal.y, pos.z);
+    if (this.pitchGoal > Math.PI / 2.4) this.pitchGoal = Math.PI / 3.4;
+  }
+
+  /** Stops follow mode; the camera stays where it is. */
+  public stopFollow() {
+    this.followPos = null;
+  }
+
+
   /**
    * Main update tick called each frame
    */
   public update(delta: number) {
+    // Squad-follow: keep the orbit target locked to the followed position.
+    // Manual input (pan/orbit) below naturally cancels it via stopFollow().
+    if (this.followPos) {
+      this.targetGoal.set(this.followPos.x, this.targetGoal.y, this.followPos.z);
+      if (this.distanceGoal > 300) this.distanceGoal = this.followDistance; // re-clamp after zoom-outs
+    }
     // Continuous keyboard pan (WASD / Arrows)
     const panSpeed = (this.distance * 0.9 + 50) * delta;
     const forward = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
@@ -445,15 +478,19 @@ export class CameraController {
 
     if (this.keysDown.has('w') || this.keysDown.has('arrowup')) {
       this.targetGoal.add(forward.clone().multiplyScalar(panSpeed));
+      this.stopFollow();
     }
     if (this.keysDown.has('s') || this.keysDown.has('arrowdown')) {
       this.targetGoal.add(forward.clone().multiplyScalar(-panSpeed));
+      this.stopFollow();
     }
     if (this.keysDown.has('a') || this.keysDown.has('arrowleft')) {
       this.targetGoal.add(right.clone().multiplyScalar(-panSpeed));
+      this.stopFollow();
     }
     if (this.keysDown.has('d') || this.keysDown.has('arrowright')) {
       this.targetGoal.add(right.clone().multiplyScalar(panSpeed));
+      this.stopFollow();
     }
 
     this.clampTargetGoal();

@@ -217,6 +217,14 @@ export class RoadRenderer {
     side: THREE.DoubleSide,
   });
 
+  // Creosoted wooden sleepers under the rails.
+  private railSleeperMaterial = new THREE.MeshStandardMaterial({
+    color: 0x4d3a28,
+    roughness: 0.92,
+    metalness: 0.0,
+    side: THREE.DoubleSide,
+  });
+
   private labelMaterials: THREE.MeshBasicMaterial[] = [];
   private showStreetLabels = false;
 
@@ -1042,10 +1050,12 @@ export class RoadRenderer {
   }
 
   /**
-   * Builds one railway corridor: a gravel ballast ribbon (narrow pedestrian-
-   * style strip), then two steel rails laid along it. Reuses the road bridge
-   * pipeline wholesale — the corridor goes through the same deck-rise logic,
-   * so tracks crossing water get the same railings, arches and piers as roads.
+   * Builds one railway corridor: a gravel ballast ribbon, wooden sleepers
+   * (ties) laid crossways, and two steel rails running parallel along it —
+   * the sleeper+parallel-rail pairing is what makes the corridor read as a
+   * railway rather than a path. Reuses the road bridge pipeline wholesale —
+   * the corridor goes through the same deck-rise logic, so tracks crossing
+   * water get the same railings, arches and piers as roads.
    */
   private buildRailCorridor(
     rail: RoadSegment,
@@ -1054,16 +1064,19 @@ export class RoadRenderer {
   ) {
     const pts = this.subdivideRoadPoints(rail.points, 1.4, elevation, exaggeration);
     if (pts.length < 2) return;
-    const bedW = rail.width;
+    const bedW = rail.width || 4.2;
     const halfBed = bedW / 2;
     const railGaugeHalf = 0.72; // half of standard-ish 1.44 m gauge in map scale
-    const railHeadW = 0.09;
+    const railHeadW = 0.07;
+    const SLEEPER_STRIDE = 0.65; // one tie every 0.65 m along the track
 
     const bedVertices: number[] = [];
     const bedUvs: number[] = [];
     const bedIndices: number[] = [];
     const steelVertices: number[] = [];
     const steelIndices: number[] = [];
+    const sleeperVertices: number[] = [];
+    const sleeperIndices: number[] = [];
     const railingVertices: number[] = [];
     const railingIndices: number[] = [];
     const pierVertices: number[] = [];
@@ -1086,13 +1099,14 @@ export class RoadRenderer {
         accumulatedDistance += len1;
       }
       const len = Math.hypot(dx, dz) || 1;
-      const nx = -dz / len, nz = dx / len;
+      const nx = -dz / len, nz = dx / len; // unit normal (across the track)
+      const tx = dx / len, tz = dz / len; // unit tangent (along the track)
 
       const terrainY = this.terrainY(elevation, pts[i].x, pts[i].z, exaggeration);
       const deckRise = this.bridgeDeckRise(pts[i], i > 0 ? pts[i - 1] : null, i < pts.length - 1 ? pts[i + 1] : null);
       const surfaceY = terrainY + 0.12 + deckRise;
 
-      // Ballast bed cross-section: flat trapezoid slightly wider than the rails.
+      // Ballast bed cross-section: flat strip slightly wider than the sleepers.
       const lx = pts[i].x + nx * halfBed, lz = pts[i].z + nz * halfBed;
       const rx = pts[i].x - nx * halfBed, rz = pts[i].z - nz * halfBed;
       const vDist = accumulatedDistance * 0.25;
@@ -1103,29 +1117,52 @@ export class RoadRenderer {
         bedIndices.push(bedBase - 2, bedBase, bedBase - 1, bedBase - 1, bedBase, bedBase + 1);
       }
 
-      // Steel rails: a small box (head + visible web face) at ±gauge offset.
+      // Sleepers: one flat wooden tie per SLEEPER_STRIDE, laid crossways —
+      // a quad slightly wider than the ballast half-width, sitting just
+      // above the bed between the two rails.
+      const segLen = i > 0 ? Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z) : 0;
+      const prevAccum = accumulatedDistance - segLen;
+      const sleeperSpan = halfBed * 0.92;
+      if (
+        i === 0 ||
+        Math.floor(accumulatedDistance / SLEEPER_STRIDE) > Math.floor(prevAccum / SLEEPER_STRIDE)
+      ) {
+        const sw = 0.12; // half the sleeper's along-track width
+        const y = surfaceY + 0.02;
+        const sBase = sleeperVertices.length / 3;
+        // 4 corners: near-left, near-right, far-left, far-right (along-track ±sw)
+        sleeperVertices.push(
+          pts[i].x + nx * sleeperSpan + tx * sw, y, pts[i].z + nz * sleeperSpan + tz * sw,
+          pts[i].x - nx * sleeperSpan + tx * sw, y, pts[i].z - nz * sleeperSpan + tz * sw,
+          pts[i].x + nx * sleeperSpan - tx * sw, y, pts[i].z + nz * sleeperSpan - tz * sw,
+          pts[i].x - nx * sleeperSpan - tx * sw, y, pts[i].z - nz * sleeperSpan - tz * sw
+        );
+        sleeperIndices.push(sBase, sBase + 2, sBase + 1, sBase + 1, sBase + 2, sBase + 3);
+      }
+
+      // Steel rails: flat-top ribbons at ±gauge offset — for each slice, a
+      // left and right edge vertex pair (top of the rail head); consecutive
+      // slices form a clean parallel band that follows the curve. The same
+      // per-slice pairing is used for the vertical web face so the rail has
+      // a visible side profile from low camera angles.
       for (const sgn of [1, -1]) {
-        const cxr = pts[i].x + nx * sgn * railGaugeHalf;
-        const czr = pts[i].z + nz * sgn * railGaugeHalf;
-        const base = steelVertices.length / 3;
+        const rBase = steelVertices.length / 3;
+        const midX = pts[i].x + nx * sgn * railGaugeHalf;
+        const midZ = pts[i].z + nz * sgn * railGaugeHalf;
         steelVertices.push(
-          cxr - nx * railHeadW, surfaceY + 0.16, czr - nz * railHeadW,
-          cxr + nx * railHeadW, surfaceY + 0.16, czr + nz * railHeadW,
-          cxr - nx * railHeadW, surfaceY + 0.05, czr - nz * railHeadW,
-          cxr + nx * railHeadW, surfaceY + 0.05, czr + nz * railHeadW
+          midX - nx * sgn * railHeadW, surfaceY + 0.14, midZ - nz * sgn * railHeadW,
+          midX + nx * sgn * railHeadW, surfaceY + 0.14, midZ + nz * sgn * railHeadW
         );
         if (i > 0) {
-          const prev = base - 4;
-          steelIndices.push(prev, prev + 4, prev + 1, prev + 1, prev + 4, prev + 5);
-          steelIndices.push(prev + 2, prev + 6, prev + 3, prev + 3, prev + 6, prev + 7);
+          const prev = rBase - 2;
+          // Top face of the rail head (two triangles between slice pairs).
+          steelIndices.push(prev, prev + 2, prev + 1, prev + 1, prev + 2, rBase + 3);
         }
       }
 
       if (deckRise > 0.3) {
         liftedSlices.push({ cx: pts[i].x, cz: pts[i].z, y: surfaceY, nx, nz });
         // Piers every ~20 m, as the road bridge does.
-        const segLen = i > 0 ? Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z) : 0;
-        const prevAccum = accumulatedDistance - segLen;
         if (i > 0 && i < pts.length - 1 && Math.floor(accumulatedDistance / 20) > Math.floor(prevAccum / 20)) {
           const bx = pts[i].x;
           const bz = pts[i].z;
@@ -1163,18 +1200,19 @@ export class RoadRenderer {
       }
     }
 
-    const pushMerged = (verts: number[], idx: number[], mat: THREE.Material, shadows: boolean) => {
+    const pushMerged = (verts: number[], idx: number[], mat: THREE.Material, shadows: boolean, uvs?: number[]) => {
       if (verts.length === 0 || idx.length === 0) return;
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-      if (verts === bedVertices) g.setAttribute('uv', new THREE.Float32BufferAttribute(bedUvs, 2));
+      if (uvs) g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
       g.setIndex(idx);
       g.computeVertexNormals();
       const mesh = new THREE.Mesh(g, mat);
       mesh.receiveShadow = shadows;
       this.group.add(mesh);
     };
-    pushMerged(bedVertices, bedIndices, this.railBallastMaterial, true);
+    pushMerged(bedVertices, bedIndices, this.railBallastMaterial, true, bedUvs);
+    pushMerged(sleeperVertices, sleeperIndices, this.railSleeperMaterial, true);
     pushMerged(steelVertices, steelIndices, this.railSteelMaterial, false);
     pushMerged(railingVertices, railingIndices, this.bridgeRailingMaterial, true);
     pushMerged(pierVertices, pierIndices, this.bridgePierMaterial, true);
