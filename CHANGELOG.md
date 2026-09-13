@@ -25,6 +25,16 @@ Releasing:
 
 ### Fixed
 
+- **Map searches no longer hang for minutes when mirrors are down.**
+  Previously the Overpass fetch tried each mirror one at a time with a 25 s
+  timeout apiece — a single hung mirror (or a pack of them, as happens during
+  European daytime) could stall a search for minutes before a healthy mirror
+  was even reached. Mirrors are now raced in parallel on both the edge proxy
+  and the browser fallback: first valid response wins, so the wait is the
+  fastest healthy mirror's latency rather than the sum of dead ones. The
+  mirror list was also pruned of chronically unresponsive hosts, and the
+  proxy attempt now has an overall deadline so a wedged proxy falls through
+  to direct mirrors.
 - **Large lakes now actually render.** Three stacked failures hid big water
   bodies on maps like Lindau (Lake Constance): the street-recon crop step
   discarded any landuse polygon whose centroid fell outside the play grid

@@ -9,14 +9,16 @@ import { GeoPoint } from '../types/map';
  * doesn't exist) and if the proxy itself errors.
  */
 const OVERPASS_PROXY = '/api/overpass';
+/** Overall cap for the proxy attempt before falling back to direct mirrors. */
+const PROXY_DEADLINE_MS = 45_000;
 
 const OVERPASS_ENDPOINTS = [
-  'https://overpass.kumi.systems/api/interpreter',
-  'https://overpass.private.coffee/api/interpreter',
   'https://overpass-api.de/api/interpreter',
   'https://lz4.overpass-api.de/api/interpreter',
   'https://z.overpass-api.de/api/interpreter',
-  'https://overpass.openstreetmap.ru/api/interpreter',
+  'https://overpass.osm.ch/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
 ];
 
 /**
@@ -130,6 +132,7 @@ export async function fetchFromOverpass(
   radius: number,
   signal?: AbortSignal
 ): Promise<RawOsmResponse> {
+
   if (signal?.aborted) {
     const abortErr = new Error('Operation aborted');
     abortErr.name = 'AbortError';
@@ -139,8 +142,10 @@ export async function fetchFromOverpass(
   const query = buildOverpassQuery(center.lat, center.lon, radius);
   let lastError: Error | null = null;
 
-  // 1. Edge proxy (production): cached + server-side mirror fallback.
+  // 1. Edge proxy (production): cached + server-side mirror racing. Bounded
+  // by an overall deadline so a wedged proxy can't stall the fallback.
   try {
+    const proxySignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(PROXY_DEADLINE_MS)]) : AbortSignal.timeout(PROXY_DEADLINE_MS);
     const proxy = await fetch(OVERPASS_PROXY, {
       method: 'POST',
       headers: {
@@ -148,7 +153,7 @@ export async function fetchFromOverpass(
         Accept: 'application/json',
       },
       body: 'data=' + encodeURIComponent(query),
-      signal,
+      signal: proxySignal,
     });
     if (proxy.ok) {
       const data = (await proxy.json()) as RawOsmResponse;
@@ -168,95 +173,115 @@ export async function fetchFromOverpass(
       }
     }
   } catch (err) {
-    // The proxy can legitimately not exist (dev/preview) or be unreachable;
-    // either way the direct mirror chain below still applies.
-    if (signal?.aborted) {
-      const abortErr = new Error('Operation aborted');
-      abortErr.name = 'AbortError';
-      throw abortErr;
-    }
-    lastError = err instanceof Error ? err : new Error(String(err));
+  // The proxy can legitimately not exist (dev/preview) or be unreachable;
+  // either way the direct mirror race below still applies.
+  if (signal?.aborted) {
+    const abortErr = new Error('Operation aborted');
+    abortErr.name = 'AbortError';
+    throw abortErr;
+  }
+  lastError = err instanceof Error ? err : new Error(String(err));
   }
 
-  // 2. Direct mirror chain (fallback / dev).
+  // 2. Direct mirror race (fallback / dev) — mirrors are raced in parallel
+  // with the same first-valid-wins semantics as the edge proxy, so a hung
+  // mirror can never stall the chain for its full timeout.
   const endpoints = availableEndpoints();
+  if (signal?.aborted) {
+    const abortErr = new Error('Operation aborted');
+    abortErr.name = 'AbortError';
+    throw abortErr;
+  }
 
-  for (const endpoint of endpoints) {
+  try {
+    const data = await Promise.any(
+      endpoints.map((endpoint) => fetchOneMirror(endpoint, query, signal))
+    );
+    return data;
+  } catch (err: unknown) {
     if (signal?.aborted) {
       const abortErr = new Error('Operation aborted');
       abortErr.name = 'AbortError';
       throw abortErr;
     }
-
-    const controller = new AbortController();
-    let timeoutId: NodeJS.Timeout | null = null;
-    let onParentAbort: (() => void) | null = null;
-
-    try {
-      timeoutId = setTimeout(() => {
-        controller.abort('timeout');
-      }, 25000); // 25s timeout per mirror for dense city queries
-
-      if (signal) {
-        onParentAbort = () => controller.abort('user_abort');
-        signal.addEventListener('abort', onParentAbort);
-      }
-
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-          'Accept': 'application/json',
-        },
-        body: 'data=' + encodeURIComponent(query),
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      const data = (await response.json()) as RawOsmResponse;
-      if (!data || !Array.isArray(data.elements)) {
-        throw new Error(`Malformed response from ${endpoint}`);
-      }
-
-      // Detect if the mirror ran out of memory or timed out mid-stream
-      if (
-        data.remark &&
-        (data.remark.includes('timed out') ||
-          data.remark.includes('out of memory') ||
-          data.remark.includes('runtime error'))
-      ) {
-        console.warn(`Overpass mirror ${endpoint} reported remark error:`, data.remark);
-        if (data.elements.length < 500) {
-          throw new Error(`Overpass data truncated: ${data.remark}`);
-        }
-      }
-
-      markMirrorOk(endpoint);
-      return data;
-    } catch (err: unknown) {
-      // Only a genuine parent abort (user navigated away) stops the chain here.
-      // Per-mirror timeouts, HTTP errors, and network failures must NOT be treated
-      // as aborts — otherwise the first busy mirror kills the whole fetch instead
-      // of falling through to the remaining mirrors.
-      if (signal?.aborted) {
-        const abortErr = new Error('Operation aborted');
-        abortErr.name = 'AbortError';
-        throw abortErr;
-      }
-
-      // Quietly record error, cool the mirror down, and proceed to next mirror
-      markMirrorFailed(endpoint);
-      lastError = err instanceof Error ? err : new Error(String(err));
-    } finally {
-      if (timeoutId) clearTimeout(timeoutId);
-      if (signal && onParentAbort) {
-        signal.removeEventListener('abort', onParentAbort);
-      }
+    // Collect per-mirror outcomes for cooldowns and the final error message.
+    const aggregate = err as AggregateError;
+    for (const e of aggregate.errors ?? [err]) {
+      const endpoint = (e as Error & { endpoint?: string }).endpoint;
+      if (endpoint) markMirrorFailed(endpoint);
     }
+    lastError =
+      (aggregate.errors ?? []).find((e): e is Error => e instanceof Error) ??
+      (err instanceof Error ? err : new Error(String(err)));
   }
 
   throw lastError || new Error('All Overpass API mirrors were busy or timed out.');
+}
+
+async function fetchOneMirror(
+  endpoint: string,
+  query: string,
+  signal?: AbortSignal
+): Promise<RawOsmResponse> {
+  const controller = new AbortController();
+  let timeoutId: NodeJS.Timeout | null = null;
+  let onParentAbort: (() => void) | null = null;
+
+  const attachParentAbort = () => {
+    if (signal) {
+      onParentAbort = () => controller.abort('user_abort');
+      signal.addEventListener('abort', onParentAbort);
+    }
+  };
+
+  try {
+    attachParentAbort();
+    timeoutId = setTimeout(() => {
+      controller.abort('timeout');
+    }, 25000); // 25s timeout per mirror for dense city queries
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        Accept: 'application/json',
+      },
+      body: 'data=' + encodeURIComponent(query),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const data = (await response.json()) as RawOsmResponse;
+    if (!data || !Array.isArray(data.elements)) {
+      throw new Error(`Malformed response from ${endpoint}`);
+    }
+
+    // Detect if the mirror ran out of memory or timed out mid-stream
+    if (
+      data.remark &&
+      (data.remark.includes('timed out') ||
+        data.remark.includes('out of memory') ||
+        data.remark.includes('runtime error')) &&
+      data.elements.length < 500
+    ) {
+      console.warn(`Overpass mirror ${endpoint} reported remark error:`, data.remark);
+      throw new Error(`Overpass data truncated: ${data.remark}`);
+    }
+
+    markMirrorOk(endpoint);
+    return data;
+  } catch (err: unknown) {
+    // Tag the failure with its endpoint so the racing caller can cool it down.
+    const tagged = err instanceof Error ? err : new Error(String(err));
+    (tagged as Error & { endpoint?: string }).endpoint = endpoint;
+    throw tagged;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    if (signal && onParentAbort) {
+      signal.removeEventListener('abort', onParentAbort);
+    }
+  }
 }
