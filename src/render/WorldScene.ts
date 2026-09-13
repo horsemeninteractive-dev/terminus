@@ -493,7 +493,7 @@ export class WorldScene {
   // and out at the view centre.
   private graphicsQuality: import('../types/saveGame').GraphicsQuality = 'high';
   private qualityLodScale = 1.0;   // altitude-LOD threshold multiplier
-  private detailCullRadius = 0;    // 0 = disabled (high preset)
+  private detailCullRadius = 0;    // 0 = disabled (high preset); otherwise absolute metres
   private detailCullAccum = 0;
   private detailCullActive = false;
 
@@ -766,7 +766,7 @@ export class WorldScene {
     if (stale()) return;
 
     onProgress?.(0.18, 'Tracing road networks...');
-    this.roadRenderer.rebuildRoads(mapData.roads, activeElevation, exaggeration);
+    this.roadRenderer.rebuildRoads(mapData.roads, activeElevation, exaggeration, mapData.railways || []);
     this.roadRenderer.setShowStreetLabels(this.showStreetLabels);
     await nextFrame();
     if (stale()) return;
@@ -1081,13 +1081,13 @@ export class WorldScene {
     switch (quality) {
       case 'low':
         this.qualityLodScale = 0.45;
-        this.detailCullRadius = 1.7;
+        this.detailCullRadius = 450;
         this.sunLight.castShadow = false;
         this.buildingRenderer.setEdgesVisible(false);
         break;
       case 'medium':
         this.qualityLodScale = 0.72;
-        this.detailCullRadius = 2.6;
+        this.detailCullRadius = 900;
         this.sunLight.castShadow = true;
         this.buildingRenderer.setEdgesVisible(this.showBuildingEdges);
         break;
@@ -1113,11 +1113,18 @@ export class WorldScene {
   private applyDistanceDetailCull() {
     const mapData = this.currentMapData;
     if (!mapData || this.detailCullRadius <= 0) return;
-    const focus = this.cameraController.target;
-    const radius = this.cameraController.distance * this.detailCullRadius;
+    // detailCullRadius is an ABSOLUTE world-space radius (metres) measured
+    // from the CAMERA's own XZ position — not scaled by camera distance and
+    // not anchored to the orbit target. Scaling by camera distance inverted
+    // the whole feature: zoomed in (distance ~25) the detail bubble was ~65 m
+    // so nearby buildings swapped to flat colour, while zoomed out (distance
+    // ~3000) the bubble was ~7.8 km so everything stayed detailed. Anchoring
+    // on the camera also makes low-pitch views behave: buildings between the
+    // eye and the target are "near" because they genuinely are.
+    const radius = this.detailCullRadius;
     this.detailCullActive = true;
     this.buildingRenderer.setDetailedDistance(
-      { x: focus.x, z: focus.z },
+      { x: this.camera.position.x, z: this.camera.position.z },
       radius,
       String(this.buildingRenderer.getSelectedId() ?? '')
     );

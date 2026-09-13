@@ -111,6 +111,9 @@ export interface MapData {
   elevation: ElevationGrid;
   buildings: BuildingPolygon[];
   roads: RoadSegment[];
+  /** OSM railway corridors rendered as tracks (bridged over water like roads).
+   *  Optional: older cached maps / saves predate the field. */
+  railways?: RoadSegment[];
   landuse: LanduseArea[];
   resourceNodes: ResourceNode[];
   bounds: {

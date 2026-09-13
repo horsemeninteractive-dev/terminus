@@ -89,6 +89,7 @@ export function buildOverpassBBoxQuery(lat: number, lon: number, halfSideMeters:
 (
   way["building"];
   way["highway"];
+  way["railway"];
   way["landuse"];
   way["leisure"];
   way["natural"];
@@ -104,6 +105,7 @@ export function buildOverpassBBoxQuery(lat: number, lon: number, halfSideMeters:
   relation["leisure"];
   relation["landuse"];
   relation["amenity"];
+  relation["railway"];
   node["natural"="tree"];
   node["highway"="street_lamp"];
   node["amenity"];

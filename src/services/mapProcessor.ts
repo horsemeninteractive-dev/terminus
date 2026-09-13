@@ -911,6 +911,7 @@ export function processOsmData(
   // 3. Process Buildings & Roads
   const buildings: BuildingPolygon[] = [];
   const roads: RoadSegment[] = [];
+  const railways: RoadSegment[] = [];
 
   // 3A. Index POI nodes (amenities, shops, healthcare, schools, offices) to associate with enclosing building polygons
   const poiNodes: Array<{ pt: Point2D; tags: Record<string, string> }> = [];
@@ -1030,6 +1031,25 @@ export function processOsmData(
             isOneway: tags.oneway === 'yes',
             lanes: tags.lanes ? parseInt(tags.lanes, 10) : undefined,
           });
+        }
+      }
+      // Railways: kept as a separate corridor list so the road renderer can
+      // draw them with rail styling and bridge them over water like roads.
+      // Disused/abandoned/spur tracks are skipped (visual noise); station
+      // yard detail like 'rail' inside platforms is still included.
+      else if (tags.railway) {
+        const railKind = tags.railway;
+        if (['rail', 'light_rail', 'subway', 'tram', 'narrow_gauge', 'funicular'].includes(railKind)) {
+          const simplified = simplifyPoints(points, 0.5);
+          if (simplified.length >= 2) {
+            railways.push({
+              id: `rail_${el.id}`,
+              name: tags.name,
+              highwayType: railKind,
+              width: railKind === 'tram' ? 3 : 4.2,
+              points: simplified,
+            });
+          }
         }
       }
     }
@@ -1347,6 +1367,7 @@ export function processOsmData(
     elevation,
     buildings,
     roads,
+    railways,
     landuse,
     resourceNodes,
     bounds: { minX, maxX, minZ, maxZ },
@@ -1404,6 +1425,11 @@ export function recenterMapDataToGrid(
     points: r.points.map(shift),
   }));
 
+  const railways = (mapData.railways || []).map((r) => ({
+    ...r,
+    points: r.points.map(shift),
+  }));
+
   const landuse = mapData.landuse.map((l) => ({
     ...l,
     polygon: l.polygon.map(shift),
@@ -1444,6 +1470,7 @@ export function recenterMapDataToGrid(
     elevation: elevation ?? mapData.elevation,
     buildings,
     roads,
+    railways,
     landuse,
     resourceNodes,
   };
@@ -1486,6 +1513,17 @@ export function cropMapDataToGrid(
         ...road,
         points: validPoints,
       });
+    }
+  }
+
+  // Railways clip exactly like roads (point-in-bounds filtering).
+  const railways: RoadSegment[] = [];
+  for (const rail of mapData.railways || []) {
+    const validPoints = rail.points.filter(
+      (p) => p.x >= minX && p.x <= maxX && p.z >= minZ && p.z <= maxZ
+    );
+    if (validPoints.length >= 2) {
+      railways.push({ ...rail, points: validPoints });
     }
   }
 
@@ -1545,6 +1583,7 @@ export function cropMapDataToGrid(
     radius,
     buildings,
     roads,
+    railways,
     landuse,
     resourceNodes,
     elevation: croppedElevation,

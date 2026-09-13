@@ -7,6 +7,7 @@ import { GlobeView } from './GlobeView';
 import { TacticalQuestTracker } from './TacticalQuestTracker';
 import { OnboardingCelebrationModal } from './OnboardingCelebrationModal';
 import { saveService } from '../services/saveService';
+import { soundService } from '../services/soundService';
 import { getInitialRadioDirectiveState } from '../services/radioDirectiveService';
 import type { AppViewMode } from '../App';
 import type { GameClockState } from '../types/combat';
@@ -70,6 +71,7 @@ export interface MenuFlowScreensProps {
   setIsCodexModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setIsCreditsModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setIsPwaUpdateAvailable: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsRadioModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setIsSaveLoadModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setIsSettingsModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setMapData: React.Dispatch<React.SetStateAction<MapData | null>>;
@@ -112,6 +114,7 @@ export const MenuFlowScreens: React.FC<MenuFlowScreensProps> = (props) => {
     setIsCodexModalOpen,
     setIsCreditsModalOpen,
     setIsPwaUpdateAvailable,
+    setIsRadioModalOpen,
     setIsSaveLoadModalOpen,
     setIsSettingsModalOpen,
     setMapData,
@@ -228,12 +231,28 @@ export const MenuFlowScreens: React.FC<MenuFlowScreensProps> = (props) => {
             />
           )}
     
-          {/* 3D Tactical Scene Darkening when Initial Radio Communication is Pending */}
+          {/* 3D Tactical Scene Darkening when Initial Radio Communication is Pending.
+              Any click anywhere brings the transmission up — the player no longer
+              has to find the Push-to-Talk button to hear the first broadcast. */}
           {viewMode === 'world' && isInitialCommsPending && !isRadioModalOpen && (
             <div
               id="initial-comms-darkening-overlay"
-              className="fixed inset-0 z-10 bg-black/60 backdrop-blur-[1.5px] pointer-events-none transition-opacity duration-700 animate-in fade-in"
-              aria-hidden="true"
+              role="button"
+              tabIndex={0}
+              aria-label="Incoming radio transmission — click to listen"
+              onClick={() => {
+                const pending =
+                  radioDirectiveState?.currentIncomingTransmission ||
+                  radioDirectiveState?.transmissionLog?.find((t) => !t.isRead) ||
+                  radioDirectiveState?.transmissionLog?.[0] ||
+                  null;
+                if (pending) {
+                  soundService.playRadioChirp();
+                  setActiveRadioTransmission(pending);
+                  setIsRadioModalOpen(true);
+                }
+              }}
+              className="fixed inset-0 z-10 bg-black/60 backdrop-blur-[1.5px] cursor-pointer transition-opacity duration-700 animate-in fade-in"
             />
           )}
     

@@ -23,6 +23,19 @@ Releasing:
 
 ## [Unreleased]
 
+### Added
+
+- **Railways and footpaths now render.** OSM `railway` corridors (rail,
+  light rail, subway, tram, narrow gauge) are fetched, processed and drawn as
+  a gravel ballast bed with two steel rails conformed to the terrain;
+  pedestrian footways/cycleways already drew but railways were never
+  downloaded. Railway tracks crossing water are bridged with the same 3D
+  spans as roads — open railings, under-deck arches and support piers.
+- **The first radio transmission now plays on any click.** While the initial
+  comms are pending, any click on the dimmed world (previously a
+  non-interactive overlay) opens the transmission, instead of requiring the
+  player to find and press the Push-to-Talk button.
+
 ### Fixed
 
 - **Map searches no longer hang for minutes when mirrors are down.**
@@ -35,6 +48,15 @@ Releasing:
   mirror list was also pruned of chronically unresponsive hosts, and the
   proxy attempt now has an overall deadline so a wedged proxy falls through
   to direct mirrors.
+- **Distance LOD now behaves correctly.** The detailed/flat swap radius was
+  scaled by the camera's orbit distance, which inverted the entire feature:
+  zoomed IN the detail bubble collapsed to a few dozen metres so nearby
+  buildings showed flat colour, while zoomed OUT it ballooned to kilometres
+  so everything stayed textured. The detail radius is now an absolute
+  world-space distance from the camera's position (450 m on Low, 900 m on
+  Medium; High keeps full detail everywhere), so buildings near the camera
+  always render textured and distant ones use the flat-colour LOD regardless
+  of zoom level or pitch.
 - **Large lakes now actually render.** Three stacked failures hid big water
   bodies on maps like Lindau (Lake Constance): the street-recon crop step
   discarded any landuse polygon whose centroid fell outside the play grid

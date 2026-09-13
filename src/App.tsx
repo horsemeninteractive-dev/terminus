@@ -564,6 +564,7 @@ export default function App() {
       radioDirectiveState={radioDirectiveState}
       setActivePlacement={setActivePlacement} setActiveRadioTransmission={setActiveRadioTransmission} setActiveSettlementId={setActiveSettlementId}
       setIsCodexModalOpen={setIsCodexModalOpen} setIsCreditsModalOpen={setIsCreditsModalOpen} setIsPwaUpdateAvailable={setIsPwaUpdateAvailable}
+      setIsRadioModalOpen={setIsRadioModalOpen}
       setIsSaveLoadModalOpen={setIsSaveLoadModalOpen} setIsSettingsModalOpen={setIsSettingsModalOpen} setMapData={setMapData}
       setRadioDirectiveState={setRadioDirectiveState} setSaveLoadMode={setSaveLoadMode} setSettlements={setSettlements}
       setViewMode={setViewMode} settlement={settlement} settlements={settlements}

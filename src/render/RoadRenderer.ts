@@ -201,6 +201,22 @@ export class RoadRenderer {
     side: THREE.DoubleSide,
   });
 
+  // Railway ballast: dark crushed-stone bed under the sleepers.
+  private railBallastMaterial = new THREE.MeshStandardMaterial({
+    color: 0x4a4640,
+    roughness: 0.98,
+    metalness: 0.01,
+    side: THREE.DoubleSide,
+  });
+
+  // Steel rails: two shiny parallel lines per track.
+  private railSteelMaterial = new THREE.MeshStandardMaterial({
+    color: 0x8a8f96,
+    roughness: 0.35,
+    metalness: 0.7,
+    side: THREE.DoubleSide,
+  });
+
   private labelMaterials: THREE.MeshBasicMaterial[] = [];
   private showStreetLabels = false;
 
@@ -287,7 +303,8 @@ export class RoadRenderer {
   public rebuildRoads(
     roads: RoadSegment[],
     elevation?: ElevationGrid | null,
-    exaggeration = 1.0
+    exaggeration = 1.0,
+    railways: RoadSegment[] = []
   ) {
     this.clear();
     this.deckSamples = [];
@@ -1012,6 +1029,155 @@ export class RoadRenderer {
       this.group.add(this.labelGroup);
     }
     this.labelGroup.visible = this.showStreetLabels;
+
+    // RAILWAYS: ballast bed + two steel rails, conformed to the same terrain
+    // surface as roads, and lifted onto the same 3D bridge deck (railings,
+    // arches, piers) when the track crosses water. Driven through the same
+    // ribbon builder by rendering each track as a narrow "road" plus rails.
+    for (const rail of railways) {
+      if (!rail.points || rail.points.length < 2) continue;
+      const railRoad: RoadSegment = { ...rail, width: rail.width || 4.2 };
+      this.buildRailCorridor(railRoad, elevation, exaggeration);
+    }
+  }
+
+  /**
+   * Builds one railway corridor: a gravel ballast ribbon (narrow pedestrian-
+   * style strip), then two steel rails laid along it. Reuses the road bridge
+   * pipeline wholesale — the corridor goes through the same deck-rise logic,
+   * so tracks crossing water get the same railings, arches and piers as roads.
+   */
+  private buildRailCorridor(
+    rail: RoadSegment,
+    elevation: ElevationGrid | null | undefined,
+    exaggeration: number
+  ) {
+    const pts = this.subdivideRoadPoints(rail.points, 1.4, elevation, exaggeration);
+    if (pts.length < 2) return;
+    const bedW = rail.width;
+    const halfBed = bedW / 2;
+    const railGaugeHalf = 0.72; // half of standard-ish 1.44 m gauge in map scale
+    const railHeadW = 0.09;
+
+    const bedVertices: number[] = [];
+    const bedUvs: number[] = [];
+    const bedIndices: number[] = [];
+    const steelVertices: number[] = [];
+    const steelIndices: number[] = [];
+    const railingVertices: number[] = [];
+    const railingIndices: number[] = [];
+    const pierVertices: number[] = [];
+    const pierIndices: number[] = [];
+    let accumulatedDistance = 0;
+    const liftedSlices: { cx: number; cz: number; y: number; nx: number; nz: number }[] = [];
+
+    for (let i = 0; i < pts.length; i++) {
+      let dx: number, dz: number;
+      if (i === 0) {
+        dx = pts[1].x - pts[0].x; dz = pts[1].z - pts[0].z;
+      } else if (i === pts.length - 1) {
+        dx = pts[i].x - pts[i - 1].x; dz = pts[i].z - pts[i - 1].z;
+        accumulatedDistance += Math.hypot(dx, dz);
+      } else {
+        const dx1 = pts[i].x - pts[i - 1].x, dz1 = pts[i].z - pts[i - 1].z;
+        const dx2 = pts[i + 1].x - pts[i].x, dz2 = pts[i + 1].z - pts[i].z;
+        const len1 = Math.hypot(dx1, dz1) || 1, len2 = Math.hypot(dx2, dz2) || 1;
+        dx = dx1 / len1 + dx2 / len2; dz = dz1 / len1 + dz2 / len2;
+        accumulatedDistance += len1;
+      }
+      const len = Math.hypot(dx, dz) || 1;
+      const nx = -dz / len, nz = dx / len;
+
+      const terrainY = this.terrainY(elevation, pts[i].x, pts[i].z, exaggeration);
+      const deckRise = this.bridgeDeckRise(pts[i], i > 0 ? pts[i - 1] : null, i < pts.length - 1 ? pts[i + 1] : null);
+      const surfaceY = terrainY + 0.12 + deckRise;
+
+      // Ballast bed cross-section: flat trapezoid slightly wider than the rails.
+      const lx = pts[i].x + nx * halfBed, lz = pts[i].z + nz * halfBed;
+      const rx = pts[i].x - nx * halfBed, rz = pts[i].z - nz * halfBed;
+      const vDist = accumulatedDistance * 0.25;
+      const bedBase = bedVertices.length / 3;
+      bedVertices.push(lx, surfaceY, lz, rx, surfaceY, rz);
+      bedUvs.push(0, vDist, 1, vDist);
+      if (i > 0) {
+        bedIndices.push(bedBase - 2, bedBase, bedBase - 1, bedBase - 1, bedBase, bedBase + 1);
+      }
+
+      // Steel rails: a small box (head + visible web face) at ±gauge offset.
+      for (const sgn of [1, -1]) {
+        const cxr = pts[i].x + nx * sgn * railGaugeHalf;
+        const czr = pts[i].z + nz * sgn * railGaugeHalf;
+        const base = steelVertices.length / 3;
+        steelVertices.push(
+          cxr - nx * railHeadW, surfaceY + 0.16, czr - nz * railHeadW,
+          cxr + nx * railHeadW, surfaceY + 0.16, czr + nz * railHeadW,
+          cxr - nx * railHeadW, surfaceY + 0.05, czr - nz * railHeadW,
+          cxr + nx * railHeadW, surfaceY + 0.05, czr + nz * railHeadW
+        );
+        if (i > 0) {
+          const prev = base - 4;
+          steelIndices.push(prev, prev + 4, prev + 1, prev + 1, prev + 4, prev + 5);
+          steelIndices.push(prev + 2, prev + 6, prev + 3, prev + 3, prev + 6, prev + 7);
+        }
+      }
+
+      if (deckRise > 0.3) {
+        liftedSlices.push({ cx: pts[i].x, cz: pts[i].z, y: surfaceY, nx, nz });
+        // Piers every ~20 m, as the road bridge does.
+        const segLen = i > 0 ? Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z) : 0;
+        const prevAccum = accumulatedDistance - segLen;
+        if (i > 0 && i < pts.length - 1 && Math.floor(accumulatedDistance / 20) > Math.floor(prevAccum / 20)) {
+          const bx = pts[i].x;
+          const bz = pts[i].z;
+          const baseY = this.terrainY(elevation, bx, bz, exaggeration) - BRIDGE_PIER_DEPTH;
+          const w = 0.5;
+          const pierTop = surfaceY - BRIDGE_FASCIA_H;
+          const base = pierVertices.length / 3;
+          pierVertices.push(
+            bx - w, baseY, bz - w, bx + w, baseY, bz - w, bx + w, baseY, bz + w, bx - w, baseY, bz + w,
+            bx - w, pierTop, bz - w, bx + w, pierTop, bz - w, bx + w, pierTop, bz + w, bx - w, pierTop, bz + w
+          );
+          for (let q = 0; q < 4; q++) {
+            const b0 = base + q;
+            const b1 = base + ((q + 1) % 4);
+            pierIndices.push(b0, b0 + 4, b1, b1, b0 + 4, b1 + 4);
+          }
+        }
+      }
+    }
+
+    // Bridge dressing for rail spans: simple open railing both edges.
+    for (let s = 0; s < liftedSlices.length; s++) {
+      const p = liftedSlices[s];
+      const base = railingVertices.length / 3;
+      for (const sgn of [1, -1]) {
+        const ex = p.cx + p.nx * sgn * halfBed;
+        const ez = p.cz + p.nz * sgn * halfBed;
+        railingVertices.push(ex, p.y + 0.1, ez, ex, p.y + BRIDGE_RAILING_H, ez);
+      }
+      if (s > 0) {
+        const prev = base - 4;
+        for (const pair of [[0, 1], [2, 3]]) {
+          railingIndices.push(prev + pair[0], base + pair[0], prev + pair[1], prev + pair[1], base + pair[0], base + pair[1]);
+        }
+      }
+    }
+
+    const pushMerged = (verts: number[], idx: number[], mat: THREE.Material, shadows: boolean) => {
+      if (verts.length === 0 || idx.length === 0) return;
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      if (verts === bedVertices) g.setAttribute('uv', new THREE.Float32BufferAttribute(bedUvs, 2));
+      g.setIndex(idx);
+      g.computeVertexNormals();
+      const mesh = new THREE.Mesh(g, mat);
+      mesh.receiveShadow = shadows;
+      this.group.add(mesh);
+    };
+    pushMerged(bedVertices, bedIndices, this.railBallastMaterial, true);
+    pushMerged(steelVertices, steelIndices, this.railSteelMaterial, false);
+    pushMerged(railingVertices, railingIndices, this.bridgeRailingMaterial, true);
+    pushMerged(pierVertices, pierIndices, this.bridgePierMaterial, true);
   }
 
   private rebuildRoadLabels(
