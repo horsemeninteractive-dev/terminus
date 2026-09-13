@@ -33,6 +33,25 @@ Releasing:
 
 ### Fixed
 
+- **Rail zigzag artefacts removed.** The rail vertex pairing connected each
+  slice to the *opposite* rail's previous slice, extruding long diagonal
+  bands across the track (the "black lines in the sky"). Each rail ribbon
+  now pairs within its own edge column, so rails render as clean parallel
+  steel lines. (Reported against the sky lines; same root cause.)
+- **Buttery-smooth simulation tick.** The 100 ms sim interval was being torn
+  down and re-created by React on nearly every tick (its dependency list
+  included game state the loop itself commits 10×/s), resetting the fixed-step
+  accumulator mid-tick and making unit movement hostage to render time.
+  The interval is now stable for the whole session: live state flows in
+  through a ref each render, missed ticks are caught up in bounded steps
+  (≤4) instead of being dropped, and squads/zombies/vehicles interpolate
+  through the existing per-frame smoother without render-driven cadence
+  jitter.
+- **No more full-speed stall every ~2 game-minutes.** The dawn autosave
+  serialized the entire world synchronously inside a sim tick — a visible
+  freeze each dawn at 4× speed (a game day is ~2.5 real minutes). Autosaves
+  are now deferred 2 s past dawn so the write happens between tick activity,
+  and reads fresh state at execution time instead of a stale closure.
 - **Railways now read as train tracks.** The first pass rendered the steel
   rails as criss-crossing diagonal bands (broken quad pairing). Rails are
   now clean parallel twin ribbons following the track, laid on creosoted

@@ -1140,23 +1140,29 @@ export class RoadRenderer {
         sleeperIndices.push(sBase, sBase + 2, sBase + 1, sBase + 1, sBase + 2, sBase + 3);
       }
 
-      // Steel rails: flat-top ribbons at ±gauge offset — for each slice, a
-      // left and right edge vertex pair (top of the rail head); consecutive
-      // slices form a clean parallel band that follows the curve. The same
-      // per-slice pairing is used for the vertical web face so the rail has
-      // a visible side profile from low camera angles.
-      for (const sgn of [1, -1]) {
-        const rBase = steelVertices.length / 3;
-        const midX = pts[i].x + nx * sgn * railGaugeHalf;
-        const midZ = pts[i].z + nz * sgn * railGaugeHalf;
-        steelVertices.push(
-          midX - nx * sgn * railHeadW, surfaceY + 0.14, midZ - nz * sgn * railHeadW,
-          midX + nx * sgn * railHeadW, surfaceY + 0.14, midZ + nz * sgn * railHeadW
-        );
+      // Steel rails: flat-top ribbons at ±gauge offset. Both rails of the
+      // CURRENT slice are pushed as ONE 4-vertex block: [A_left, A_right,
+      // B_left, B_right] with A at +gauge, B at -gauge. The connect step
+      // pairs block(i-1) with block(i) at the SAME slot, so each quad spans
+      // one rail on one side only — pushing the two rails in separate loop
+      // iterations made `prev` land on the OPPOSITE rail, zig-zagging every
+      // quad across the track (the diagonal "sky lines" seen zoomed out).
+      {
+        const block = steelVertices.length / 3;
+        for (const sgn of [1, -1]) {
+          const midX = pts[i].x + nx * sgn * railGaugeHalf;
+          const midZ = pts[i].z + nz * sgn * railGaugeHalf;
+          steelVertices.push(
+            midX - nx * railHeadW, surfaceY + 0.14, midZ - nz * railHeadW,
+            midX + nx * railHeadW, surfaceY + 0.14, midZ + nz * railHeadW
+          );
+        }
         if (i > 0) {
-          const prev = rBase - 2;
-          // Top face of the rail head (two triangles between slice pairs).
-          steelIndices.push(prev, prev + 2, prev + 1, prev + 1, prev + 2, rBase + 3);
+          const prev = block - 4;
+          // Rail A (+gauge): slice i-1 pair → slice i pair.
+          steelIndices.push(prev, prev + 4, prev + 1, prev + 1, prev + 4, prev + 5);
+          // Rail B (−gauge): same slots +2 within the block.
+          steelIndices.push(prev + 2, prev + 6, prev + 3, prev + 3, prev + 6, prev + 7);
         }
       }
 

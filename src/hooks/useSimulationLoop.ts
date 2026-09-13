@@ -237,20 +237,58 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
     autoEquipScavengedGear,
   } = runtime;
 
+  // The interval below must be STABLE. The old dep array included gameClock,
+  // zombies, combatSquads... — values this very loop commits 10×/s, so React
+  // tore down and re-created the interval on every tick. Each recreation reset
+  // the fixed-step accumulator and re-armed a fresh 100ms wait AFTER the App
+  // re-render finished, making the sim cadence hostage to render time (unit
+  // stutter). Everything mutable now flows in through runtimeRef; only real
+  // mode/scene changes re-arm the loop.
+  const runtimeRef = useRef(runtime);
+  runtimeRef.current = runtime;
+  // Deferred dawn-autosave timer (cleared on teardown so a queued save never
+  // fires after leaving the world).
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     if (viewMode !== 'world' || isDescentActive || !mapData) return;
     const TICK_DELTA = 0.1; // 100ms per simulation step
-    // Use a monotonic fixed-step accumulator rather than setInterval's elapsed
-    // wall time. React/render work can delay a callback; catch up in bounded
-    // steps so units do not receive uneven movement bursts.
+    const TICK_MS = TICK_DELTA * 1000;
+    // Bounded catch-up: after a long frame/GC pause, run up to 4 missed ticks
+    // back-to-back instead of silently dropping the time (the old code ran at
+    // most ONE tick per interval fire, so any stall froze the sim visibly).
+    const MAX_CATCHUP_STEPS = 4;
     let lastTickAt = performance.now();
     let accumulatedMs = 0;
-    const interval = setInterval(() => {
-      const now = performance.now();
-      accumulatedMs = Math.min(accumulatedMs + now - lastTickAt, 300);
-      lastTickAt = now;
-      if (accumulatedMs < TICK_DELTA * 1000) return;
-      accumulatedMs -= TICK_DELTA * 1000;
+
+    const runTick = () => {
+      // Fresh per-tick values. The interval is stable; live state flows in
+      // through the ref each render, so the tick never sees stale entities.
+      const {
+        gameClock,
+        timeOfDay,
+        zombies,
+        combatSquads,
+        hostileHumans,
+        droppedItems,
+        noiseEvents,
+        settlement,
+        scavengeQueue,
+        isAlarmActive,
+        settlements,
+        activeSettlementId,
+        activePlacement,
+        currentPreset,
+        caravans,
+        radioDirectiveState,
+        missionState,
+        dangerLevel,
+        showSatelliteOverlay,
+        satelliteQuality,
+        selectedSquadId,
+        selectedSquadIds,
+        selectedVehicleId,
+      } = runtimeRef.current;
       // 1. Advance Game Clock
       let nextClock = gameClock;
       let dayChanged = false;
@@ -274,11 +312,11 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
       // 2. Handle Nightfall Incursion (§5.1, §6.1, §15)
       if (nightfallTriggered) {
         soundService.playHordeWarning();
-        const hqPos = getPrimaryHQ(settlement)?.center || { x: 0, z: 0 };
+        const hqPos = getPrimaryHQ(settlementRef.current)?.center || { x: 0, z: 0 };
         const { zombies: horde, dominant: hordeType } = generateHordeWave(nextClock.day, hqPos, 180, true);
 
         // §6.1 addition: a full moon measurably reduces the night incursion.
-        const isFullMoon = settlement.weather?.moonPhase === 'full';
+        const isFullMoon = settlementRef.current.weather?.moonPhase === 'full';
         const calmHorde = isFullMoon ? horde.filter(() => Math.random() < 0.55) : horde;
         setZombies((prev) => [...prev, ...calmHorde]);
 
@@ -305,52 +343,66 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
           type: 'info',
         });
 
-        // Trigger Autosave at dawn if enabled (§ Autosave feature)
+        // Trigger Autosave at dawn if enabled (§ Autosave feature).
+        // DEFERRED: the old code serialized the entire world (settlements +
+        // full mapData + squads + zombies) synchronously inside the sim tick —
+        // a multi-hundred-ms main-thread stall at every dawn, which at 4× speed
+        // landed every ~2.5 real minutes and read as the game 'stopping'. A
+        // 2 s idle debounce lets the tick storm settle before the write.
         const currentSettings = gameSettingsService.getSettings();
         if (currentSettings.autosaveIntervalDays > 0 && nextClock.day % currentSettings.autosaveIntervalDays === 0) {
-          try {
-            const activePlacementRecord = settlements[activeSettlementId]?.placement || activePlacement || {
-              center: { lat: currentPreset.lat, lon: currentPreset.lon },
-              radius: currentPreset.radius,
-              sectorName: currentPreset.name,
-              country: currentPreset.country,
-              gridSize: 3,
-              offsetLat: 0,
-              offsetLon: 0,
-            };
-            saveService.saveGame(
-              `${settlement.name || 'Colony'} (Autosave Day ${nextClock.day})`,
-              'autosave',
-              {
-                settlements,
-                activeSettlementId,
-                settlement,
-                gameClock: nextClock,
-                activePlacement: activePlacementRecord,
-                currentPreset,
-                // Persist the sim-owned map so autosaves keep node depletion.
-                mapData: mapDataRef.current || mapData,
-                caravans,
-                radioState: radioDirectiveState,
-                // Persist mission progress — without this, loading an autosave
-                // restarts the campaign from the first quest.
-                missionState: missionState,
-                hasCompletedFirstScavenge: true,
-                combatSquads,
-                // Persist the scavenge queue like quicksaves do.
-                scavengeQueue,
-                zombies,
-                worldVehicles: settlement.vehicles || [],
-                dangerLevel,
-                timeOfDay,
-                satelliteOverlay: showSatelliteOverlay,
-                satelliteQuality,
-              }
-            );
-            addTacticalAlert('AUTOSAVE RECORDED', `Dawn of Day ${nextClock.day} saved to checkpoint`, 'info');
-          } catch (e) {
-            console.warn('Autosave failed:', e);
-          }
+          if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+          const snap = runtimeRef.current;
+          const savedDay = nextClock.day;
+          autosaveTimerRef.current = setTimeout(() => {
+            autosaveTimerRef.current = null;
+            try {
+              const r = runtimeRef.current;
+              const activePlacementRecord =
+                r.settlements[r.activeSettlementId]?.placement ||
+                r.activePlacement || {
+                  center: { lat: r.currentPreset.lat, lon: r.currentPreset.lon },
+                  radius: r.currentPreset.radius,
+                  sectorName: r.currentPreset.name,
+                  country: r.currentPreset.country,
+                  gridSize: 3,
+                  offsetLat: 0,
+                  offsetLon: 0,
+                };
+              saveService.saveGame(
+                `${r.settlement.name || 'Colony'} (Autosave Day ${savedDay})`,
+                'autosave',
+                {
+                  settlements: r.settlements,
+                  activeSettlementId: r.activeSettlementId,
+                  settlement: r.settlementRef.current,
+                  gameClock: r.gameClock,
+                  activePlacement: activePlacementRecord,
+                  currentPreset: r.currentPreset,
+                  // Persist the sim-owned map so autosaves keep node depletion.
+                  mapData: r.mapDataRef.current || r.mapData,
+                  caravans: r.caravans,
+                  radioState: r.radioDirectiveState,
+                  // Persist mission progress — without this, loading an autosave
+                  // restarts the campaign from the first quest.
+                  missionState: r.missionState,
+                  hasCompletedFirstScavenge: true,
+                  combatSquads: r.combatSquadsRef.current,
+                  // Persist the scavenge queue like quicksaves do.
+                  scavengeQueue: r.scavengeQueueRef.current,
+                  zombies: r.zombies,
+                  worldVehicles: r.settlementRef.current.vehicles || [],
+                  dangerLevel: r.dangerLevel,
+                  timeOfDay: r.timeOfDay,
+                  satelliteOverlay: r.showSatelliteOverlay,
+                  satelliteQuality: r.satelliteQuality,
+                }
+              );
+              snap.addTacticalAlert('AUTOSAVE RECORDED', `Dawn of Day ${savedDay} saved to checkpoint`, 'info');
+            } catch (e) {
+              console.warn('Autosave failed:', e);
+            }
+          }, 2000);
         }
       }
 
@@ -605,7 +657,7 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
                 workingSettlement,
                 sq,
                 targetBldg,
-                TICK_DELTA * (gameClock.speed === 0 ? 0 : gameClock.speed),
+                TICK_DELTA * (nextClock.speed === 0 ? 0 : nextClock.speed),
                 mapData.buildings
               );
 
@@ -768,7 +820,7 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
       // instead of killing it. Assign each captured squad to the nearest Hideout.
       if (combatResult.capturedSquadIds.length > 0) {
         const activeHideouts: RivalHideout[] = (
-          Array.from(settlement.rivalHideouts.values()) as RivalHideout[]
+          Array.from(workingSettlement.rivalHideouts.values()) as RivalHideout[]
         ).filter((h) => !h.isCleared && h.isDiscovered);
 
         if (activeHideouts.length > 0) {
@@ -1124,7 +1176,7 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
         else if (z.state === 'attacking_unit' || z.state === 'attacking_building') attackingZombies++;
       }
 
-      const activeOutbreaksCount = Array.from(settlement.outbreaks?.values() || []).filter(
+      const activeOutbreaksCount = Array.from(workingSettlement.outbreaks?.values() || []).filter(
         (o: any) => Boolean(o?.isOutbreakActive)
       ).length;
 
@@ -1145,14 +1197,14 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
       // standing nest? 1.0 at/below its home radius, fading to 0 at 3× that
       // distance. Cleared and undiscovered nests are silent: the soundscape
       // only reacts to nests the player actually knows about.
-      if (mapDataRef.current?.buildings && settlement.zombieLairs && settlement.zombieLairs.size > 0) {
-        const hq = getPrimaryHQ(settlement);
+      if (mapDataRef.current?.buildings && workingSettlement.zombieLairs && workingSettlement.zombieLairs.size > 0) {
+        const hq = getPrimaryHQ(workingSettlement);
         const origin =
           combatSquadsRef.current.find((sq) => sq.isDeployed && sq.currentHp > 0) || null;
         const ox = origin ? origin.x : hq?.center.x ?? 0;
         const oz = origin ? origin.z : hq?.center.z ?? 0;
         let nearest = Infinity;
-        for (const lair of settlement.zombieLairs.values()) {
+        for (const lair of workingSettlement.zombieLairs.values()) {
           if (!lair.isDiscovered || lair.isCleared || lair.population <= 0) continue;
           const b = mapDataRef.current.buildings.find((bl) => String(bl.id) === String(lair.buildingId));
           if (!b) continue;
@@ -1185,13 +1237,13 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
           selectedSquadId,
           combatResult.droppedItems,
           combatResult.updatedHostileHumans,
-          settlement.resourceWorkOrders || [],
-          settlement.constructionOrders || [],
+          workingSettlement.resourceWorkOrders || [],
+          workingSettlement.constructionOrders || [],
           selectedSquadIds
         );
 
         sceneRef.current.updateVehicles(
-          settlement.vehicles || [],
+          workingSettlement.vehicles || [],
           selectedVehicleId,
           // Headlights follow the same eased night curve the scene uses for
           // window glow — full beam in deep night, off through daylight.
@@ -1202,14 +1254,14 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
         // from the moment the world loads (squads/HQ/vehicles cut it open as they
         // scout); with no vision sources yet, a starter landing-zone bubble keeps
         // spawn from being pitch black.
-        const fog = settlement.fogOfWar || (mapData ? createFogGrid(mapData) : null);
+        const fog = workingSettlement.fogOfWar || (mapData ? createFogGrid(mapData) : null);
         const fogEnabled = true;
         if (fog) {
-          const visionSources = getPrimaryHQ(settlement)
+          const visionSources = getPrimaryHQ(workingSettlement)
             ? computeVisionSources(
                 settlement,
                 combatResult.updatedSquads,
-                settlement.vehicles || []
+                workingSettlement.vehicles || []
               )
             : [];
 
@@ -1235,18 +1287,18 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
 
           sceneRef.current.updateEntityMarkers(
             combatResult.updatedSquads,
-            settlement.vehicles || [],
-            settlement.hiddenGroups,
+            workingSettlement.vehicles || [],
+            workingSettlement.hiddenGroups,
             combatResult.updatedZombies,
             mapData,
             fogEnabled,
-            settlement.rivalHideouts,
-            settlement.zombieLairs,
-            settlement.occupiedBuildings?.buildings,
-            settlement.resourceWorkOrders || [],
-            settlement.constructionOrders || [],
-            settlement.buildingSearches,
-            settlement.fieldLootPiles || []
+            workingSettlement.rivalHideouts,
+            workingSettlement.zombieLairs,
+            workingSettlement.occupiedBuildings?.buildings,
+            workingSettlement.resourceWorkOrders || [],
+            workingSettlement.constructionOrders || [],
+            workingSettlement.buildingSearches,
+            workingSettlement.fieldLootPiles || []
           );
         }
       }
@@ -1256,31 +1308,37 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
         const notif = combatResult.settlementNotifications[0];
         setToastMessage({ title: notif.title, desc: notif.desc, type: notif.type });
       }
-    }, 100);
+    };
 
-    return () => clearInterval(interval);
+    // Stable 100ms driver with bounded catch-up. At most 4 sim steps run per
+    // fire so a GC pause or long frame catches up without a visible burst, and
+    // leftover sub-tick time carries over instead of being dropped.
+    const interval = setInterval(() => {
+      const now = performance.now();
+      accumulatedMs = Math.min(accumulatedMs + now - lastTickAt, 500);
+      lastTickAt = now;
+      let steps = 0;
+      while (accumulatedMs >= TICK_MS && steps < MAX_CATCHUP_STEPS) {
+        accumulatedMs -= TICK_MS;
+        steps++;
+        runTick();
+      }
+      // Shed debt beyond the catch-up cap: better to lose backlog than to
+      // spiral running ticks back-to-back forever after a heavy stall.
+      if (accumulatedMs > TICK_MS * MAX_CATCHUP_STEPS) accumulatedMs = 0;
+    }, TICK_MS);
+
+    return () => {
+      clearInterval(interval);
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     viewMode,
     isDescentActive,
     mapData,
-    gameClock,
-    zombies,
-    combatSquads,
-    hostileHumans,
-    droppedItems,
-    noiseEvents,
-    selectedSquadId,
-    selectedSquadIds,
-    selectedVehicleId,
-    settlement.adaptedBuildings,
-    settlement.vehicles,
-    getPrimaryHQ(settlement),
-    settlement.fogOfWar,
-    settlement.hiddenGroups,
-    settlement.rivalHideouts,
-    settlement.zombieLairs,
-    settlement.weather,
-    settlement.isInitialized,
-    timeOfDay,
   ]);
 }
