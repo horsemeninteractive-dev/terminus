@@ -116,8 +116,18 @@ test('an infected genuinely inside the irregular wing counts as sheltered', () =
   });
   assert.ok(moved.length > 0, 'residents deployed from the wing outward');
   for (const z of moved) {
-    // Deployment target is 6–20 m from the nest centre — inside the home
-    // radius (60 m), i.e. a local emergence, never a teleport away.
-    assert.ok(Math.hypot(z.x, z.z) <= 20.1, 'deployed resident stays local to the nest');
+    // Deployment must EXIT the footprint (the whole point of emergence) while
+    // staying local: inside the home radius (60 m), never teleported away.
+    // (A blind 6–20 m ring cannot both exit an L-building whose arms reach
+    // 20–28 m from the centre and stay under 20 m — the exit point sits just
+    // past the nearest boundary crossing plus a small stand-off.)
+    const dist = Math.hypot(z.x, z.z);
+    assert.ok(dist <= 60, `deployed resident stays local to the nest (${dist.toFixed(1)} m)`);
+    const poly = buildings[0].polygon!;
+    const outside = !(
+      z.x >= -20 && z.x <= 20 && z.z >= -20 && z.z <= 20 &&
+      !(z.x > 0 && z.z > 0)
+    );
+    assert.ok(outside, 'deployed resident left the building footprint');
   }
 });

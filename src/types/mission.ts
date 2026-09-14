@@ -100,6 +100,8 @@ export interface MissionTaskDefinition {
   dependsOn?: string[];
   /** 'action' requires doing the action after task start; 'state' allows existing conditions. */
   completionMode?: 'action' | 'state';
+  /** For 'custom' tasks: minimum contacted-faction count required (trust channels). */
+  minContacts?: number;
 }
 
 export interface MissionTaskState {
@@ -126,6 +128,8 @@ export interface MissionTaskState {
   focusAction?: string;
   dependsOn?: string[];
   completionMode?: 'action' | 'state';
+  /** For 'custom' tasks: minimum contacted-faction count required. */
+  minContacts?: number;
   /** Monotonic event journal id at task activation time. */
   startEventId?: number;
   /** Authoritative baseline metric (e.g. lifetime kills, inventory, game hours). */
@@ -181,6 +185,7 @@ export type MissionCondition =
   | { kind: 'hq_established'; value?: boolean }
   | { kind: 'squad_formed'; min?: number }
   | { kind: 'building'; buildingType: string; min?: number; adapted?: boolean }
+  | { kind: 'building_any'; buildingType: string; min?: number }
   | { kind: 'lair_discovered'; min?: number }
   | { kind: 'lair_cleared'; min?: number }
   | { kind: 'flag'; key: string; value?: string | number | boolean }

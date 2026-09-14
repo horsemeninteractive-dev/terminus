@@ -19,15 +19,23 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
     id: 'mission_waterline',
     code: 'OP-WATERLINE',
     title: 'WATERLINE',
-    description: 'Formalise water infrastructure before the reserve runs dry.',
+    description: 'Establish a sustainable water reserve as the settlement grows.',
     briefing:
-      'Voss reports the settlement is one dry tap away from rationing. Research Basic Sanitation, construct a Water Cistern, build a real reserve, and prove the supply holds for two days.',
+      'Voss has the sanitation research and the cistern blueprint on the board — now the reserve has to become real. Construct a Water Cistern, accumulate a working supply, and prove it holds for two days before the settlement starts rationing cups.',
     category: 'settlement',
-    priority: 'high',
+    priority: 'normal',
     chapter: 1,
     isMainStory: true,
     trigger: { type: 'condition', condition: { kind: 'day', min: 3 } },
-    prerequisites: [{ kind: 'hq_established', value: true }],
+    // Real capability gating (spec §8): the Cistern is a freestanding,
+    // research-gated building. The mission only appears once the player has a
+    // Research Center (adapted or constructed) AND Basic Sanitation researched
+    // — so the objective is always constructible when it is presented.
+    prerequisites: [
+      { kind: 'hq_established', value: true },
+      { kind: 'building_any', buildingType: 'research_center' },
+      { kind: 'research', id: 'basic_sanitation' },
+    ],
     briefingTransmissionId: 'tx_c1_waterline',
     responseOptions: [
       {
@@ -38,34 +46,27 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
     ],
     tasks: [
       {
-        id: 'w1_research',
-        type: 'research_technology',
-        title: 'Research Basic Sanitation',
-        researchId: 'basic_sanitation',
-      },
-      {
-        id: 'w2_cistern',
+        id: 'w1_cistern',
         type: 'build_facility',
         title: 'Construct a Water Cistern',
         buildingType: 'water_cistern',
         focusAction: 'open_build_drawer',
-        dependsOn: ['w1_research'],
       },
       {
-        id: 'w3_reserve',
+        id: 'w2_reserve',
         type: 'maintain_resource',
         title: 'Hold a Rainwater Reserve',
         description: 'Accumulate 30 units of stored rainwater.',
         resourceType: 'rainwater',
         targetCount: 30,
-        dependsOn: ['w2_cistern'],
+        dependsOn: ['w1_cistern'],
       },
       {
-        id: 'w4_survive',
+        id: 'w3_survive',
         type: 'survive_duration',
         title: 'Survive Two Days on the New Supply',
         targetCount: 48,
-        dependsOn: ['w3_reserve'],
+        dependsOn: ['w2_reserve'],
       },
     ],
     rewards: {
@@ -73,7 +74,7 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
       summary: '+4 First Aid Kits — stable water supply',
     },
     completionTransmissionId: 'tx_c1_waterline_done',
-    targetHint: 'Water Cistern requires Basic Sanitation research.',
+    targetHint: 'A Research Center and Basic Sanitation research unlock the Water Cistern.',
   },
   {
     id: 'mission_deadchannel',
@@ -87,7 +88,12 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
     chapter: 1,
     isMainStory: true,
     trigger: { type: 'condition', condition: { kind: 'day', min: 5 } },
-    prerequisites: [{ kind: 'hq_established', value: true }],
+    prerequisites: [
+      { kind: 'hq_established', value: true },
+      // The antenna blueprint requires Basic Antenna research — the mission
+      // must not ask for a build the player cannot legitimately reach yet.
+      { kind: 'research', id: 'basic_antenna' },
+    ],
     requiresMissionsCompleted: ['mission_waterline'],
     briefingTransmissionId: 'tx_c1_deadchannel',
     responseOptions: [
@@ -583,11 +589,13 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
     briefing:
       'Reyes is blunt: the settlement breaks more than it can mend. Build a Tool Factory, run the line, and put a working stockpile of tools in the bins.',
     category: 'settlement',
-    priority: 'high',
-    chapter: 3,
-    isMainStory: true,
+    priority: 'normal',
+    chapter: 1,
+    isMainStory: false,
     trigger: { type: 'condition', condition: { kind: 'day', min: 8 } },
-    prerequisites: [{ kind: 'population', min: 12 }],
+    // Tool Factory requires the tool_factory research node — gate the mission
+    // on the real research so the build objective is always constructible.
+    prerequisites: [{ kind: 'research', id: 'tool_factory' }],
     requiresMissionsCompleted: ['mission_oldworld'],
     briefingTransmissionId: 'tx_c3_makingdo',
     responseOptions: [
@@ -629,10 +637,11 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
       'Every wreck and every used cartridge is raw material walking away. Establish a Scrapyard and pull 15 scrap units back into the economy.',
     category: 'settlement',
     priority: 'normal',
-    chapter: 3,
-    isMainStory: true,
+    chapter: 1,
+    isMainStory: false,
     trigger: { type: 'condition', condition: { kind: 'day', min: 10 } },
-    prerequisites: [{ kind: 'population', min: 12 }],
+    // Scrapyard requires the recycling research node.
+    prerequisites: [{ kind: 'research', id: 'recycling' }],
     requiresMissionsCompleted: ['mission_makingdo'],
     briefingTransmissionId: 'tx_c3_scrap',
     responseOptions: [
@@ -672,12 +681,11 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
     description: 'Research arms, stand up the factory, and produce ammunition.',
     briefing:
       'Every sortie burns ammunition we cannot replace. Research the pistol line, build an Arms Factory, and produce 5 crates of ammunition so the colony stops fighting on borrowed rounds.',
-    category: 'campaign',
-    priority: 'high',
-    chapter: 3,
-    isMainStory: true,
+    category: 'settlement',
+    priority: 'normal',
+    chapter: 1,
+    isMainStory: false,
     trigger: { type: 'condition', condition: { kind: 'day', min: 12 } },
-    prerequisites: [{ kind: 'population', min: 12 }],
     requiresMissionsCompleted: ['mission_makingdo'],
     briefingTransmissionId: 'tx_c3_firepower',
     responseOptions: [
@@ -725,11 +733,14 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
     briefing:
       'The medical wing is running on daylight. Research Electrical Engineering, construct a Generator Station, and hold a 20-unit fuel reserve so the ward never goes dark again.',
     category: 'settlement',
-    priority: 'high',
-    chapter: 3,
-    isMainStory: true,
+    priority: 'normal',
+    chapter: 1,
+    isMainStory: false,
     trigger: { type: 'condition', condition: { kind: 'day', min: 12 } },
-    prerequisites: [{ kind: 'population', min: 15 }],
+    // Electrical Engineering requires Mechanics (which requires Advanced
+    // Metalworks → Tool Factory). Gate on the real research chain so the
+    // mission never asks for an unreachable research project.
+    prerequisites: [{ kind: 'research', id: 'mechanics' }],
     requiresMissionsCompleted: ['mission_makingdo'],
     briefingTransmissionId: 'tx_c3_power',
     responseOptions: [
@@ -782,7 +793,7 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
     category: 'settlement',
     priority: 'normal',
     chapter: 4,
-    isMainStory: true,
+    isMainStory: false,
     trigger: { type: 'condition', condition: { kind: 'population', min: 25 } },
     requiresMissionsCompleted: ['mission_makingdo'],
     briefingTransmissionId: 'tx_c4_morethan',
@@ -822,9 +833,9 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
     briefing:
       'Carver is right — a town cannot run on good intentions. Construct a Gathering Place and grow the roster to 32 so the civic hall has a community to govern.',
     category: 'settlement',
-    priority: 'high',
+    priority: 'normal',
     chapter: 4,
-    isMainStory: true,
+    isMainStory: false,
     trigger: { type: 'condition', condition: { kind: 'flag', key: 'community_established', value: true } },
     prerequisites: [{ kind: 'population', min: 28 }],
     requiresMissionsCompleted: ['mission_morethan'],
@@ -866,11 +877,12 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
     briefing:
       'Miller\'s fireteam has made contact with a fortified group — maybe a dozen people, low on food and medicine. How we answer will be remembered. Choose.',
     category: 'faction',
-    priority: 'normal',
+    priority: 'high',
     chapter: 4,
     isMainStory: true,
     trigger: { type: 'condition', condition: { kind: 'day', min: 14 } },
     prerequisites: [{ kind: 'population', min: 15 }],
+    requiresMissionsCompleted: ['mission_unknownsignal'],
     briefingTransmissionId: 'tx_c4_strangers',
     responseOptions: [
       {
@@ -907,7 +919,7 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
     category: 'faction',
     priority: 'high',
     chapter: 4,
-    isMainStory: true,
+    isMainStory: false,
     trigger: { type: 'condition', condition: { kind: 'flag', key: 'never_auto' } },
     briefingTransmissionId: 'tx_c4_strangers',
     responseOptions: [
@@ -943,7 +955,7 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
     category: 'faction',
     priority: 'normal',
     chapter: 4,
-    isMainStory: true,
+    isMainStory: false,
     trigger: { type: 'condition', condition: { kind: 'flag', key: 'never_auto' } },
     briefingTransmissionId: 'tx_c4_strangers',
     responseOptions: [
@@ -974,7 +986,7 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
     title: 'BITTER HARVEST',
     description: 'The eastern group you turned away has found new patrons — and they remember you.',
     briefing:
-      'Miller\'s fireteam confirmed it this morning: the shopfront is a burned shell. The eastern group is gone — and their vehicles were clocked moving with a raider column. Then the band went cold and a voice we both recognised came up on the open channel: "You left us to die once. We remember." The raiders will use the night horde as a battering ram. Hold the perimeter through the dark and break what they send — they have to learn that refusing them once cost us nothing they can collect.',
+      'Miller\'s fireteam confirmed it this morning: the shopfront is a burned shell. The eastern group is gone — and their vehicles were clocked moving with a raider column. Then the band went cold and a voice we both recognised came up on the open channel: "You left us to die once. We remember." Their scouts are already probing our perimeter with packs ahead of them. Hold the line through the night and break what they send — they have to learn that refusing them once cost us nothing they can collect.',
     category: 'faction',
     priority: 'high',
     chapter: 4,
@@ -1006,7 +1018,8 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
       {
         id: 'bh2_kills',
         type: 'eliminate_infected',
-        title: 'Break the Horde They Drove Ahead of Them',
+        title: 'Break the Packs They Send Ahead',
+        description: 'Their scouts walk infected packs against our perimeter. Break them and the cost of raiding us becomes a lesson.',
         targetCount: 20,
         dependsOn: ['bh1_survive'],
       },
@@ -1088,9 +1101,14 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
     priority: 'high',
     chapter: 5,
     isMainStory: true,
+    // Caravans are coordinated by the Expedition Center — the mission must
+    // never appear before that logistics capability can legitimately exist.
     trigger: { type: 'condition', condition: { kind: 'day', min: 16 } },
-    prerequisites: [{ kind: 'population', min: 25 }],
-    requiresMissionsCompleted: ['mission_order'],
+    prerequisites: [
+      { kind: 'population', min: 25 },
+      { kind: 'building_any', buildingType: 'expedition_center' },
+    ],
+    requiresMissionsCompleted: ['mission_order', 'mission_military'],
     briefingTransmissionId: 'tx_c5_secondchance',
     responseOptions: [
       {
@@ -1159,7 +1177,7 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
     category: 'faction',
     priority: 'normal',
     chapter: 5,
-    isMainStory: true,
+    isMainStory: false,
     trigger: { type: 'condition', condition: { kind: 'settlement_count', min: 2 } },
     prerequisites: [{ kind: 'day', min: 18 }],
     requiresMissionsCompleted: ['mission_road'],
@@ -1208,12 +1226,18 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
     priority: 'high',
     chapter: 6,
     isMainStory: true,
-    trigger: { type: 'condition', condition: { kind: 'day', min: 20 } },
+    trigger: {
+      type: 'and',
+      children: [
+        { type: 'condition', condition: { kind: 'research', id: 'triangulation' } },
+        { type: 'condition', condition: { kind: 'squad_formed', min: 1 } },
+      ],
+    },
     prerequisites: [
       { kind: 'research', id: 'triangulation' },
       { kind: 'squad_formed', min: 1 },
     ],
-    requiresMissionsCompleted: ['mission_voices'],
+    requiresMissionsCompleted: ['mission_oldworld'],
     briefingTransmissionId: 'tx_c6_military',
     responseOptions: [
       {
@@ -1481,18 +1505,45 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
     responseOptions: [{ label: 'ACKNOWLEDGED. THE WORK STARTS NOW.', action: 'accept' }],
     tasks: [
       {
-        id: 'pc1_research',
-        type: 'research_technology',
-        title: 'Research a Medicine Node',
-        description: 'Any medicine-line research advances the treatment programme.',
-        researchId: 'basic_sanitation',
+        id: 'pc1_samples',
+        type: 'scavenge_resource',
+        title: 'Recover Pathogen Samples',
+        description: 'Search the grid for medical stock and pull usable pathogen samples from the old world\'s cabinets — the treatment programme starts with real material to work on.',
+        resourceType: 'antibiotics',
+        targetCount: 6,
       },
       {
-        id: 'pc2_endure',
+        id: 'pc2_research',
+        type: 'research_technology',
+        title: 'Establish a Treatment Protocol',
+        description: 'Drugs Production formalises the pharmaceutical line the programme is built on.',
+        researchId: 'drugs_production',
+        dependsOn: ['pc1_samples'],
+      },
+      {
+        id: 'pc3_facility',
+        type: 'build_facility',
+        title: 'Build Clinical Capability',
+        description: 'A Hospital gives the programme surgical theatres and real treatment capacity.',
+        buildingType: 'hospital',
+        focusAction: 'open_build_drawer',
+        dependsOn: ['pc2_research'],
+      },
+      {
+        id: 'pc4_demonstrate',
+        type: 'maintain_resource',
+        title: 'Demonstrate Successful Treatment',
+        description: 'Keep a working medical supply in reserve for a full treatment cycle — proof the protocol holds under real conditions.',
+        resourceType: 'first_aid_kits',
+        targetCount: 12,
+        dependsOn: ['pc3_facility'],
+      },
+      {
+        id: 'pc5_protect',
         type: 'survive_duration',
-        title: 'Hold the Programme Together for Three Days',
-        targetCount: 72,
-        dependsOn: ['pc1_research'],
+        title: 'Hold the Programme Together for Two Days',
+        targetCount: 48,
+        dependsOn: ['pc4_demonstrate'],
       },
     ],
     rewards: {
@@ -1518,18 +1569,37 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
     responseOptions: [{ label: 'ACKNOWLEDGED. WE TAKE IT TO THEM.', action: 'accept' }],
     tasks: [
       {
-        id: 'pp1_lairs',
-        type: 'clear_lair',
-        title: 'Clear 2 Lairs',
-        targetCount: 2,
-        focusAction: 'focus_lair',
+        id: 'pp1_doctrine',
+        type: 'build_facility',
+        title: 'Formalise the Suppression Doctrine',
+        description: 'A Shooting Range turns survival into discipline — the colony trains to take and hold ground.',
+        buildingType: 'shooting_range',
+        focusAction: 'open_build_drawer',
       },
       {
-        id: 'pp2_kills',
+        id: 'pp2_lairs',
+        type: 'clear_lair',
+        title: 'Clear 2 Lairs',
+        description: 'Take the nests that anchor the infected in the region — erasure, nest by nest.',
+        targetCount: 2,
+        focusAction: 'focus_lair',
+        dependsOn: ['pp1_doctrine'],
+      },
+      {
+        id: 'pp3_perimeter',
+        type: 'build_facility',
+        title: 'Hold the Ground You Take',
+        description: 'A Fortified Tower anchors the expanded perimeter — territory only counts if it can be defended.',
+        buildingType: 'fortified_tower',
+        focusAction: 'open_build_drawer',
+        dependsOn: ['pp2_lairs'],
+      },
+      {
+        id: 'pp4_kills',
         type: 'eliminate_infected',
         title: 'Put Down 60 Infected',
         targetCount: 60,
-        dependsOn: ['pp1_lairs'],
+        dependsOn: ['pp3_perimeter'],
       },
     ],
     rewards: {
@@ -1565,6 +1635,23 @@ export const CAMPAIGN_MISSIONS: MissionDefinition[] = [
         title: 'Run a Supply Caravan Between Them',
         targetCount: 1,
         dependsOn: ['pn1_settlement'],
+      },
+      {
+        id: 'pn3_allies',
+        type: 'custom',
+        title: 'Keep Three Channels of Trust Open',
+        description: 'Coexistence is a network, not a bunker. Maintain standing relationships with three contacted factions — trust is the infrastructure that outlasts the dead.',
+        minContacts: 3,
+        targetCount: 3,
+        dependsOn: ['pn2_caravan'],
+      },
+      {
+        id: 'pn4_endure',
+        type: 'survive_duration',
+        title: 'Prove the Network Holds for Three Days',
+        description: 'Three days with the network intact — settlements alive, channels open — is the proof that coexistence works.',
+        targetCount: 72,
+        dependsOn: ['pn3_allies'],
       },
     ],
     rewards: {

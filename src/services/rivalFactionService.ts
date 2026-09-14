@@ -757,8 +757,35 @@ export function tickZombieLairs(
         const deployCount = Math.min(groupSize, sheltered.length);
         for (let i = 0; i < deployCount; i++) {
           const zmb = sheltered[i];
-          const angle = Math.random() * Math.PI * 2;
-          const dist = 6 + Math.random() * 14;
+          // Emergence means LEAVING the building: sample an exit point outside
+          // the actual footprint (irregular polygons included). A blind
+          // 6–20 m ring around the center can fall back inside a large or
+          // elongated footprint, which would silently turn a "deployment"
+          // into a sheltered resident that never left — and never wakes the
+          // outside-world logic.
+          let angle = Math.random() * Math.PI * 2;
+          let dist = 6 + Math.random() * 14;
+          if (poly && !isOutsideBuildingPolygon(center.x + Math.cos(angle) * dist, center.z + Math.sin(angle) * dist, poly)) {
+            // The blind ring point fell inside the footprint (large/elongated
+            // buildings): walk outward along this bearing to just past the
+            // polygon edge, then add the normal stand-off distance. This keeps
+            // emergence LOCAL — the exit sits at the nearest boundary crossing
+            // rather than marching deep into the home radius.
+            let lo = dist; // inside (we just tested it)
+            let hi = dist;
+            // Expand the upper bound until it is genuinely OUTSIDE the
+            // footprint — otherwise both bracket ends are inside and the
+            // bisection below converges to an interior point.
+            for (let k = 0; k < 16 && !isOutsideBuildingPolygon(center.x + Math.cos(angle) * hi, center.z + Math.sin(angle) * hi, poly); k++) {
+              hi += Math.max(8, hi * 0.5);
+            }
+            for (let k = 0; k < 24; k++) {
+              const mid = (lo + hi) / 2;
+              if (isOutsideBuildingPolygon(center.x + Math.cos(angle) * mid, center.z + Math.sin(angle) * mid, poly)) hi = mid;
+              else lo = mid;
+            }
+            dist = hi + 6 + Math.random() * 4;
+          }
           zmb.x = center.x + Math.cos(angle) * dist;
           zmb.z = center.z + Math.sin(angle) * dist;
           // Normal sunlight rules apply — no forced alert level. Most stay local;

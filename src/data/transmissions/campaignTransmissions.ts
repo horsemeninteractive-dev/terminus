@@ -22,7 +22,7 @@ export const CAMPAIGN_TRANSMISSIONS: TransmissionDefinition[] = [
     frequency: '104.20 MHz',
     title: 'WATERLINE — RESERVE PRESSURE DROPPING',
     message:
-      'Chief Operator — Voss, municipal water desk. We survived on bottled stores and whatever the sky gives us, but that is not a system. The old mains are dead, the collection is ad-hoc, and if the tap runs dry the whole settlement goes with it. I need you to make water infrastructure real: formal sanitation research, a proper cistern, and a working reserve before we start rationing cups.',
+      'Chief Operator — Voss, municipal water desk. The sanitation research is done and the cistern blueprint is on the board, but a blueprint does not hold water. I need the collection built and the reserve made real: a proper cistern, a working store, and two days of proven supply before we start rationing cups.',
     source: 'Settlement operator',
     priority: 'high',
     audioCue: 'chirp',

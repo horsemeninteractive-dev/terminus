@@ -78,6 +78,13 @@ function mkSettlement(over: Partial<SettlementState> = {}): SettlementState {
 /** Operational primary HQ (getPrimaryHQ reads state.headquarters + primaryHQId). */
 function mkHQ(over: Partial<SettlementState> = {}): SettlementState {
   const s = mkSettlement();
+  // WATERLINE now requires a Research Center + Basic Sanitation research
+  // (spec v0.3.9: the campaign gates on real capabilities). Both fixtures ship
+  // with them so the existing engine tests keep exercising the day-3 flow.
+  (s as any).freestandingBuildings = [
+    { buildingId: 'rc1', typeId: 'research_center', type: 'research_center', constructionStatus: 'completed' },
+  ];
+  (s as any).research = { unlockedNodes: ['basic_sanitation'], activeResearchId: null, activeProgressSec: 0 };
   (s as any).headquarters = [
     {
       buildingId: '1',
@@ -178,7 +185,7 @@ test('a mission is created only after the player responds to its briefing', () =
   assert.ok(mission, 'accepting the briefing creates the mission');
   assert.equal(responded.newState.pendingMissions.length, 0);
   assert.ok(responded.newState.startedMissionIds.includes('mission_waterline'));
-  assert.equal(mission!.tasks.length, 4);
+  assert.equal(mission!.tasks.length, 3);
 });
 
 // ---------------------------------------------------------------------------
@@ -263,8 +270,9 @@ test('declining a briefing removes the pending mission and records the decline',
 
 test('branching response creates the selected branch mission (Strangers)', () => {
   const settlement = mkHQ({ generalPopulation: { total: 16 } as any });
-  // Strangers requires population >= 15 and day >= 14.
-  const result = updateMissionSystem(getInitialMissionState(), settlement, clock(14), {});
+  // Strangers requires population >= 15, day >= 14 and the Seekers contact.
+  const state = { ...getInitialMissionState(), completedMissionIds: ['mission_unknownsignal'] };
+  const result = updateMissionSystem(state, settlement, clock(14), {});
   const tx = findTx(result, 'tx_c4_strangers');
   assert.ok(tx, 'strangers briefing expected on day 14');
 
@@ -909,27 +917,30 @@ test('sequential task dependencies: dependent tasks remain locked until prerequi
   const active = r2.newState.activeMissions.find((m) => m.definitionId === 'mission_waterline')!;
   assert.ok(active);
 
-  const t1 = active.tasks.find((t) => t.id === 'w1_research')!;
-  const t2 = active.tasks.find((t) => t.id === 'w2_cistern')!;
-  const t3 = active.tasks.find((t) => t.id === 'w3_reserve')!;
+  const t1 = active.tasks.find((t) => t.id === 'w1_cistern')!;
+  const t2 = active.tasks.find((t) => t.id === 'w2_reserve')!;
+  const t3 = active.tasks.find((t) => t.id === 'w3_survive')!;
 
   assert.equal(t1.status, 'active', 'first task is active');
   assert.equal(t2.status, 'pending', 'second task is locked pending t1');
   assert.equal(t3.status, 'pending', 'third task is locked pending t2');
 
-  // Attempting to evaluate while t1 is not completed does not complete t2 even if cistern is built
-  (settlement as any).freestandingBuildings = [{ buildingId: 'c1', typeId: 'water_cistern', type: 'water_cistern', constructionStatus: 'completed' }];
+  // Attempting to evaluate while t1 is not completed does not complete t2 even if reserve is met
+  (settlement as any).stockpile = stockpile({ water: { ...stockpile().water, rainwater: 30 } });
   const r3 = updateMissionSystem(r2.newState, settlement, clock(3), {});
   const activeAfter = r3.newState.activeMissions.find((m) => m.definitionId === 'mission_waterline')!;
-  const t2After = activeAfter.tasks.find((t) => t.id === 'w2_cistern')!;
+  const t2After = activeAfter.tasks.find((t) => t.id === 'w2_reserve')!;
   assert.equal(t2After.status, 'pending', 't2 must remain locked until t1 completes');
 
-  // Now complete t1 (research Basic Sanitation)
-  settlement.research.unlockedNodes = ['basic_sanitation'];
+  // Now complete t1 (cistern constructed)
+  (settlement as any).freestandingBuildings = [
+    ...(settlement as any).freestandingBuildings,
+    { buildingId: 'c1', typeId: 'water_cistern', type: 'water_cistern', constructionStatus: 'completed' },
+  ];
   const r4 = updateMissionSystem(r3.newState, settlement, clock(3), {});
   const activeUnlocked = r4.newState.activeMissions.find((m) => m.definitionId === 'mission_waterline')!;
-  const t1Done = activeUnlocked.tasks.find((t) => t.id === 'w1_research')!;
-  const t2Unlocked = activeUnlocked.tasks.find((t) => t.id === 'w2_cistern')!;
+  const t1Done = activeUnlocked.tasks.find((t) => t.id === 'w1_cistern')!;
+  const t2Unlocked = activeUnlocked.tasks.find((t) => t.id === 'w2_reserve')!;
   assert.equal(t1Done.status, 'completed');
   assert.equal(t2Unlocked.status, 'completed', 't2 was evaluated and completed once t1 unlocked it');
 });
@@ -956,7 +967,11 @@ test('campaign graph progression: later missions do not trigger before prerequis
     completedMissionIds: ['mission_waterline'],
   };
 
-  const resAfter = updateMissionSystem(stateWithWaterline, settlement, clock(5), {});
+  // deadchannel also requires Basic Antenna research for its antenna task.
+  const settlementReady = mkHQ();
+  (settlementReady as any).research = { unlockedNodes: ['basic_sanitation', 'basic_antenna'], activeResearchId: null, activeProgressSec: 0 };
+
+  const resAfter = updateMissionSystem(stateWithWaterline, settlementReady, clock(5), {});
   assert.ok(
     resAfter.newTransmissions.some((t) => t.missionId === 'mission_deadchannel'),
     'deadchannel triggers once waterline is completed'

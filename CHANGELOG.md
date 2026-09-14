@@ -21,7 +21,45 @@ Releasing:
 
 ---
 
-## [Unreleased]
+## [0.3.9] – 2026-09-14
+
+### Fixed
+
+- **Lair emergence always exits the footprint.** Deployed residents were
+  placed on a blind 6–20 m ring around the building centre; on larger or
+  irregular footprints they could land back inside — a "deployed" infected
+  that never actually left the nest. Exit points now guarantee a position
+  outside the real polygon (bisection along the bearing to just past the
+  boundary, plus a small stand-off), keeping emergence local to the nest.
+  This was the intermittent CI test failure on the 0.3.8 release run.
+
+### Changed
+
+- **Campaign progression corrected (v0.3.9 pass).** Every authored mission now
+  gates on real capabilities rather than day counters: WATERLINE requires an
+  actual Research Center + Basic Sanitation before asking for a Water Cistern;
+  DEAD CHANNEL requires Basic Antenna; MAKING DO / SCRAP / POWER gate on the
+  research their factories need; SECOND CHANCE requires the Expedition Center
+  and follows the depot recovery. Main-story missions carry a causal
+  `requiresMissionsCompleted` spine (no day-only entry). Settlement-development
+  missions (MAKING DO, SCRAP, FIREPOWER, POWER, MORE THAN SURVIVAL, ORDER) are
+  reclassified out of the main story; STRANGERS branch children and DISTANT
+  VOICES reclassified as faction/branch content. BITTER HARVEST prose now
+  describes what the simulation actually does. Final branches rebuilt as
+  distinct gameplay: CURE (samples → drugs research → hospital →
+  demonstration), PURGE (doctrine → lairs → fortified hold → kills),
+  COEXISTENCE (network + trust channels + endurance), using a typed
+  `minContacts` custom-task evaluated against real contacted factions.
+
+### Added
+
+- `docs/campaign-progression-audit.md` — developer-facing dependency matrix
+  for every authored mission (trigger, prerequisites, research/building
+  requirements, semantics, problems found, changes made).
+- `building_any` mission condition (adapted OR constructed) and structured
+  `minContacts` custom tasks; `tests/campaignProgression.test.ts` regression
+  suite (20 tests) locking the progression graph to the real research tree
+  and building definitions.
 
 ## [0.3.8] – 2026-09-14
 

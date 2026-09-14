@@ -300,9 +300,23 @@ export function evaluateMissionCondition(
         return count >= (cond.min || 1);
       }
       const constructed = (settlement.freestandingBuildings || []).filter(
-        (b: any) => b && b.type === cond.buildingType
+        (b: any) => b && (b.type === cond.buildingType || b.typeId === cond.buildingType)
       ).length;
       return constructed >= (cond.min || 1);
+    }
+    case 'building_any': {
+      // Real capability prerequisite: counts the building whether it was
+      // adapted from an OSM structure or constructed freestanding. Missions
+      // must never gate on one construction path only (spec §10).
+      const adapted = settlement.adaptedBuildings instanceof Map
+        ? Array.from(settlement.adaptedBuildings.values()).filter(
+            (b: any) => b && (b.type === cond.buildingType || b.typeId === cond.buildingType) && b.constructionStatus !== 'demolished'
+          ).length
+        : 0;
+      const constructed = (settlement.freestandingBuildings || []).filter(
+        (b: any) => b && (b.type === cond.buildingType || b.typeId === cond.buildingType)
+      ).length;
+      return (adapted + constructed) >= (cond.min || 1);
     }
     case 'lair_discovered': {
       const states = Object.values(lairStatesOf(settlement));
@@ -651,6 +665,7 @@ export function bindMissionTasks(
       focusAction: t.focusAction,
       dependsOn: t.dependsOn,
       completionMode: t.completionMode,
+      minContacts: t.minContacts,
     };
   });
 }
@@ -970,8 +985,18 @@ export function evaluateTask(
       const count = ctx.settlements?.length || 1;
       return { current: Math.min(task.target, count), complete: count >= task.target };
     }
-    case 'custom':
+    case 'custom': {
+      // Structured custom semantics: a `minContacts` custom task tracks real
+      // contacted-faction count (COEXISTENCE trust-channel objective).
+      if (task.minContacts !== undefined) {
+        const contacts = state?.contactedFactionIds?.length || 0;
+        return {
+          current: Math.min(task.target, contacts),
+          complete: contacts >= task.minContacts,
+        };
+      }
       return { current: task.current, complete: task.status === 'completed' };
+    }
     default:
       return { current: 0, complete: false };
   }

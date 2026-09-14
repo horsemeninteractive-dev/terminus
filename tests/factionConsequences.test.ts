@@ -66,6 +66,16 @@ function mkSettlement(over: Partial<SettlementState> = {}): SettlementState {
   } as unknown as SettlementState;
 }
 
+/** STRANGERS now requires the Seekers contact chain first (campaign spine). */
+function mkContactedState(extra: Partial<Parameters<typeof getInitialMissionState>[0]> = {}) {
+  const base = getInitialMissionState();
+  return {
+    ...base,
+    completedMissionIds: [...base.completedMissionIds, 'mission_unknownsignal'],
+    ...extra,
+  };
+}
+
 const TS = 'DAY 01 — 08:00:00';
 const EASTERN = 'eastern_group';
 
@@ -189,7 +199,7 @@ test('faction_standing conditions evaluate min/max against the relations record'
 
 test('declining STRANGERS cuts the eastern group: standing drop, flag, one contact-lost tx', () => {
   const settlement = mkSettlement();
-  const scan = updateMissionSystem(getInitialMissionState(), settlement, clock(14), {});
+  const scan = updateMissionSystem(mkContactedState(), settlement, clock(14), {});
   const briefing = scan.newTransmissions.find((t) => t.missionId === 'mission_strangers');
   assert.ok(briefing, 'strangers briefing queued on day 14');
 
@@ -208,7 +218,7 @@ test('declining STRANGERS cuts the eastern group: standing drop, flag, one conta
 
 test('rescuing STRANGERS raises eastern standing without any cutoff', () => {
   const settlement = mkSettlement();
-  const scan = updateMissionSystem(getInitialMissionState(), settlement, clock(14), {});
+  const scan = updateMissionSystem(mkContactedState(), settlement, clock(14), {});
   const briefing = scan.newTransmissions.find((t) => t.missionId === 'mission_strangers');
   assert.ok(briefing);
 
