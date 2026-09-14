@@ -333,6 +333,12 @@ export class WorldScene {
   private targetLightingHour = 8;
   private currentMapData: MapData | null = null;
   private currentExaggeration = 1.0;
+
+  /** Applied to road tessellation at load and live-rebuilt on quality switch
+   * — roads are the dominant triangle source on city maps. */
+  private applyRoadTessellationQuality() {
+    this.roadRenderer.setTessellationQuality(this.graphicsQuality);
+  }
   private disableElevation = false;
   private showBuildingEdges = true;
   private showWireframe = false;
@@ -421,7 +427,7 @@ export class WorldScene {
   private fpsLastTime = 0;
 
   // Lightweight perf HUD: a plain DOM overlay updated once per second (no
-  // React involvement, so measuring costs nothing). Toggle with F9 or
+  // React involvement, so measuring costs nothing). Toggle with F10 or
   // `__terminusScene.togglePerfHud()` in the console. Hidden by default.
   private perfHud: HTMLDivElement | null = null;
   private perfHudVisible = false;
@@ -431,7 +437,10 @@ export class WorldScene {
   private frameMsAvg = 16.7;
 
   private onKeyDown = (e: KeyboardEvent) => {
-    if (e.code === 'F9') {
+    // F10, NOT F9: useSaveLoad binds F9 to Quick Load in a separate window
+    // keydown listener — both handlers fired on F9 (preventDefault doesn't
+    // stop sibling listeners), so opening the profiler also loaded a save.
+    if (e.code === 'F10') {
       e.preventDefault();
       this.togglePerfHud();
     }
@@ -766,6 +775,7 @@ export class WorldScene {
     if (stale()) return;
 
     onProgress?.(0.18, 'Tracing road networks...');
+    this.applyRoadTessellationQuality();
     this.roadRenderer.rebuildRoads(mapData.roads, activeElevation, exaggeration, mapData.railways || []);
     this.roadRenderer.setShowStreetLabels(this.showStreetLabels);
     await nextFrame();
@@ -1100,6 +1110,21 @@ export class WorldScene {
         break;
     }
     this.applyQualityPixelRatio();
+
+    // Quality now shapes road tessellation: rebuild the road network so the
+    // switch takes effect immediately (roads are rebuilt from cached map
+    // data — a few hundred ms hitch, once per explicit user action).
+    this.applyRoadTessellationQuality();
+    if (this.currentMapData) {
+      const activeElevation = this.disableElevation ? null : this.currentMapData.elevation;
+      this.roadRenderer.rebuildRoads(
+        this.currentMapData.roads,
+        activeElevation,
+        this.currentExaggeration,
+        this.currentMapData.railways || []
+      );
+      this.roadRenderer.setShowStreetLabels(this.showStreetLabels);
+    }
   }
 
   /**

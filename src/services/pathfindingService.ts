@@ -122,6 +122,12 @@ export interface PathOptions {
   /** Humans wade/swim through water cells at a movement penalty; when true
    *  (infected) water cells are hard barriers never traversed. */
   waterImpassable?: boolean;
+  /** Goal-bucket size (metres) for cached-path reuse in stepAlongPath. A
+   *  moving goal (e.g. a zombie chasing a squad) re-plans A* every time the
+   *  goal crosses a bucket boundary — a small bucket means constant expensive
+   *  re-plans. Callers that don't need precision (slow pursuers) coarsen this;
+   *  default 2 m preserves the historical behaviour for everyone else. */
+  goalBucketMeters?: number;
 }
 
 export class PathGrid {
@@ -754,8 +760,9 @@ export class PathGrid {
   }
 }
 
-function goalKeyFor(x: number, z: number): string {
-  return `${Math.round(x / 2)},${Math.round(z / 2)}`;
+function goalKeyFor(x: number, z: number, bucketMeters = 2): string {
+  const b = Math.max(0.5, bucketMeters);
+  return `${Math.round(x / b)},${Math.round(z / b)}`;
 }
 
 /**
@@ -774,7 +781,7 @@ export function stepAlongPath(
   arriveRadius = 1.2,
   opts?: PathOptions
 ): { x: number; z: number; rotation: number; state: PathState; arrived: boolean; isIndoor: boolean; isInWater: boolean } {
-  const goalKey = goalKeyFor(goalX, goalZ);
+  const goalKey = goalKeyFor(goalX, goalZ, opts?.goalBucketMeters);
   // A cached path is reusable only for the SAME goal, the SAME grid, and the
   // SAME obstacle revision. A new map (different gridId) or any wall/gate placed
   // or removed (revision bumped) invalidates it so units re-route immediately

@@ -23,6 +23,38 @@ Releasing:
 
 ## [Unreleased]
 
+## [0.3.10] – 2026-09-14
+
+### Fixed
+
+- **Performance: quality presets now scale road tessellation — the dominant
+  triangle source on city maps.** Roads were tessellated at a fine 1.4 m step
+  on curvy/sloped stretches regardless of graphics preset, producing ~1.5 M
+  road triangles on a real sector (measured: Evesham) — over half the total
+  scene geometry, drawn as a few merged mega-meshes no frustum cull can
+  touch. On integrated GPUs (e.g. AMD handheld APUs) that alone held the
+  frame at ~10–12 FPS at `quality low`. The low preset now tessellates at a
+  6 m ceiling and drops cosmetic curb strips and center-line markings;
+  medium uses 4.5 m. Measured on the full Evesham road set: **58% fewer road
+  slices at low, 52% at medium** (more on hilly terrain where the slope
+  driver previously kept dense sampling). Switching quality at runtime
+  rebuilds the road network live. Road pathing/collision logic is untouched —
+  this is render geometry only.
+
+- **Performance: chasing infected no longer flood the main thread with A*
+  re-plans.** A zombie chasing a moving squad re-planned its route every time
+  the target crossed a 2 m goal bucket — a full pathfinding search each time,
+  measured at up to ~75 ms at real map scale when the straight line was
+  blocked (buildings, or non-bridge water under the wading rules). Night
+  hordes in pursuit could pin the main thread to sub-1 FPS several days in,
+  when the accumulated lair/horde population first chases en masse. Pursuit
+  goal buckets are now 8 m — imperceptible for a shambler at ~1 m/s, but
+  ~16× fewer re-plans (measured 4.6× faster on the expensive blocked-detour
+  case). Squad/worker/vehicle pathing keeps the precise 2 m bucket.
+- **Perf overlay moved from F9 to F10.** F9 is Quick Load; the two window
+  keydown listeners both fired on F9 (preventDefault does not stop sibling
+  listeners), so opening the profiler also loaded the last checkpoint.
+
 ### Changed
 
 - **Adaptation and construction costs rebalanced.** Adaptation volume scaling

@@ -974,7 +974,13 @@ export function tickCombatSimulation(
           // traversable for them — a fenced perimeter genuinely keeps them out.
           // They also cannot wade: rivers/lakes are hard barriers, so a water
           // line genuinely holds them back from the colony.
-          { gatesOpen: false, wallsImpassable: true, waterImpassable: true }
+          // Goal bucket 8 m: a chasing zombie re-plans A* whenever its target
+          // crosses the bucket grid. The default 2 m bucket had a squad walking
+          // at 5 m/s forcing a FULL A* search (75 ms at real map scale, more
+          // with water on the segment) up to 2.5×/s PER CHASER — night hordes
+          // pinned the main thread. Zombies shamble at ~1 m/s; an 8 m pursuit
+          // error is imperceptible but cuts re-plans ~16×.
+          { gatesOpen: false, wallsImpassable: true, waterImpassable: true, goalBucketMeters: 8 }
         );
         x = step.x;
         z = step.z;

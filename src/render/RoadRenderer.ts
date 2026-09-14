@@ -253,9 +253,27 @@ export class RoadRenderer {
    * city-scale maps (the single largest FPS cost) for detail the terrain grid
    * cannot express anyway.
    */
+  /** Finest step (m) the current quality preset allows. Roads are the single
+   * largest triangle source on city maps (~1.5M tris at the old 1.4m fine
+   * step); on integrated GPUs that alone halved the frame rate, so the low
+   * preset coarsens tessellation. Curvy/sloped stretches always stay denser
+   * than straight ones — only the ceiling moves. */
+  private tessMaxSeg = 3.5;
+
+  /** Low preset also drops per-slice curb strips and center-line markings —
+   * cosmetic detail that roughly doubles the per-slice geometry cost. */
+  private tessLowDetail = false;
+
+  /** Quality-scaled road tessellation ceiling. Called at map load and on every
+   * runtime quality switch (the caller rebuilds roads afterwards). */
+  public setTessellationQuality(quality: 'low' | 'medium' | 'high') {
+    this.tessMaxSeg = quality === 'low' ? 6.0 : quality === 'medium' ? 4.5 : 3.5;
+    this.tessLowDetail = quality === 'low';
+  }
+
   private subdivideRoadPoints(
     points: Point2D[],
-    maxSegLength = 3.5,
+    maxSegLength = this.tessMaxSeg,
     elevation?: ElevationGrid | null,
     exaggeration = 1.0
   ): Point2D[] {
@@ -559,7 +577,7 @@ export class RoadRenderer {
       if (!road.points || road.points.length < 2) continue;
 
       const rawPts = road.points;
-      const pts = this.subdivideRoadPoints(rawPts, 1.4, elevation, exaggeration);
+      const pts = this.subdivideRoadPoints(rawPts, this.tessMaxSeg, elevation, exaggeration);
       const width = road.width || 6;
       const halfW = width / 2;
       const curbW = 0.28;
@@ -727,8 +745,9 @@ export class RoadRenderer {
           1.0, vDistance
         );
 
-        // Curbs (only active on non-overlapping edges)
-        if (!isPedestrian) {
+        // Curbs (only active on non-overlapping edges; skipped entirely on
+        // the low preset — cosmetic detail, meaningful geometry cost)
+        if (!isPedestrian && !this.tessLowDetail) {
           curbVertices.push(
             pts[i].x + nx * (halfW + curbW),
             leftTerrainY + curbY,
@@ -747,7 +766,7 @@ export class RoadRenderer {
         }
 
         // Center line markings for wide roads (width >= 6m, stopping before intersections)
-        if (!isPedestrian && width >= 6) {
+        if (!isPedestrian && width >= 6 && !this.tessLowDetail) {
           const markW = 0.18;
           const markDistToStart = hasMultiStartJunc ? distToStartPt : Infinity;
           const markDistToEnd = hasMultiEndJunc ? distToEndPt : Infinity;
