@@ -65,38 +65,45 @@ test('reference shell (100 m² × 8 m) prices match the legacy reference costs',
   assert.equal(full.tools || 0, 0, 'a tool-less type stays tool-free');
 });
 
-test('adaptation cost scales linearly with the real shell volume, not per type', () => {
-  // 3200 m³ is exactly 4× the 800 m³ reference → 4× every material.
-  const ref = getAdaptedCost('warehouse', 'residential', 100, 8);
-  const big = getAdaptedCost('warehouse', 'residential', 200, 16);
-  assert.equal(big.wood, ref.wood * 4, 'wood quadruples with a 4×-volume shell');
-  assert.equal(big.metal, ref.metal * 4);
-  assert.equal(big.bricks, ref.bricks * 4);
-
-  // A genuinely tiny structure costs a fraction of the reference.
+test('adaptation cost grows gently with shell volume — linear below reference, sub-linear above', () => {
+  // Below the reference the scaling is linear and small shells stay cheap.
   const tiny = getAdaptedCost('warehouse', 'residential', 40, 4); // 160 m³ → ×0.2
   assert.equal(tiny.wood, Math.max(1, Math.round(PLAIN_DEF.adaptationCost.wood * 0.2)));
   assert.ok(
     tiny.wood < PLAIN_DEF.adaptationCost.wood,
     'a small building is genuinely cheaper than the flat legacy price'
   );
+
+  // Reference shell prices exactly the definition's reference cost.
+  const ref = getAdaptedCost('warehouse', 'residential', 100, 8);
+  assert.equal(ref.wood, PLAIN_DEF.adaptationCost.wood);
+
+  // Above the reference the curve is sub-linear (volume^0.6): a 4× shell
+  // costs ~2.3× — NOT 4× — so large conversions stay within reach.
+  const big = getAdaptedCost('warehouse', 'residential', 200, 16); // 3200 m³ → 4^0.6 ≈ 2.297
+  const expectedBig = Math.max(1, Math.round(PLAIN_DEF.adaptationCost.wood * Math.pow(4, 0.6)));
+  assert.equal(big.wood, expectedBig, 'wood follows the sub-linear curve');
+  assert.equal(big.metal, Math.max(1, Math.round(PLAIN_DEF.adaptationCost.metal * Math.pow(4, 0.6))));
+  assert.equal(big.bricks, Math.max(1, Math.round(PLAIN_DEF.adaptationCost.bricks * Math.pow(4, 0.6))));
+  assert.ok(big.wood < ref.wood * 4, 'a 4× shell must NOT cost 4× the reference price');
 });
 
-test('preferred-OSM discount is proportional to size, not a flat price cut', () => {
-  const preferred = getAdaptedCost('warehouse', 'warehouse', 200, 16); // scale 4 × 0.75
-  assert.equal(preferred.wood, Math.round(PLAIN_DEF.adaptationCost.wood * 4 * 0.75));
-  assert.equal(preferred.metal, Math.round(PLAIN_DEF.adaptationCost.metal * 4 * 0.75));
-  assert.equal(preferred.bricks, Math.round(PLAIN_DEF.adaptationCost.bricks * 4 * 0.75));
+test('preferred-OSM discount is proportional to the size-derived price', () => {
+  const preferred = getAdaptedCost('warehouse', 'warehouse', 200, 16); // scale 4^0.6 × 0.75
+  const curve = Math.pow(4, 0.6);
+  assert.equal(preferred.wood, Math.round(PLAIN_DEF.adaptationCost.wood * curve * 0.75));
+  assert.equal(preferred.metal, Math.max(1, Math.round(PLAIN_DEF.adaptationCost.metal * curve * 0.75)));
+  assert.equal(preferred.bricks, Math.max(1, Math.round(PLAIN_DEF.adaptationCost.bricks * curve * 0.75)));
   // The discount is still recognisable at any size.
   const preferredRef = getAdaptedCost('warehouse', 'warehouse', 100, 8);
   assert.ok(preferredRef.wood < PLAIN_DEF.adaptationCost.wood, 'preferred fit discount applies');
 });
 
-test('tools scale with volume too, floor 1, and stay zero on tool-less types', () => {
+test('tools follow the same gentle curve, floor 1, and stay zero on tool-less types', () => {
   const toolRef = getAdaptedCost(TOOL_DEF.id, undefined, 100, 8);
   assert.equal(toolRef.tools, TOOL_BASE, `reference build keeps its ${TOOL_BASE} tool cost (got ${toolRef.tools})`);
-  const toolBig = getAdaptedCost(TOOL_DEF.id, undefined, 200, 16); // 4× volume
-  assert.equal(toolBig.tools, TOOL_BASE * 4, '4× volume → 4× the tools');
+  const toolBig = getAdaptedCost(TOOL_DEF.id, undefined, 200, 16); // 4× volume → 4^0.6× tools
+  assert.equal(toolBig.tools, Math.max(1, Math.round(TOOL_BASE * Math.pow(4, 0.6))), 'tools follow the sub-linear curve');
   const plain = getAdaptedCost('warehouse', undefined, 200, 16);
   assert.equal(plain.tools || 0, 0);
 });

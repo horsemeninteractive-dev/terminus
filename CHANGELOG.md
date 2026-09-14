@@ -21,6 +21,23 @@ Releasing:
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **Adaptation and construction costs rebalanced.** Adaptation volume scaling
+  is now linear below the reference shell (~800 m³) and sub-linear above it
+  (volume^0.6): small buildings stay as cheap as ever, while large and
+  multi-storey shells no longer price conversions out of reach — a 4× shell
+  costs ~2.3× the reference bill instead of 4×. Freestanding costs retuned so
+  material identity matches the building: timber structures (HQ, squad
+  quarters, houses, shelter, barn, forester's hut, watchtower) are now
+  wood-dominant with only fixings-grade metal and brick, brick ovens
+  (cookhouse, smelter) are brick-dominant, and heavy metal is reserved for
+  structures where metal is the point (antenna mast, battery bank, metal
+  towers). Early-game builds — wooden tower, field, shelter, forester's hut,
+  water cistern — now fit inside the starting stockpile.
+
 ## [0.3.9] – 2026-09-14
 
 ### Fixed
