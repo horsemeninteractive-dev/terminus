@@ -502,6 +502,10 @@ export class WorldScene {
   // and out at the view centre.
   private graphicsQuality: import('../types/saveGame').GraphicsQuality = 'high';
   private qualityLodScale = 1.0;   // altitude-LOD threshold multiplier
+  /** False until setGraphicsQuality has applied a preset's LOD/shadow/cull
+   * parameters (the constructor sets the quality field directly for MSAA and
+   * pixel ratio only, so the first call must always apply the full preset). */
+  private qualityPresetApplied = false;
   private detailCullRadius = 0;    // 0 = disabled (high preset); otherwise absolute metres
   private detailCullAccum = 0;
   private detailCullActive = false;
@@ -1085,8 +1089,15 @@ export class WorldScene {
   }
 
   public setGraphicsQuality(quality: import('../types/saveGame').GraphicsQuality) {
-    if (this.graphicsQuality === quality) return;
+    // The constructor sets this.graphicsQuality directly (for MSAA/pixel
+    // ratio at context creation) WITHOUT the LOD/shadow/cull parameters, so
+    // the first setGraphicsQuality(same) call must still apply the preset —
+    // otherwise a game started at low/medium keeps the high preset's
+    // qualityLodScale/detailCullRadius/shadows and the building LOD never
+    // engages. Only skip when the preset has already been applied.
+    if (this.qualityPresetApplied && this.graphicsQuality === quality) return;
     this.graphicsQuality = quality;
+    this.qualityPresetApplied = true;
 
     switch (quality) {
       case 'low':

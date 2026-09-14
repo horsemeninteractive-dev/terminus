@@ -23,6 +23,21 @@ Releasing:
 
 ## [Unreleased]
 
+### Fixed
+
+- **Building distance-LOD now actually engages at quality Low/Medium.** The
+  scene constructor set the quality field directly (for the MSAA / pixel-ratio
+  decision at context creation) without applying the preset's LOD parameters,
+  and `setGraphicsQuality` early-returned on a matching quality — so a game
+  started at Low kept the High preset's parameters: distance culling disabled,
+  altitude-LOD thresholds at full scale, shadows on. Every session started at
+  Low/Medium drew all ~32k individual building meshes (~2,300 draw calls,
+  ~100 ms frames on integrated GPUs) no matter the preset. The first preset
+  application is now forced, so Low genuinely runs its 450 m detail bubble
+  and 0.45× LOD scale (measured live: draw calls 2,292 → 565–914, merged
+  far-cells converting as designed). Shadows and edge rendering follow the
+  preset as before.
+
 ## [0.3.10] – 2026-09-14
 
 ### Fixed
