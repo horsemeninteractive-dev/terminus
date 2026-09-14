@@ -729,7 +729,11 @@ export class CombatRenderer {
     }
     const { radius } = this.selectedSquadRenderPos;
     const segs = CombatRenderer.RANGE_RING_SEGMENTS;
-    const halfBand = Math.max(0.5, radius * 0.012); // ~1.2% of radius read as a line
+    // Radial half-width of the ground ribbon. A flat band reads correctly
+    // from every camera angle — the previous VERTICAL band (both edge
+    // vertices at the same x/z, offset only in height) was seen edge-on from
+    // a top-down camera and collapsed to a hairline.
+    const halfBand = Math.max(1.0, radius * 0.018); // ~3.6% of radius total width
 
     // LOS warp: recompute per-bearing clear-shot distances when the centre
     // moved beyond tolerance or the obstacle grid changed. Marched with the
@@ -792,20 +796,26 @@ export class CombatRenderer {
     for (let i = 0; i <= segs; i++) {
       const bearing = ((i % segs) / segs) * Math.PI * 2;
       const d = dists[i % segs];
-      const px = cx + Math.sin(bearing) * d;
-      const pz = cz + Math.cos(bearing) * d;
-      // Ride the bridge deck over water, otherwise hug the rendered terrain
-      // surface — the same authoritative sampler the units themselves stand
-      // on. Raised fully above ground so no half of the band submerges.
-      const deckY = this.bridgeDeckSampler?.(px, pz);
-      const ground = deckY != null ? deckY : this.terrainSample(px, pz, this.currentExaggeration);
+      // FLAT ribbon: inner and outer edge straddle the LOS-warp distance
+      // radially; each edge rides the bridge deck or the terrain surface
+      // independently so the band still drapes over slopes.
+      const inner = Math.max(0.5, d - halfBand);
+      const outer = d + halfBand;
+      const ix = cx + Math.sin(bearing) * inner;
+      const iz = cz + Math.cos(bearing) * inner;
+      const ox = cx + Math.sin(bearing) * outer;
+      const oz = cz + Math.cos(bearing) * outer;
+      const iDeck = this.bridgeDeckSampler?.(ix, iz);
+      const iGround = iDeck != null ? iDeck : this.terrainSample(ix, iz, this.currentExaggeration);
+      const oDeck = this.bridgeDeckSampler?.(ox, oz);
+      const oGround = oDeck != null ? oDeck : this.terrainSample(ox, oz, this.currentExaggeration);
       const o = i * 6;
-      positions[o] = px;
-      positions[o + 1] = ground + halfBand;
-      positions[o + 2] = pz;
-      positions[o + 3] = px;
-      positions[o + 4] = ground + halfBand * 2.2;
-      positions[o + 5] = pz;
+      positions[o] = ix;
+      positions[o + 1] = iGround + 0.25;
+      positions[o + 2] = iz;
+      positions[o + 3] = ox;
+      positions[o + 4] = oGround + 0.25;
+      positions[o + 5] = oz;
     }
     (geo.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
     mesh.visible = true;
