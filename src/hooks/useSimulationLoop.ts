@@ -934,10 +934,17 @@ export function useSimulationLoop(runtime: SimLoopRuntime) {
           finalZombies: [] as ZombieUnit[],
         };
 
-        // A. Register new bite infections from combat
+        // A. Register new bite infections from combat — but a survivor who
+        // ALSO fell this same tick never receives one: combat death wins over
+        // a same-tick bite (no orphan infection for a survivor who no longer
+        // exists).
+        const fellThisTick = new Set(
+          combatResult.fallenHeroEvents.map((h) => h.survivorId)
+        );
         if (combatResult.newInfections.length > 0) {
           const updatedInfections = new Map(current.infections || new Map());
           for (const inf of combatResult.newInfections) {
+            if (fellThisTick.has(inf.survivorId)) continue;
             if (!updatedInfections.has(inf.survivorId)) {
               updatedInfections.set(inf.survivorId, inf);
             }

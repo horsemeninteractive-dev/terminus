@@ -140,71 +140,91 @@ test('lair pressure: standing lairs anchor an affiliated local group; cleared la
   assert.equal(quiet.filter((z) => z.lairId).length, 0, 'cleared lair contributes zero pressure');
 });
 
-test('emergence spawns affiliated infected that follow normal sunlight dormancy (no forced alarm)', () => {
-  const buildings = [mkBuilding('1', 0, 0)];
+test('emergence DEPLOYS sheltered residents outside — no new infected are created', () => {
+  const buildings = [mkBuilding('b_1', 0, 0)];
   const lair = { ...mkLair('b_1', 10, 10), spawnAccumSec: 1e9 };
   const lairs = new Map<string | number, ZombieLair>([['b_1', lair]]);
   const interior = Array.from({ length: 10 }, (_, i) => mkAffiliated(`in${i}`, 'b_1'));
 
   const day = tickZombieLairs(lairs, interior, [], buildings, Date.now(), 60, false);
-  assert.ok(day.spawnedZombies.length > 0, 'a populated lair emerges even by day (throttled cadence)');
-  for (const z of day.spawnedZombies) {
-    assert.equal(z.lairId, 'b_1', 'emerged infected are lair-affiliated');
+  // Emergence is a POSITION change for existing residents — never new units.
+  assert.equal(day.spawnedZombies.length, 0, 'emergence creates no new zombies (deploy, not manufacture)');
+  const deployed = interior.filter((z) => Math.hypot(z.x, z.z) > 10.1 || Math.random() < 0);
+  assert.ok(deployed.length > 0, 'sheltered residents were moved outside the footprint');
+  for (const z of deployed) {
+    assert.equal(z.lairId, 'b_1', 'deployed infected keep their lair affiliation');
     assert.equal(z.alertLevel, 0, 'no forced 24/7 alert — sunlight dormancy applies');
-    assert.ok(z.isDormant, 'day-emerged infected start dormant');
     assert.equal(z.homeX, 0, 'they carry their home anchor');
   }
-
+  // Night deployment: the same deploy-don't-create contract.
   const night = tickZombieLairs(lairs, interior, [], buildings, Date.now(), 60, true);
-  for (const z of night.spawnedZombies) {
-    assert.equal(z.isDormant, false, 'night-emerged infected are active');
-  }
+  assert.equal(night.spawnedZombies.length, 0, 'night emergence also creates no new zombies');
 });
 
-test('a neglected lair SWELLS past its founding garrison as escalation climbs — baseline is a soft target, not a ceiling', () => {
+test('a neglected lair NEVER swells past its real population — no timed zombie factory (P0)', () => {
   const buildings = [mkBuilding('1', 0, 0)];
-  // Founding garrison 40 at escalation 3 → ceiling = 40 × (1 + 0.4×3) = 88.
-  const lair = { ...mkLair('b_1', 40, 40), escalation: 3, spawnAccumSec: 1e9 };
+  // Founding garrison 40 at escalation 3 — the old model swelled this nest to
+  // 88 via timed emergence spawns. Emergence now only deploys existing
+  // residents, so a long-unmolested lair CANNOT inflate beyond its real
+  // living count (only gradual replenishment after a partial clear regrows
+  // toward the founding baseline).
+  const lair = { ...mkLair('b_1', 40, 40), escalation: 6, spawnAccumSec: 1e9 };
   const lairs = new Map<string | number, ZombieLair>([['b_1', lair]]);
   const interior = Array.from({ length: 40 }, (_, i) => mkAffiliated(`in${i}`, 'b_1'));
 
-  const r = tickZombieLairs(lairs, interior, [], buildings, Date.now(), 60, true);
-  const after = r.updatedLairs.get('b_1')!;
-  assert.ok(
-    after.population > after.baselinePopulation,
-    `neglected nest grew past its founding garrison (${after.population} > ${after.baselinePopulation})`
-  );
-  assert.ok(after.population <= 88, `growth respects the escalation ceiling (got ${after.population})`);
-  assert.ok(!after.isCleared, 'swelling never clears the lair');
+  // Simulate many emergence cycles across escalating nights.
+  let world = interior;
+  let record = lair;
+  for (let cycle = 0; cycle < 12; cycle++) {
+    const r = tickZombieLairs(
+      new Map([['b_1', { ...record, spawnAccumSec: 1e9 }]]),
+      world,
+      [],
+      buildings,
+      Date.now(),
+      300,
+      true
+    );
+    record = r.updatedLairs.get('b_1')!;
+    // spawnedZombies never contains NEW units — at most none (deploy is
+    // in-place), so the world list stays exactly 40 strong forever.
+    assert.equal(r.spawnedZombies.length, 0, `cycle ${cycle}: no fabricated infected`);
+    assert.equal(
+      record.population,
+      world.filter((z) => z.lairId === 'b_1' && z.currentHp > 0).length,
+      `cycle ${cycle}: synced population == real living infected`
+    );
+    assert.ok(record.population <= 40, `cycle ${cycle}: population never inflates (got ${record.population})`);
+    assert.ok(!record.isCleared, 'an inhabited nest is never cleared');
+  }
 });
 
-test('emergence pauses at the garrison ceiling and resumes once the garrison thins', () => {
+test('emergence deploys only from real sheltered residents — an empty nest deploys nothing', () => {
   const buildings = [mkBuilding('1', 0, 0)];
-  // Baseline 40, escalation 2 → ceiling = 40 × (1 + 0.4×2) = 72.
-  const ceiling = Math.round(40 * (1 + 0.4 * 2));
-  const lair = { ...mkLair('b_1', ceiling, 40), escalation: 2, spawnAccumSec: 1e9 };
+  // Baseline 40 at escalation 2. The nest has ZERO real infected (all cleared
+  // by fire) but a high synced population would be a lie — the deploy gate is
+  // the REAL living affiliated count, so nothing can be conjured.
+  const lair = { ...mkLair('b_1', 0, 40), escalation: 2, spawnAccumSec: 1e9 };
   const lairs = new Map<string | number, ZombieLair>([['b_1', lair]]);
-  const full = Array.from({ length: ceiling }, (_, i) => mkAffiliated(`in${i}`, 'b_1'));
 
-  const r = tickZombieLairs(lairs, full, [], buildings, Date.now(), 300, true);
-  assert.equal(r.spawnedZombies.length, 0, 'at its escalated capacity the lair pauses emergence');
+  const r = tickZombieLairs(lairs, [], [], buildings, Date.now(), 300, true);
+  assert.equal(r.spawnedZombies.length, 0, 'no residents → nothing deploys (never a factory)');
   const after = r.updatedLairs.get('b_1')!;
-  assert.equal(after.population, ceiling, 'garrison holds at the ceiling');
-  assert.ok(!after.isCleared, 'a full nest is not cleared');
+  assert.ok(after.isCleared, 'a nest with no living infected is cleared');
 
-  // The garrison thins below the ceiling (e.g. interception kills) → the nest
-  // reopens and emergence resumes toward its escalated capacity.
-  const thinned = Array.from({ length: ceiling - 5 }, (_, i) => mkAffiliated(`in${i}`, 'b_1'));
-  const r2 = tickZombieLairs(
-    new Map([['b_1', { ...after, spawnAccumSec: 1e9 }]]),
-    thinned,
-    [],
-    buildings,
-    Date.now(),
-    60,
-    true
-  );
-  assert.ok(r2.spawnedZombies.length > 0, 'emergence resumes once the garrison thins');
+  // With residents but everyone outside (at the emergence capacity), nothing
+  // further deploys either.
+  const ceiling = Math.round(40 * (1 + 0.4 * 2));
+  const lair2 = { ...mkLair('b_1', ceiling, 40), escalation: 2, spawnAccumSec: 1e9 };
+  const lairs2 = new Map<string | number, ZombieLair>([['b_1', lair2]]);
+  const allOutside = Array.from({ length: ceiling }, (_, i) => {
+    const z = mkAffiliated(`out${i}`, 'b_1');
+    z.x = 30;
+    z.z = 0;
+    return z;
+  });
+  const r2 = tickZombieLairs(lairs2, allOutside, [], buildings, Date.now(), 300, true);
+  assert.equal(r2.spawnedZombies.length, 0, 'at emergence capacity the nest stops deploying');
 });
 
 test('lair count is data-driven — map size × intensity × population × day, not a flat 1–2 coin flip', () => {
@@ -342,5 +362,10 @@ test('emergence pauses when EMERGENCE CAPACITY is reached — most of the garris
     300,
     true
   );
-  assert.equal(r2.spawnedZombies.length, 3, 'emergence resumes while below the emergence capacity');
+  // Deploy-not-manufacture: below capacity the nest DEPLOYS sheltered
+  // residents (in-place moves) — it never creates units, so the world list
+  // stays 40 strong and nothing new appears in spawnedZombies.
+  assert.equal(r2.spawnedZombies.length, 0, 'emergence creates no units while below capacity (deploy only)');
+  const deployedNow = belowCapacity.filter((z) => z.x < 15 && z.homeX !== undefined).length;
+  assert.ok(deployedNow > 0, 'sheltered residents were deployed outside');
 });

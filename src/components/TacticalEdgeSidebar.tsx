@@ -286,19 +286,27 @@ const LAIR_VARIANT_LABELS: Record<ZombieVariant, string> = {
  const hasMedicalAlert =
    settlementInfections.length > 0 || activeOutbreaks.length > 0;
 
- // §IFZ regional Lair pressure — the strategic layer: every STANDING lair
- // (even undiscovered ones) keeps feeding its neighbourhood and committing
- // night hordes, so the region stays hot until the nests are actually cleared.
+ // §IFZ regional Lair pressure — the strategic layer, WITHOUT omniscience
+ // (v0.3.8 corrective pass): the old card aggregated EVERY standing lair,
+ // including undiscovered ones, and printed their exact count and total
+ // population — information the player cannot possess before scouting.
+ // Now only DISCOVERED lairs expose exact figures. Undiscovered lairs feed a
+ // genuinely non-omniscient signal: whether unknown infected activity has
+ // been detected in the region (night mobilizations, escalating noise),
+ // never exact counts, populations, variants or locations.
  const lairMap: Map<string | number, ZombieLair> = settlement.zombieLairs;
  const standingLairs: ZombieLair[] = lairMap
    ? Array.from(lairMap.values()).filter((l) => !l.isCleared)
    : [];
- const lairCommittedInfected = standingLairs.reduce((n, l) => n + (l.population || 0), 0);
+ const discoveredStanding = standingLairs.filter((l) => l.isDiscovered);
+ const undiscoveredStanding = standingLairs.length - discoveredStanding.length;
+ const lairCommittedInfected = discoveredStanding.reduce((n, l) => n + (l.population || 0), 0);
+ const hasUndiscoveredActivity = undiscoveredStanding > 0;
  const lairPressureLevel =
    standingLairs.length === 0
      ? 'NONE'
-     : standingLairs.length >= 3 || lairCommittedInfected >= 80
-     ? 'CRITICAL'
+     : hasUndiscoveredActivity || standingLairs.length >= 3 || lairCommittedInfected >= 80
+     ? 'UNKNOWN ACTIVITY'
      : lairCommittedInfected >= 30
      ? 'HIGH'
      : 'MODERATE';
@@ -1199,8 +1207,7 @@ const LAIR_VARIANT_LABELS: Record<ZombieVariant, string> = {
  REGIONAL LAIR PRESSURE
  </span>
  <span
- className={`font-heading font-bold text-xs uppercase ${
-   lairPressureLevel === 'CRITICAL'
+ className={`font-heading font-bold text-xs uppercase $ {lairPressureLevel === 'UNKNOWN ACTIVITY'
      ? 'text-[#FF4D4D] animate-pulse'
      : lairPressureLevel === 'HIGH'
      ? 'text-[#FB923C]'
@@ -1219,12 +1226,22 @@ const LAIR_VARIANT_LABELS: Record<ZombieVariant, string> = {
  ) : (
  <>
  <div className="text-[10px] font-mono text-[#94A3B8]">
- {standingLairs.length} ACTIVE LAIR{standingLairs.length === 1 ? '' : 'S'} · {lairCommittedInfected} INFECTED COMMITTED ACROSS THE REGION
+ {discoveredStanding.length > 0
+   ? `${discoveredStanding.length} DISCOVERED LAIR${discoveredStanding.length === 1 ? '' : 'S'} · ${lairCommittedInfected} INFECTED COMMITTED`
+   : ''}
+ {hasUndiscoveredActivity
+   ? `${discoveredStanding.length > 0 ? ' · ' : ''}UNKNOWN INFECTED ACTIVITY DETECTED — SENDING A SQUAD TO INVESTIGATE MAY REVEAL THE NEST`
+   : discoveredStanding.length === 0
+   ? ''
+   : ''}
+ {discoveredStanding.length === 0 && !hasUndiscoveredActivity
+   ? 'SATELLITE SWEEP INCONCLUSIVE — NO CONFIRMED NESTS'
+   : ''}
  </div>
  <div className="text-[9px] font-mono text-[#718096]">
- STANDING NESTS CLUSTER INFECTED AROUND THEM, OCCUPY NEARBY UNADAPTED
- BUILDINGS, AND COMMIT NIGHT HORDES TOWARD THE COLONY. CLEAR A LAIR AND
- ITS PRESSURE COLLAPSES — THE NEIGHBOURHOOD GENUINELY QUIETS.
+ {hasUndiscoveredActivity
+   ? 'SOMETHING IS STIRRING OUT THERE — NIGHT NOISE AND MISSING PATROLS SUGGEST A NEST THE COLONY HAS NOT FOUND YET. SCOUT TO LOCATE IT.'
+   : 'STANDING NESTS CLUSTER INFECTED AROUND THEM, OCCUPY NEARBY UNADAPTED BUILDINGS, AND COMMIT NIGHT HORDES TOWARD THE COLONY. CLEAR A LAIR AND ITS PRESSURE COLLAPSES.'}
  </div>
  </>
  )}

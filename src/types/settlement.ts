@@ -3,6 +3,7 @@ import { BuildingLootRecord } from './loot';
 import {
   BuildingOutbreakState,
   FallenHeroRecord,
+  PopulationInfectionState,
   SurvivorInfection,
 } from './infection';
 import {
@@ -661,7 +662,17 @@ export interface SettlementState {
   hiddenGroups: Map<string | number, HiddenSurvivorGroup>;
   jobPriorities: Record<JobSector, number>;
   // Infection & Outbreak System (§6.2, §6.3)
+  // `infections` holds NAMED-survivor records only (the Terminus extension).
+  // Anonymous population illness is aggregated in `populationInfection` —
+  // never as fake per-citizen records.
   infections: Map<string, SurvivorInfection>;
+  /** Aggregated general-population illness (IFZ-style compartments). */
+  populationInfection?: PopulationInfectionState;
+  /** Named survivors in PREVENTIVE isolation — healthy people confined as a
+   *  precaution. A control state, NOT an infection (quarantining the healthy
+   *  must never create one). Preventive isolation halves their exposure risk
+   *  while active. */
+  preventiveIsolationIds?: Set<string>;
   outbreaks: Map<string | number, BuildingOutbreakState>;
   fallenHeroes: FallenHeroRecord[];
   // Vehicle System (§8)

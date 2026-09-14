@@ -146,13 +146,13 @@ test('most of the founding garrison is the dominant variant', () => {
   );
 });
 
-test('emerging groups respect the lair dominant type (not a fixed shambler/runner mix)', () => {
+test('emerging groups respect the lair dominant type — deployment keeps every resident variant', () => {
   const buildings = [mkBuilding('lair_b1', 0, 0)];
   const lairs = new Map<string, ZombieLair>();
   const lair = mkLair('lair_b1', 30, 'brute');
   lairs.set(lair.buildingId, lair);
-  // Garrison of 30 brutes inside the building → population is under the
-  // ceiling, so emergence may fire; bank the accumulator to force it.
+  // Garrison of 30 brutes inside the building → the accumulator is banked so
+  // emergence deploys a GROUP of the existing residents outward.
   const garrison: ZombieUnit[] = [];
   for (let i = 0; i < 30; i++) {
     garrison.push(mkAffiliated(`z_${i}`, 'lair_b1', 0, 0, 'brute'));
@@ -167,15 +167,16 @@ test('emerging groups respect the lair dominant type (not a fixed shambler/runne
     1,
     true // night → no daylight throttle
   );
+  // Deploy-not-manufacture: no new units; residents move outward in place.
   const spawned = r.spawnedZombies;
-  assert.ok(spawned.length > 0, 'an emergence group spawned');
-  assert.ok(spawned.length >= 2, 'emergence is a GROUP, not a single zombie');
-  const brutes = spawned.filter((z) => z.variant === 'brute').length;
-  assert.ok(
-    brutes / spawned.length >= 0.75,
-    `the group is composed of the dominant type (brutes=${brutes}/${spawned.length})`
-  );
-  for (const z of spawned) {
+  assert.equal(spawned.length, 0, 'emergence creates no new zombies (deployment only)');
+  const deployed = garrison.filter((z) => Math.hypot(z.x, z.z) > 10.1);
+  assert.ok(deployed.length >= 2, 'emergence is a GROUP deployment, not a single zombie');
+  // The deployed residents ARE the garrison — their variants are unchanged,
+  // so a brute nest deploys brutes by construction.
+  const brutes = deployed.filter((z) => z.variant === 'brute').length;
+  assert.equal(brutes, deployed.length, 'deployed residents keep the nest dominant type');
+  for (const z of deployed) {
     assert.equal(z.lairId, 'lair_b1', 'emerged infected stay affiliated with their lair');
   }
 });

@@ -1,6 +1,7 @@
 import { CURRENT_SAVE_VERSION, SaveGameData, SaveGameMeta } from '../types/saveGame';
 import { SettlementState } from '../types/settlement';
 import { SettlementRecord } from '../types/caravan';
+import { createEmptyPopulationInfectionState } from '../types/infection';
 import { FUNCTIONAL_BUILDING_DEFINITIONS } from '../data/functionalBuildings';
 import { getPrimaryHQ } from './buildingOperational';
 import { getDefaultLawsState } from './lawService';
@@ -71,6 +72,21 @@ function sanitizeInfections(infections: Map<any, any>): Map<any, any> {
   return cleaned;
 }
 
+/** Preventive-isolation sanitation (v0.3.8): the set may only contain ids of
+ *  LIVING named survivors — a dead or departed survivor's isolation entry is
+ *  stale state, not a person in a room. Legacy saves never have this field,
+ *  so absence simply means an empty set. */
+function sanitizePreventiveIsolation(raw: unknown, namedSurvivors: any[]): Set<string> {
+  const cleaned = new Set<string>();
+  if (Array.isArray(raw)) {
+    const living = new Set(namedSurvivors.map((s) => String(s?.id)));
+    for (const id of raw) {
+      if (typeof id === 'string' && living.has(id)) cleaned.add(id);
+    }
+  }
+  return cleaned;
+}
+
 // Helper to convert SettlementState Maps to JSON-safe arrays
 export function serializeSettlementState(state: SettlementState): any {
   if (!state) return null;
@@ -79,6 +95,11 @@ export function serializeSettlementState(state: SettlementState): any {
     adaptedBuildings: mapToEntries(state.adaptedBuildings),
     buildingSections: mapToEntries(state.buildingSections),
     infections: mapToEntries(state.infections),
+    // v0.3.8: aggregated population illness + preventive isolation controls.
+    populationInfection: state.populationInfection || undefined,
+    preventiveIsolationIds: state.preventiveIsolationIds
+      ? Array.from(state.preventiveIsolationIds)
+      : undefined,
     outbreaks: mapToEntries(state.outbreaks),
     zombieLairs: mapToEntries(state.zombieLairs),
     rivalHideouts: mapToEntries(state.rivalHideouts),
@@ -287,6 +308,11 @@ export function deserializeSettlementState(data: any): SettlementState {
     freestandingBuildings,
     buildingSections: toMap(data.buildingSections),
     infections: sanitizeInfections(toMap<any, any>(data.infections)),
+    populationInfection: data.populationInfection || createEmptyPopulationInfectionState(),
+    preventiveIsolationIds: sanitizePreventiveIsolation(
+      data.preventiveIsolationIds,
+      data.namedSurvivors || []
+    ),
     outbreaks: toMap(data.outbreaks),
     zombieLairs,
     rivalHideouts: toMap(data.rivalHideouts),

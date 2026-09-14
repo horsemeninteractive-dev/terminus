@@ -790,9 +790,16 @@ export function tickCombatSimulation(
               biteChance *= 0.5; // Barricade reduces bite angle
             }
             const alreadyBitten = zombie.lastBiteTargetSquadId === targetSquad.squadId;
+            // SAME-TICK ORDERING (§6.2 regression fix): the damage/death block
+            // above runs BEFORE this bite roll — if the LEADER was just killed
+            // by this very attack, combat death wins and no infection is
+            // created (a corpse cannot be newly exposed).
+            const leaderAlive =
+              targetSquad.members.find((m) => m.isLeader)?.isAlive !== false;
             if (
               targetSquad.leaderId &&
               targetSquad.leaderId !== '' &&
+              leaderAlive &&
               !alreadyBitten &&
               Math.random() < biteChance
             ) {

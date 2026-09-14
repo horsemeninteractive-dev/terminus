@@ -23,7 +23,34 @@ Releasing:
 
 ## [Unreleased]
 
+## [0.3.8] – 2026-09-14
+
+The infection/Lair corrective pass: makes the anonymous general population a
+real, aggregated epidemic simulation, fixes the named-survivor lifecycle,
+reworks building outbreaks into disease (not zombie factories), and turns the
+Lair into a persistent population rather than a timed spawner.
+
 ### Added
+
+- **General population infection is real.** Anonymous citizens are modelled
+  as an aggregated compartment system (healthy → exposed → symptomatic →
+  treated/recovered/turned) persisted through save/load. Illness reduces the
+  available labour pool — sick citizens genuinely stop being workers — and
+  untreated illness progresses to turning, which leaves the headcount and
+  can produce a physical infected plus an outbreak when uncontained.
+- **Quarantine without infection.** Quarantining a healthy named survivor
+  now records preventive isolation instead of fabricating an incubation
+  record; legacy phantom anonymous infection records are sanitised on load.
+- **Medical buildings matter.** Medbay/Hospital bed capacity drives
+  treatment and isolation admission; symptomatic treatment research speeds
+  recovery; turning prevention cuts the turn hazard; early diagnosis,
+  vaccine, dosing optimisation and clinical efficiency now have concrete,
+  tested effects on the population illness system.
+- **Lair polygon locality** uses the real (possibly irregular) building
+  footprint for sheltering/emergence checks instead of a bounding box.
+- **Undiscovered Lairs no longer leak information** through the regional
+  edge sidebar — unknown activity shows as a vague warning, never exact
+  counts, populations or variants.
 
 - **Follow-squad camera button.** Both the expanded and minimised squad
   panels now carry a Locate/Follow toggle that locks the camera to the
@@ -33,15 +60,57 @@ Releasing:
 
 ### Changed
 
+- **Lair emergence deploys, it does not manufacture.** Emergence moves
+  sheltered residents outside the building footprint in place; the lair
+  population only changes through real kills and gradual replenishment
+  toward its sustainable ceiling, and a fully cleared Lair stays cleared.
+- **Building outbreaks spread as disease.** An uncontained outbreak exposes
+  the colony's population (visible in the medical UI) instead of spawning
+  fresh 'Outbreak Infiltrator' zombies on a timer; the physical infected
+  appear only when someone actually turns.
+- **Medical triage UI** separates named survivor infections from the
+  aggregated population compartments (healthy/exposed/symptomatic/
+  quarantined/treated/untreated) and never renders anonymous citizens as
+  individual survivors.
+
 - **Combat line of sight is real.** Weapon range is no longer a flat disc
   that ignores walls: acquisition, engagement and every firing tick now
   sample the straight shot against the building/structure mask, so units in
   the open cannot attack through buildings. Applies to player squads,
   infected (sight aggro is LOS-gated, and melee cannot reach through a
   wall) and rival defenders alike. Fighters sharing a roof still engage,
-  and gates do not block sight.
+  and gates do not block sight.### Fixed
 
-### Fixed
+- **Population quarantine is a real gameplay state.** Symptomatic citizens
+  are now automatically admitted into medical isolation, bounded by the
+  operational Medbay/Hospital bed capacity (clinical efficiency stretches
+  it) — no micromanagement, the medical staff triage on their own.
+  `quarantined` is the treated cohort: admitted patients recover markedly
+  faster and their turns are contained inside the ward (no free infected,
+  no outbreak), while the untreated sick remain at large and deteriorate
+  normally. The medical UI shows the treated/untreated split and live
+  isolation capacity alongside the compartment summary.
+- **Illness is internally transmissible.** An epidemic that takes hold in
+  the colony now keeps spreading person-to-person on its own — no zombie
+  needs to remain nearby. Symptomatic citizens are the vector: isolated
+  patients spread at a quarter of the rate of the untreated sick, so
+  quarantine visibly slows an epidemic. Physical outbreaks remain the
+  external trigger that seeds illness into the colony; no arbitrary
+  spawns were added.
+- **Recovery and turning are cohort-conserving.** The two resolution
+  outcomes were rolled independently, so on rare ticks `recovered + turned`
+  could exceed the symptomatic cohort (phantom patients). Outcomes are now
+  resolved sequentially — turning first, recoveries against the *remaining*
+  pool — so the cohort is never overshot. Regression-tested over 200
+  randomized large-dt ticks.
+- **Named-survivor lifecycle.** A combat death now terminates any active
+  infection (no posthumous turning, no orphan records), a same-tick bite +
+  kill can no longer leave an infection behind, and an infection turning
+  removes only the leader — the squad and its anonymous personnel remain,
+  with no automatic promotion.
+- **0.3.7 saves load cleanly**: population infection state is backfilled
+  with defaults, stale preventive isolation for dead survivors is dropped,
+  and all legitimate named infections survive the migration.
 
 - **Range ring conforms to terrain and true line of sight.** The selected
   squad's weapon-range ring was a flat disc at the squad's ground height —

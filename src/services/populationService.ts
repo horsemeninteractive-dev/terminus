@@ -119,7 +119,15 @@ export function calculateCitizenBreakdownStats(state: SettlementState): CitizenB
   // having no children rather than inventing a percentage of the population.
   const children = (state.generalPopulation?.children || []).filter((child) => child.age < 16).length;
   const homeless = Math.max(0, totalCitizens - (state.totalLivingCapacity || 0));
-  const ill = Math.max(0, state.infections?.size || 0);
+  // Ill citizens: named survivors with an active infection PLUS the aggregated
+  // general-population compartments (exposed + symptomatic — quarantined
+  // citizens are already inside those counts as beds, not extra people).
+  const namedIll = Array.from(state.infections?.values() || []).filter(
+    (inf) => inf.stage !== 'uninfected' && inf.stage !== 'cured' && inf.stage !== 'turned'
+  ).length;
+  const popIll =
+    (state.populationInfection?.exposed ?? 0) + (state.populationInfection?.symptomatic ?? 0);
+  const ill = namedIll + popIll;
 
   // Adult/child work rules (§IFZ Major Update #5): the Child Labour Permitted
   // law lets children join the general labour pool; otherwise they are fully

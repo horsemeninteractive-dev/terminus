@@ -40,6 +40,7 @@ import {
  diagnoseSurvivor,
  toggleQuarantineSurvivor,
  containOutbreakInBuilding,
+ medicalCapacityFor,
 } from '../services/infectionService';
 
 interface MedicalTriageModalProps {
@@ -96,7 +97,11 @@ export const MedicalTriageModal: React.FC<MedicalTriageModalProps> = ({
  const quarantinedCount = infectionsList.filter((inf) => inf.isQuarantined).length;
  const activeOutbreaksList = (Array.from(outbreaks.values()) as BuildingOutbreakState[]).filter((o) => o.isOutbreakActive);
 
- // Combine survivors for listing
+ // Combine survivors for listing. NAMED survivors only — the anonymous
+ // population is NOT a list of fake per-citizen records (v0.3.8): its illness
+ // is aggregated in `populationInfection` and shown as a colony summary.
+ const populationInfection = settlement.populationInfection;
+ const preventiveIsolation = settlement.preventiveIsolationIds;
  const survivorList: {
  id: string;
  name: string;
@@ -111,29 +116,18 @@ export const MedicalTriageModal: React.FC<MedicalTriageModalProps> = ({
  infection: infections.get(s.id),
  }));
 
- // Also include any general population members with active infections
- for (const [id, inf] of infections.entries()) {
- if (!inf.isNamed && inf.stage !== 'cured' && inf.stage !== 'uninfected') {
- survivorList.push({
- id,
- name: inf.survivorName,
- isNamed: false,
- infection: inf,
- });
- }
- }
-
  const filteredSurvivors = survivorList.filter((s) => {
  if (filterMode === 'infected') {
  return (
- s.infection &&
+ (s.infection &&
  s.infection.stage !== 'uninfected' &&
  s.infection.stage !== 'cured' &&
- s.infection.stage !== 'turned'
+ s.infection.stage !== 'turned') ||
+ (!s.infection && preventiveIsolation?.has(s.id))
  );
  }
  if (filterMode === 'quarantined') {
- return s.infection?.isQuarantined;
+ return s.infection?.isQuarantined || (!s.infection && preventiveIsolation?.has(s.id));
  }
  return true;
  });
@@ -211,12 +205,12 @@ export const MedicalTriageModal: React.FC<MedicalTriageModalProps> = ({
 
  const handleSimulateBite = (survivorId: string) => {
  const s = survivorList.find((item) => item.id === survivorId);
- if (!s) return;
+ if (!s || !s.isNamed) return; // NAMED survivors only — never fabricate anonymous records
 
  const newInf = createSurvivorInfection(
  survivorId,
  s.name,
- s.isNamed,
+ true,
  'Field Zombie Attack (Simulated)'
  );
 
@@ -336,6 +330,25 @@ export const MedicalTriageModal: React.FC<MedicalTriageModalProps> = ({
  </div>
  </div>
 
+ {/* GENERAL POPULATION ILLNESS (aggregated) — distinct from named survivors */}
+ {(populationInfection || preventiveIsolation) && (
+ <div className="px-6 py-2.5 bg-[#15181e] border-b border-slate-800 flex flex-wrap items-center gap-x-6 gap-y-1 text-[11px]">
+ <span className="font-bold text-slate-300 uppercase tracking-wider">Population:</span>
+ <span className="text-emerald-300">Healthy: {Math.max(0, (settlement.generalPopulation?.total ?? 0) - (populationInfection?.exposed ?? 0) - (populationInfection?.symptomatic ?? 0))}</span>
+ <span className="text-amber-300">Exposed: {populationInfection?.exposed ?? 0}</span>
+ <span className="text-rose-300">Symptomatic: {populationInfection?.symptomatic ?? 0}</span>
+ <span className="text-purple-300">Quarantined: {populationInfection?.quarantined ?? 0}</span>
+ <span className="text-sky-300">Treated: {Math.min(populationInfection?.quarantined ?? 0, populationInfection?.symptomatic ?? 0)}</span>
+ <span className="text-orange-300">Untreated: {Math.max(0, (populationInfection?.symptomatic ?? 0) - Math.min(populationInfection?.quarantined ?? 0, populationInfection?.symptomatic ?? 0))}</span>
+ {(preventiveIsolation?.size ?? 0) > 0 && (
+ <span className="text-indigo-300">Preventive isolation: {preventiveIsolation!.size} named</span>
+ )}
+ <span className="text-slate-500 ml-auto">
+ Lost: {populationInfection?.totalLost ?? 0} · Recovered: {populationInfection?.totalRecovered ?? 0} · Isolation capacity: {medicalCapacityFor(settlement).beds} beds
+ </span>
+ </div>
+ )}
+
  {/* ACTIVE OUTBREAK ALERTS BANNER (If any) */}
  {activeOutbreaksList.length > 0 && (
  <div className="px-6 py-2.5 bg-rose-950/40 border-b border-rose-600/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2 animate-pulse">
@@ -418,8 +431,13 @@ export const MedicalTriageModal: React.FC<MedicalTriageModalProps> = ({
  const isTurned = inf && inf.stage === 'turned';
  const isCured = inf && inf.stage === 'cured';
  const isQuarantined = inf && inf.isQuarantined;
+ const isPreventive = !inf && preventiveIsolation?.has(s.id);
 
- let statusBadge = (
+ let statusBadge = isPreventive ? (
+ <span className="px-1.5 py-0.5 text-[9px] bg-indigo-950/60 text-indigo-300 border border-indigo-700/50 flex items-center gap-1 font-bold">
+ <Lock className="w-2.5 h-2.5 text-indigo-400" /> PREVENTIVE ISOLATION
+ </span>
+ ) : (
  <span className="px-1.5 py-0.5 text-[9px] bg-emerald-950/40 text-emerald-300 border border-emerald-700/30">
  CLEAR
  </span>
@@ -754,6 +772,8 @@ export const MedicalTriageModal: React.FC<MedicalTriageModalProps> = ({
  <div className="mt-2 text-[10px] text-purple-300">
  {selectedInfection?.isQuarantined
  ? 'Subject is currently isolated in secure cell.'
+ : preventiveIsolation?.has(selectedSurvivor.id)
+ ? 'Subject is in PREVENTIVE isolation (healthy — precaution only).'
  : 'Subject is currently uncontained in general quarters.'}
  </div>
  </div>
@@ -761,16 +781,21 @@ export const MedicalTriageModal: React.FC<MedicalTriageModalProps> = ({
  <button
  id="toggle-quarantine-btn"
  onClick={() =>
- handleToggleQuarantine(selectedSurvivor.id, !!selectedInfection?.isQuarantined)
+ handleToggleQuarantine(
+ selectedSurvivor.id,
+ !selectedInfection?.isQuarantined && !preventiveIsolation?.has(selectedSurvivor.id)
+ )
  }
  className={`mt-3 w-full py-2 text-xs font-bold transition-colors ${
- selectedInfection?.isQuarantined
+ selectedInfection?.isQuarantined || preventiveIsolation?.has(selectedSurvivor.id)
  ? 'bg-purple-800 hover:bg-purple-700 text-purple-100 border border-purple-600'
  : 'bg-purple-600 hover:bg-purple-500 text-white'
  }`}
  >
  {selectedInfection?.isQuarantined
  ? 'Release from Quarantine Ward'
+ : preventiveIsolation?.has(selectedSurvivor.id)
+ ? 'Release from Preventive Isolation'
  : 'Confine to Isolation Ward'}
  </button>
  </div>

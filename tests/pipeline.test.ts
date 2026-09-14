@@ -742,8 +742,10 @@ test('lairs are the home of a REAL infected population — kill them to clear, p
   const emergeLair = new Map<string | number, ZombieLair>([['a', { ...mkLair('a', 10, 20), spawnAccumSec: 1e9 }]]);
   const interior = Array.from({ length: 10 }, (_, i) => mkZombie(`in${i}`, 'a'));
   const emerged = tickZombieLairs(emergeLair, interior, [], buildings, now, 60, true);
-  assert.ok(emerged.spawnedZombies.length > 0, 'lair emerges infected on its cadence');
-  for (const z of emerged.spawnedZombies) {
+  assert.equal(emerged.spawnedZombies.length, 0, 'emergence deploys residents — it never manufactures new infected');
+  const deployed = interior.filter((z) => Math.hypot(z.x, z.z) > 5);
+  assert.ok(deployed.length > 0, 'sheltered residents were deployed outside the footprint on cadence');
+  for (const z of deployed) {
     assert.equal(z.lairId, 'a');
     assert.equal(z.homeX, 0);
     assert.equal(z.homeRadius, 40);

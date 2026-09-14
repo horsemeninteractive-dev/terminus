@@ -51,7 +51,11 @@ function makeHqBuilding(): BuildingPolygon {
 }
 
 function makeState(): SettlementState {
-  return establishSettlementHQ(createInitialSettlementState('Infection Test'), makeHqBuilding());
+  const state = establishSettlementHQ(createInitialSettlementState('Infection Test'), makeHqBuilding());
+  // Population-illness isolation: these tests exercise the NAMED-survivor
+  // lifecycle only, so the aggregated general population starts empty — the
+  // population stage must never inject extra turn-zombies into the counts.
+  return { ...state, generalPopulation: { ...state.generalPopulation, total: 0, unassigned: 0 } };
 }
 
 function addSurvivor(state: SettlementState, id: string, name: string): SettlementState {
@@ -267,6 +271,10 @@ test('Case 4: leader turning vacates the ROLE, preserves the squad and its perso
 
 test('Case 4b: a fully-advanced unquarantined leader turn spawns a REAL zombie', () => {
   let state = addSurvivor(makeState(), 'n_miller', 'Sgt. Miller');
+  // Large healthy population: the aggregated population stage has nobody to
+  // expose/turn (no outbreak hazard yet), so the ONLY zombie source here is
+  // Miller's own named turn.
+  state.generalPopulation.total = 0;
   const inf = createSurvivorInfection('n_miller', 'Sgt. Miller', true, 'Test');
   state = { ...state, infections: new Map(state.infections).set('n_miller', inf) };
 
@@ -371,8 +379,10 @@ test('Case 8: quarantine turning spawns NO free zombie; unquarantined does — p
   }
   assert.equal(qRes.newZombies.length, 0, 'quarantine containment turns safely — no settlement zombie');
 
-  // Unquarantined population case.
+  // Unquarantined population case. No general population → the only turn is
+  // Freddie's named one.
   let state2 = addSurvivor(makeState(), 'n_free', 'Free Freddie');
+  state2.generalPopulation.total = 0;
   const fInf = createSurvivorInfection('n_free', 'Free Freddie', true, 'Test');
   state2 = { ...state2, infections: new Map(state2.infections).set('n_free', fInf) };
   let fRes = tickInfectionSimulation(state2, fInf.totalTurnTimeSec + 1, 1, 1, []);
@@ -392,6 +402,7 @@ test('Case 8: quarantine turning spawns NO free zombie; unquarantined does — p
 
 test('Case 9: killing the outbreak zombies CONTAINS the outbreak (firepower containment)', () => {
   let state = addSurvivor(makeState(), 'n_t', 'Turner');
+  state.generalPopulation.total = 0; // isolate the named turn from pop-illness turns
   const inf = createSurvivorInfection('n_t', 'Turner', true, 'Test');
   state = { ...state, infections: new Map(state.infections).set('n_t', inf) };
   let r = tickInfectionSimulation(state, inf.totalTurnTimeSec + 1, 1, 1, []);

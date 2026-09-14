@@ -525,19 +525,26 @@ export function mobilizeLairHorde(
   return strikeGroup;
 }
 
-/** True when a point lies OUTSIDE the building's footprint bounding box —
- *  the definition of "emerged from the nest" for locality accounting.
- *  Shelterers inside the building are within the box; emerged/roaming/
- *  mobilized infected are outside it. */
+/** True when a point lies OUTSIDE the building's actual footprint polygon —
+ *  the definition of "emerged from the nest" for locality accounting. Uses a
+ *  real even-odd ray-cast against the (possibly irregular, non-rectangular)
+ *  OSM polygon: the previous bounding-box test wrongly counted points that sit
+ *  inside the bbox but outside an L-shaped/irregular footprint as "sheltered
+ *  inside". Shelterers inside the polygon are home; emerged/roaming/mobilized
+ *  infected are outside it. */
 function isOutsideBuildingPolygon(x: number, z: number, poly: Point2D[]): boolean {
-  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-  for (const p of poly) {
-    if (p.x < minX) minX = p.x;
-    if (p.x > maxX) maxX = p.x;
-    if (p.z < minZ) minZ = p.z;
-    if (p.z > maxZ) maxZ = p.z;
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i];
+    const b = poly[j];
+    if (
+      a.z > z !== b.z > z &&
+      x < ((b.x - a.x) * (z - a.z)) / (b.z - a.z) + a.x
+    ) {
+      inside = !inside;
+    }
   }
-  return x < minX || x > maxX || z < minZ || z > maxZ;
+  return !inside;
 }
 
 /** Random point inside a polygon (rejection sampling, center fallback). */
@@ -697,19 +704,15 @@ export function tickZombieLairs(
       }
     }
 
-    // D. Emergence — the lair's local infected ecosystem: affiliated infected
-    //    periodically leave the nest into its home radius. Daylight throttles
-    //    this (sunlight dormancy) and night quickens it. Spawned infected carry
-    //    lairId and follow the normal isDormant rules — NOT a forced 24/7 alarm.
-    //    Gated on population > 0 (a nest with no living infected is DESTROYED,
-    //    never a factory conjuring infected out of nothing) AND on the garrison
-    //    ceiling: emergence is what makes a NEGLECTED nest swell past its
-    //    baseline as escalation climbs — at/above the ceiling the lair has as
-    //    many real infected as it can support and pauses (the accumulator keeps
-    //    banking, so it resumes the instant the garrison thins). ALSO gated on
-    //    the EMERGENCE CAPACITY: only `emergenceCapacity` affiliated infected
-    //    may be outside the building at once — most of the garrison shelters
-    //    INSIDE, and the nest stops emitting while that many are already out.
+    // D. EMERGENCE — deploy existing residents, never manufacture (corrective
+    //    pass): the old timer SPAWNED brand-new affiliated infected every
+    //    interval (a zombie factory with a schedule). Emergence now means
+    //    infected LEAVING the building: sheltering residents INSIDE the
+    //    footprint are moved OUT into the home radius (mutated in place —
+    //    population is unchanged, because no zombie is created). Daylight
+    //    throttles this (sunlight dormancy) and night quickens it. Gated on
+    //    real sheltered residents existing; the emergence capacity still bounds
+    //    how many may be outside at once.
     // The base cadence is stable per lair (derived from its id) so it never
     // re-rolls each tick.
     // MAXIMUM SUSTAINABLE POPULATION — synced explicitly every tick from the
@@ -735,35 +738,39 @@ export function tickZombieLairs(
         z.currentHp > 0 &&
         (poly ? isOutsideBuildingPolygon(z.x, z.z, poly) : false)
     ).length;
-    const dominant: ZombieVariant = lair.dominantVariant ?? 'shambler';
-    if (population > 0 && population < garrisonCeiling && spawnAccum >= intervalSec) {
+    if (population > 0 && spawnAccum >= intervalSec) {
       const groupSize = Math.min(5, 2 + escalation);
       if (emergedOutside + groupSize <= emergenceCapacity) {
         spawnAccum = 0;
         lair.lastActivity = now;
-        for (let i = 0; i < groupSize; i++) {
+        // Deploy SHELTERED residents: living lair-affiliated zombies still
+        // inside the building footprint, not fighting, not already mobilized.
+        const sheltered = zombies.filter(
+          (z) =>
+            z.lairId === lair.id &&
+            z.currentHp > 0 &&
+            z.state !== 'chasing' &&
+            z.state !== 'attacking_unit' &&
+            z.state !== 'attacking_building' &&
+            (poly ? !isOutsideBuildingPolygon(z.x, z.z, poly) : false)
+        );
+        const deployCount = Math.min(groupSize, sheltered.length);
+        for (let i = 0; i < deployCount; i++) {
+          const zmb = sheltered[i];
           const angle = Math.random() * Math.PI * 2;
           const dist = 6 + Math.random() * 14;
-          // Emerging groups carry the nest's identity: mostly the dominant
-          // type, with occasional variety so combat stays interesting.
-          const variant: ZombieVariant =
-            Math.random() < 0.8 ? dominant : i % 5 === 4 ? 'runner' : dominant;
-          const zmb = createZombieUnit(
-            variant,
-            center.x + Math.cos(angle) * dist,
-            center.z + Math.sin(angle) * dist,
-            0,
-            isNight
-          );
+          zmb.x = center.x + Math.cos(angle) * dist;
+          zmb.z = center.z + Math.sin(angle) * dist;
           // Normal sunlight rules apply — no forced alert level. Most stay local;
           // a minority are roamers that drift beyond the home radius.
           zmb.lairId = lair.id;
           zmb.homeX = center.x;
           zmb.homeZ = center.z;
           zmb.homeRadius = lair.homeRadius;
-          zmb.isRoamer = Math.random() < 0.15;
-          spawnedZombies.push(zmb);
-          population += 1;
+          if (zmb.isRoamer === undefined) zmb.isRoamer = Math.random() < 0.15;
+          // NOT pushed into spawnedZombies: these are the world's own zombie
+          // records mutated in place — adding them there would double-count
+          // them in the pipeline's merged world list.
         }
       }
     }

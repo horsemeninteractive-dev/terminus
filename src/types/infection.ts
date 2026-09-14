@@ -34,6 +34,48 @@ export interface SurvivorInfection {
 }
 
 // ==========================================
+// 1b. General Population Illness (§IFZ aggregated model)
+// ==========================================
+// Anonymous citizens are NOT individually tracked — that is the entire point
+// of the general population pool. Illness therefore lives at POPULATION level
+// as an ESS-style aggregated state: compartments of the settlement headcount
+// that progress, spread, and resolve as counts. Only NAMED survivors get a
+// per-person `SurvivorInfection` record (the Terminus extension).
+
+/** Aggregated general-population illness compartments. Every field is a
+ *  head-count; the sums always reconcile against `generalPopulation.total`. */
+export interface PopulationInfectionState {
+  /** Latent carriers: infected but not yet visibly ill and not (yet)
+   *  detectable without Early Diagnosis. They can spread a little. */
+  exposed: number;
+  /** Visibly sick: confirmed cases consuming medbay capacity. */
+  symptomatic: number;
+  /** Sick patients currently isolated in medical quarantine beds. */
+  quarantined: number;
+  /** Cumulative turned/dead from population illness this settlement's life
+   *  (memoir/statistics counter — active losses leave the compartments). */
+  totalLost: number;
+  /** Cumulative recovered through treatment (or naturally). */
+  totalRecovered: number;
+  /** Real-seconds accumulator for the aggregated progression tick. */
+  accumSec: number;
+  /** Real-seconds accumulator for new-exposure rolls. */
+  spreadAccumSec: number;
+}
+
+export function createEmptyPopulationInfectionState(): PopulationInfectionState {
+  return {
+    exposed: 0,
+    symptomatic: 0,
+    quarantined: 0,
+    totalLost: 0,
+    totalRecovered: 0,
+    accumSec: 0,
+    spreadAccumSec: 0,
+  };
+}
+
+// ==========================================
 // 2. Settlement Outbreak State (§6.3)
 // ==========================================
 
