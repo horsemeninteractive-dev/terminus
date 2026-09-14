@@ -3017,6 +3017,11 @@ export class WorldScene {
     this.flashlightOverride = enabled;
   }
 
+  /** Feed the combat obstacle grid to the renderer (LOS-warped range ring). */
+  public setCombatPathGrid(grid: import('../services/pathfindingService').PathGrid | null) {
+    this.combatRenderer.setPathGrid(grid);
+  }
+
   public updateCombat(
     zombies: ZombieUnit[],
     squads: TacticalSquadUnit[],

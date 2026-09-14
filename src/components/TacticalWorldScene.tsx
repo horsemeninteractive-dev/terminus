@@ -144,6 +144,7 @@ export interface TacticalWorldSceneProps {
   radioDirectiveState: RadioDirectiveState | null;
   scavengeFilterType: ScavengeLootFilter;
   sceneRef: React.MutableRefObject<WorldScene | null>;
+  pathGridRef: React.MutableRefObject<import('../services/pathfindingService').PathGrid | null>;
   selectedBuilding: BuildingPolygon | null;
   selectedSquadId: string | null;
   selectedSquadIds?: string[];
@@ -300,6 +301,7 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
     radioDirectiveState,
     scavengeFilterType,
     sceneRef,
+    pathGridRef,
     selectedBuilding,
     selectedSquadId,
   selectedSquadIds,
@@ -459,6 +461,7 @@ export const TacticalWorldScene: React.FC<TacticalWorldSceneProps> = (props) => 
                 showLanduse={showLanduse}
                 showSatelliteOverlay={showSatelliteOverlay}
                 showPowerGrid={showPowerGrid}
+                pathGridRef={pathGridRef}
                 selectedSquadId={selectedSquadId}
                 selectedVehicleId={selectedVehicleId}
                 pendingFreestandingType={pendingFreestandingType}

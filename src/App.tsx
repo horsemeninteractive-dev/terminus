@@ -602,7 +602,7 @@ export default function App() {
       isScavengeViewActive={isScavengeViewActive} isSquadModalOpen={isSquadModalOpen} labelDetailMode={labelDetailMode}
       mapData={mapData} noiseEvents={noiseEvents} overrunSettlement={overrunSettlement}
       pendingAdaptType={pendingAdaptType} pendingFreestandingType={pendingFreestandingType} radioDirectiveState={radioDirectiveState}
-      scavengeFilterType={scavengeFilterType} sceneRef={sceneRef} selectedBuilding={selectedBuilding}
+      scavengeFilterType={scavengeFilterType} sceneRef={sceneRef} pathGridRef={pathGridRef} selectedBuilding={selectedBuilding}
       selectedSquadId={selectedSquadId} selectedVehicleId={selectedVehicleId} setActiveGatherType={setActiveGatherType}
       setActiveRadioTransmission={setActiveRadioTransmission} setActiveRansomHideoutId={setActiveRansomHideoutId} setActiveRecruitmentGroup={setActiveRecruitmentGroup}
       setActiveSidebarTab={setActiveSidebarTab} setClickedPosition={setClickedPosition} setHoveredBuilding={setHoveredBuilding}

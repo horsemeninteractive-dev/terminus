@@ -43,12 +43,15 @@ Releasing:
 
 ### Fixed
 
-- **Range ring conforms to terrain.** The selected squad's weapon-range
-  ring was a flat disc at the squad's ground height — on slopes it sliced
-  into hills and vanished underground. It is now a terrain-sampled ribbon
-  rebuilt every frame around the squad's interpolated position, so it
-  drapes over elevation and glides with the unit; combat state still turns
-  it red.
+- **Range ring conforms to terrain and true line of sight.** The selected
+  squad's weapon-range ring was a flat disc at the squad's ground height —
+  on slopes it sliced into hills and vanished underground, and it ignored
+  buildings entirely. It is now a per-frame terrain-sampled ribbon riding
+  the squad's interpolated position, and it is **LOS-warped**: each bearing
+  is ray-marched against the same obstacle grid the combat sim uses, so the
+  drawn boundary pulls inward around buildings and shows exactly where
+  shots can reach. Squads inside a structure (blocked in every direction)
+  fall back to the nominal circle; combat state still turns it red.
 - **Rail zigzag artefacts removed.** The rail vertex pairing connected each
   slice to the *opposite* rail's previous slice, extruding long diagonal
   bands across the track (the "black lines in the sky"). Each rail ribbon

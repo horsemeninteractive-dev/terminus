@@ -122,9 +122,18 @@ export class CombatRenderer {
   // so the ring drapes over hills instead of sinking underground. It tracks
   // the SELECTED squad's interpolated per-frame position, not its 10 Hz sim
   // snap, so it glides with the unit.
+  //
+  // The ring is also LOS-WARPED: each bearing's radius is ray-marched against
+  // the combat path grid so the drawn boundary is the true extent of clear
+  // shots — the circle pulls inward around buildings instead of pretending
+  // range ignores walls. The warp is cached per (centre, radius, grid rev) and
+  // recomputed only when the squad moves ~1.5 m or construction changes.
   private static readonly RANGE_RING_SEGMENTS = 72;
   private rangeRingPositions: Float32Array | null = null;
   private rangeRingGeometry: THREE.BufferGeometry | null = null;
+  private rangeRingDistances: Float32Array | null = null;
+  private rangeRingCache: { cx: number; cz: number; radius: number; gridRev: number } | null = null;
+  private pathGrid: import('../services/pathfindingService').PathGrid | null = null;
   private selectedSquadRenderPos: { x: number; z: number; radius: number; combat: boolean } | null = null;
   private currentSquads: TacticalSquadUnit[] = [];
 
@@ -468,6 +477,13 @@ export class CombatRenderer {
     this.selectedSquadId = squadId;
   }
 
+  /** Latest combat path grid (for LOS-warped range ring). Identity-compared. */
+  public setPathGrid(grid: import('../services/pathfindingService').PathGrid | null) {
+    if (grid === this.pathGrid) return;
+    this.pathGrid = grid;
+    this.rangeRingCache = null; // grid changed → warp must recompute
+  }
+
   public updateState(
     zombies: ZombieUnit[],
     squads: TacticalSquadUnit[],
@@ -714,17 +730,81 @@ export class CombatRenderer {
     const { radius } = this.selectedSquadRenderPos;
     const segs = CombatRenderer.RANGE_RING_SEGMENTS;
     const halfBand = Math.max(0.5, radius * 0.012); // ~1.2% of radius read as a line
+
+    // LOS warp: recompute per-bearing clear-shot distances when the centre
+    // moved beyond tolerance or the obstacle grid changed. Marched with the
+    // same grid the combat sim uses, so the drawn boundary is exactly where
+    // shots stop being possible.
+    const gridRev = this.pathGrid?.revision ?? -1;
+    const cache = this.rangeRingCache;
+    if (
+      !cache ||
+      !this.rangeRingDistances ||
+      cache.gridRev !== gridRev ||
+      cache.radius !== radius ||
+      Math.hypot(cx - cache.cx, cz - cache.cz) > Math.max(1.5, radius * 0.05)
+    ) {
+      const dists = this.rangeRingDistances || new Float32Array(segs);
+      // A squad standing INSIDE a structure is blocked in every direction
+      // (it genuinely can't shoot out); warping would collapse the ring to a
+      // dot, so fall back to the nominal circle there.
+      const centreIndoors = this.pathGrid?.isInsideBuilding(cx, cz) ?? false;
+      for (let i = 0; i < segs; i++) {
+        const bearing = (i / segs) * Math.PI * 2;
+        const dx = Math.sin(bearing);
+        const dz = Math.cos(bearing);
+        if (!this.pathGrid || centreIndoors) {
+          dists[i] = radius;
+          continue;
+        }
+        // Binary search the largest clear-shot distance along this bearing:
+        // find the first blocked sample, then refine. Sample step ~3 m keeps
+        // the coarse phase at ≤ ~30 grid probes per bearing, done at most a
+        // few times per second.
+        const step = 3;
+        const coarse = Math.max(1, Math.floor(radius / step));
+        let firstBlocked = -1;
+        for (let s = 1; s <= coarse; s++) {
+          const d = (s / coarse) * radius;
+          if (!this.pathGrid.hasCombatLineOfSight(cx, cz, cx + dx * d, cz + dz * d)) {
+            firstBlocked = d;
+            break;
+          }
+        }
+        if (firstBlocked < 0) {
+          dists[i] = radius;
+        } else {
+          let lo = Math.max(0, firstBlocked - step);
+          let hi = firstBlocked;
+          for (let it = 0; it < 5; it++) {
+            const mid = (lo + hi) / 2;
+            if (this.pathGrid.hasCombatLineOfSight(cx, cz, cx + dx * mid, cz + dz * mid)) lo = mid;
+            else hi = mid;
+          }
+          dists[i] = lo;
+        }
+      }
+      this.rangeRingDistances = dists;
+      this.rangeRingCache = { cx, cz, radius, gridRev };
+    }
+
+    const dists = this.rangeRingDistances;
     for (let i = 0; i <= segs; i++) {
-      const bearing = (i % segs) / segs * Math.PI * 2;
-      const px = cx + Math.sin(bearing) * radius;
-      const pz = cz + Math.cos(bearing) * radius;
-      const ground = this.terrainSample(px, pz, this.currentExaggeration);
+      const bearing = ((i % segs) / segs) * Math.PI * 2;
+      const d = dists[i % segs];
+      const px = cx + Math.sin(bearing) * d;
+      const pz = cz + Math.cos(bearing) * d;
+      // Ride the bridge deck over water, otherwise hug the rendered terrain
+      // surface — the same authoritative sampler the units themselves stand
+      // on. Raised fully above ground so no half of the band submerges.
+      const deckY = this.bridgeDeckSampler?.(px, pz);
+      const ground = deckY != null ? deckY : this.terrainSample(px, pz, this.currentExaggeration);
       const o = i * 6;
       positions[o] = px;
       positions[o + 1] = ground + halfBand;
       positions[o + 2] = pz;
       positions[o + 3] = px;
-      positions[o + 4] = ground - halfBand;
+      positions[o + 4] = ground + halfBand * 2.2;
       positions[o + 5] = pz;
     }
     (geo.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;

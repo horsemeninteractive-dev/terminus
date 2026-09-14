@@ -30,6 +30,8 @@ interface GameCanvasProps {
   satelliteQuality?: import('../types/saveGame').SatelliteQuality;
   /** Power-grid overlay on the tactical map (generator radius + consumer status). */
   showPowerGrid?: boolean;
+  /** Live obstacle grid — handed to the renderer for the LOS-warped range ring. */
+  pathGridRef?: React.MutableRefObject<import('../services/pathfindingService').PathGrid | null>;
   selectedSquadId?: string | null;
   selectedVehicleId?: string | null;
   onSelectBuilding: (building: BuildingPolygon | null) => void;
@@ -81,6 +83,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   showSatelliteOverlay = false,
   satelliteQuality = 'balanced',
   showPowerGrid = false,
+  pathGridRef,
   selectedSquadId,
   selectedVehicleId,
   onSelectBuilding,
@@ -226,6 +229,13 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       sceneRef.current.setElevationSettings(disableElevation, elevationExaggeration);
     }
   }, [disableElevation, elevationExaggeration]);
+
+  // The selected squad's range ring is LOS-warped against the live obstacle
+  // grid — hand the renderer the same grid the combat sim uses. Identity-
+  // compared inside, so this is cheap to re-run on any grid rebuild.
+  useEffect(() => {
+    sceneRef.current?.setCombatPathGrid(pathGridRef.current);
+  }, [pathGridRef.current, mapKey]);
 
   // Graphics quality preset (also applied on scene creation below)
   useEffect(() => {
