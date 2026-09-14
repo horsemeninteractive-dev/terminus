@@ -235,13 +235,18 @@ export function tickCombatSimulation(
       }
     }
 
-    // 2. If no active target assigned, Auto-Acquire closest enemy within weapon range
+    // 2. If no active target assigned, Auto-Acquire closest VISIBLE enemy
+    // within weapon range. Range alone no longer qualifies: a straight segment
+    // blocked by a building means no line of fire, so a wall of city blocks
+    // genuinely shelters enemies behind it (§B: LOS, for player units).
     if (!activeTarget) {
       let closestDist = Infinity;
+      const canShootTo = (tx: number, tz: number) =>
+        !pathGrid || pathGrid.hasCombatLineOfSight(x, z, tx, tz);
       for (const zmb of zombies) {
         if (zmb.currentHp <= 0) continue;
         const d = Math.hypot(zmb.x - x, zmb.z - z);
-        if (d <= effectiveAttackRange && d < closestDist) {
+        if (d <= effectiveAttackRange && d < closestDist && canShootTo(zmb.x, zmb.z)) {
           closestDist = d;
           activeTarget = zmb;
         }
@@ -249,7 +254,7 @@ export function tickCombatSimulation(
       for (const human of hostileHumans) {
         if (human.currentHp <= 0) continue;
         const d = Math.hypot(human.x - x, human.z - z);
-        if (d <= effectiveAttackRange && d < closestDist) {
+        if (d <= effectiveAttackRange && d < closestDist && canShootTo(human.x, human.z)) {
           closestDist = d;
           activeTarget = human;
         }
@@ -306,11 +311,18 @@ export function tickCombatSimulation(
         state = squad.targetBuildingId ? 'searching' : 'idle';
       }
     } else if (activeTarget && !targetPos) {
-      // Stand and engage / close distance to enemy if no manual move order
+      // Stand and engage / close distance to enemy if no manual move order.
+      // Engaging also requires a clear shot: an occluded target is ignored so
+      // squads don't stand glaring at a wall.
+      const hasShot = pathGrid ? pathGrid.hasCombatLineOfSight(x, z, activeTarget.x, activeTarget.z) : true;
       const distToTarget = Math.hypot(activeTarget.x - x, activeTarget.z - z);
-      rotation = Math.atan2(activeTarget.x - x, activeTarget.z - z);
+      if (!hasShot) {
+        targetZombieId = null;
+        activeTarget = null;
+      }
+      rotation = hasShot ? Math.atan2(activeTarget!.x - x, activeTarget!.z - z) : rotation;
 
-      if (distToTarget > effectiveAttackRange) {
+      if (activeTarget && distToTarget > effectiveAttackRange) {
         // Step closer to attack range
         const step = Math.min(
           distToTarget - effectiveAttackRange * 0.75,
@@ -367,9 +379,16 @@ export function tickCombatSimulation(
     }
 
     // 4. Weapons & Combat Firing (Can fire while moving/kiting or holding ground if enemy in range!)
+    // Firing ALWAYS re-checks line of sight: the previous tick's engagement can
+    // have a building pushed between shooter and target (either moved), and no
+    // shot may pass through structures — player or NPC alike.
     if (activeTarget) {
       const distToTarget = Math.hypot(activeTarget.x - x, activeTarget.z - z);
-      if (distToTarget <= effectiveAttackRange) {
+      const targetVisible = pathGrid ? pathGrid.hasCombatLineOfSight(x, z, activeTarget.x, activeTarget.z) : true;
+      if (!targetVisible) {
+        // Structure slid between shooter and target: drop the lock, do not fire.
+        targetZombieId = null;
+      } else if (distToTarget <= effectiveAttackRange) {
         if (state !== 'returning' && state !== 'retreating' && !isPlayerOrderedMove) {
           state = 'combat';
         }
@@ -635,6 +654,9 @@ export function tickCombatSimulation(
         if (sq.currentHp <= 0) continue;
         const d = Math.hypot(sq.x - x, sq.z - z);
         if (d <= sightRange && d < squadDist) {
+          // Sight is line of sight: a building between the infected and its
+          // prey hides the squad entirely (no x-ray aggro through city blocks).
+          if (pathGrid && !pathGrid.hasCombatLineOfSight(x, z, sq.x, sq.z)) continue;
           squadDist = d;
           targetSquad = sq;
         }
@@ -662,8 +684,10 @@ export function tickCombatSimulation(
         state = 'chasing';
         alertLevel = 2;
 
-        // Melee attack if in range (2.0m)
-        if (squadDist <= 2.2) {
+        // Melee attack if in range (2.0m) — reach still respects structure
+        // occlusion so a squad sheltering indoors can't be chewed on through
+        // the wall.
+        if (squadDist <= 2.2 && (!pathGrid || pathGrid.hasCombatLineOfSight(x, z, targetSquad.x, targetSquad.z))) {
           state = 'attacking_unit';
           if (now - lastAttackTime >= zombie.attackCooldown * 1000) {
             lastAttackTime = now;
@@ -1045,12 +1069,14 @@ export function tickCombatSimulation(
 
       // Defend against nearby squads first; otherwise siege the nearest owned
       // structure so hostile factions can damage buildings, not just people.
+      // Target selection is LOS-gated: defenders can't snipe through blocks.
       let targetSquad: TacticalSquadUnit | null = null;
       let targetDist = Infinity;
       for (const sq of caredSquads) {
         if (sq.currentHp <= 0) continue;
         const d = Math.hypot(sq.x - x, sq.z - z);
         if (d < targetDist) {
+          if (pathGrid && !pathGrid.hasCombatLineOfSight(x, z, sq.x, sq.z)) continue;
           targetDist = d;
           targetSquad = sq;
         }
@@ -1070,7 +1096,7 @@ export function tickCombatSimulation(
         targetSquadId = targetSquad.squadId;
         rotation = Math.atan2(targetSquad.x - x, targetSquad.z - z);
 
-        if (targetDist <= human.attackRange) {
+        if (targetDist <= human.attackRange && (!pathGrid || pathGrid.hasCombatLineOfSight(x, z, targetSquad.x, targetSquad.z))) {
           state = 'combat';
           if (now - lastAttackTime >= human.attackCooldown * 1000) {
             lastAttackTime = now;

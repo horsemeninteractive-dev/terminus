@@ -31,8 +31,24 @@ Releasing:
   press again or pan manually to release. The button reflects the live
   follow state, so manual cancellation is shown honestly.
 
+### Changed
+
+- **Combat line of sight is real.** Weapon range is no longer a flat disc
+  that ignores walls: acquisition, engagement and every firing tick now
+  sample the straight shot against the building/structure mask, so units in
+  the open cannot attack through buildings. Applies to player squads,
+  infected (sight aggro is LOS-gated, and melee cannot reach through a
+  wall) and rival defenders alike. Fighters sharing a roof still engage,
+  and gates do not block sight.
+
 ### Fixed
 
+- **Range ring conforms to terrain.** The selected squad's weapon-range
+  ring was a flat disc at the squad's ground height — on slopes it sliced
+  into hills and vanished underground. It is now a terrain-sampled ribbon
+  rebuilt every frame around the squad's interpolated position, so it
+  drapes over elevation and glides with the unit; combat state still turns
+  it red.
 - **Rail zigzag artefacts removed.** The rail vertex pairing connected each
   slice to the *opposite* rail's previous slice, extruding long diagonal
   bands across the track (the "black lines in the sky"). Each rail ribbon

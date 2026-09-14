@@ -117,6 +117,15 @@ export class CombatRenderer {
   private waypointLineMaterial: THREE.LineDashedMaterial | null = null;
   private waypointEndMesh: THREE.Group | null = null;
   private rangeRadiusMesh: THREE.Mesh | null = null;
+  // Elevation-conforming range ring: a per-segment ribbon (line strip with a
+  // top/bottom vertex pair per bearing) re-sampled from the terrain each frame
+  // so the ring drapes over hills instead of sinking underground. It tracks
+  // the SELECTED squad's interpolated per-frame position, not its 10 Hz sim
+  // snap, so it glides with the unit.
+  private static readonly RANGE_RING_SEGMENTS = 72;
+  private rangeRingPositions: Float32Array | null = null;
+  private rangeRingGeometry: THREE.BufferGeometry | null = null;
+  private selectedSquadRenderPos: { x: number; z: number; radius: number; combat: boolean } | null = null;
   private currentSquads: TacticalSquadUnit[] = [];
 
   // When true, per-frame interpolation is frozen at each unit's latest sim position
@@ -425,9 +434,21 @@ export class CombatRenderer {
     this.waypointEndMesh = endGroup;
     this.fxGroup.add(endGroup);
 
-    // Tactical Weapon Attack Range Ring (matches squad attackRange radius)
-    const rangeGeo = new THREE.RingGeometry(0.96, 1.0, 64);
-    rangeGeo.rotateX(-Math.PI / 2);
+    // Tactical Weapon Attack Range Ring (matches squad attackRange radius).
+    // Built as an elevation-conforming ribbon rather than a flat RingGeometry:
+    // the flat disc intersected hills and vanished underground. 73 bearings ×
+    // 2 vertices; positions are re-written every frame from terrain samples.
+    const ringSegments = CombatRenderer.RANGE_RING_SEGMENTS;
+    const rangeGeo = new THREE.BufferGeometry();
+    const positions = new Float32Array((ringSegments + 1) * 2 * 3);
+    rangeGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const indices: number[] = [];
+    for (let i = 0; i < ringSegments; i++) {
+      const a = i * 2;
+      indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+    }
+    rangeGeo.setIndex(indices);
+    rangeGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Infinity);
     const rangeMat = new THREE.MeshBasicMaterial({
       color: 0x10b981,
       side: THREE.DoubleSide,
@@ -437,7 +458,10 @@ export class CombatRenderer {
     });
     this.rangeRadiusMesh = new THREE.Mesh(rangeGeo, rangeMat);
     this.rangeRadiusMesh.visible = false;
+    this.rangeRadiusMesh.frustumCulled = false;
     this.fxGroup.add(this.rangeRadiusMesh);
+    this.rangeRingGeometry = rangeGeo;
+    this.rangeRingPositions = positions;
   }
 
   public setSelectedSquad(squadId: string | null) {
@@ -641,6 +665,70 @@ export class CombatRenderer {
     if (this.billboardPool && this.billboardEntries.size > 0) {
       this.updateBillboards(now);
     }
+
+    this.redrawRangeRing(now);
+  }
+
+  /**
+   * Re-sample the selected squad's range ring against the terrain every frame,
+   * centred on the squad's INTERPOLATED position. Each bearing's top/bottom
+   * pair hugs the ground (±0.35 m), so the ring drapes over slopes instead of
+   * slicing into hills; a gentle per-segment fade hides the far side behind
+   * rises without losing the circle's read.
+   */
+  private redrawRangeRing(now: number) {
+    const mesh = this.rangeRadiusMesh;
+    const geo = this.rangeRingGeometry;
+    const positions = this.rangeRingPositions;
+    if (!mesh || !geo || !positions) return;
+
+    // Only draw while a deployed, alive, on-foot squad is selected. Covers
+    // deselection, mounted squads, expedition squads and freshly-wiped ones
+    // (whose sim snapshot no longer reaches the ring-param update above).
+    const sel = this.selectedSquadId
+      ? this.currentSquads.find((s) => s.squadId === this.selectedSquadId)
+      : null;
+    if (!sel || !sel.isDeployed || sel.currentHp <= 0 || sel.mountedVehicleId) {
+      mesh.visible = false;
+      return;
+    }
+
+    // Follow the smoother when the selected squad has one (it always does
+    // while deployed); fall back to the last sim snapshot otherwise.
+    const sm = this.selectedSquadId ? this.squadSmoothers.get(this.selectedSquadId) : undefined;
+    let cx: number | null = null;
+    let cz: number | null = null;
+    if (sm) {
+      const p = sm.sample(now);
+      cx = p.x;
+      cz = p.z;
+    } else if (this.selectedSquadRenderPos) {
+      cx = this.selectedSquadRenderPos.x;
+      cz = this.selectedSquadRenderPos.z;
+    }
+
+    if (cx === null || cz === null || !this.selectedSquadRenderPos) {
+      mesh.visible = false;
+      return;
+    }
+    const { radius } = this.selectedSquadRenderPos;
+    const segs = CombatRenderer.RANGE_RING_SEGMENTS;
+    const halfBand = Math.max(0.5, radius * 0.012); // ~1.2% of radius read as a line
+    for (let i = 0; i <= segs; i++) {
+      const bearing = (i % segs) / segs * Math.PI * 2;
+      const px = cx + Math.sin(bearing) * radius;
+      const pz = cz + Math.cos(bearing) * radius;
+      const ground = this.terrainSample(px, pz, this.currentExaggeration);
+      const o = i * 6;
+      positions[o] = px;
+      positions[o + 1] = ground + halfBand;
+      positions[o + 2] = pz;
+      positions[o + 3] = px;
+      positions[o + 4] = ground - halfBand;
+      positions[o + 5] = pz;
+    }
+    (geo.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+    mesh.visible = true;
   }
 
   /** Park every moving mesh exactly at its latest simulation position (paused). */
@@ -765,19 +853,22 @@ export class CombatRenderer {
       // 3D mesh itself is interpolated per-frame by update().
       const elev = this.terrainSample(squad.x, squad.z, this.currentExaggeration);
 
-      // Update Weapon Attack Range circle for selected squad
-      if (squad.squadId === this.selectedSquadId && this.rangeRadiusMesh) {
-        this.rangeRadiusMesh.position.set(squad.x, elev + 0.08, squad.z);
-        const radius = Math.max(8, squad.attackRange || 8);
-        // Ring lies flat (geometry rotateX -PI/2): scale X/Z by the radius and
-        // leave Y (the ring's normal) at 1 — scaling Y instead distorts the
-        // flat annulus into an ellipse that reads as "angled".
-        this.rangeRadiusMesh.scale.set(radius, 1, radius);
+      // Record the selected squad's ring parameters (position is refreshed per
+      // frame from the smoother; see redrawRangeRing). Radius/lifetime live on
+      // the sim state — only geometry is per-frame.
+      if (squad.squadId === this.selectedSquadId) {
         const isCombatMode = squad.state === 'combat' || Boolean(squad.targetZombieId);
-        const rangeMat = this.rangeRadiusMesh.material as THREE.MeshBasicMaterial;
-        rangeMat.color.setHex(isCombatMode ? 0xef4444 : 0x10b981);
-        rangeMat.opacity = isCombatMode ? 0.65 : 0.45;
-        this.rangeRadiusMesh.visible = true;
+        this.selectedSquadRenderPos = {
+          x: squad.x,
+          z: squad.z,
+          radius: Math.max(8, squad.attackRange || 8),
+          combat: isCombatMode,
+        };
+        const rangeMat = this.rangeRadiusMesh?.material as THREE.MeshBasicMaterial | undefined;
+        if (rangeMat) {
+          rangeMat.color.setHex(isCombatMode ? 0xef4444 : 0x10b981);
+          rangeMat.opacity = isCombatMode ? 0.65 : 0.45;
+        }
       }
 
       // Waypoint display & dashed trajectory line (matching screenshot)

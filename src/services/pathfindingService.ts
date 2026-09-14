@@ -467,6 +467,38 @@ export class PathGrid {
     return this.isBuildingCell[this.idx(cell.col, cell.row)] === 1;
   }
 
+  /**
+   * Combat line of sight: true when a straight shot/attack between two world
+   * points is not blocked by a building or player-built wall. Unlike the
+   * pathing {@link hasLineOfSight}, gate cells never block sight (a gate is an
+   * opening in a fence, not a wall) and water is irrelevant. Both endpoints
+   * inside structures count as the same room — shelter melee stays possible.
+   * Sampled every ~1.2 m so a segment can never clip a building corner.
+   */
+  hasCombatLineOfSight(x1: number, z1: number, x2: number, z2: number): boolean {
+    const dist = Math.hypot(x2 - x1, z2 - z1);
+    if (dist < 1e-6) return true;
+    const a = this.worldToCell(x1, z1);
+    const b = this.worldToCell(x2, z2);
+    if (a && b) {
+      const ia = this.idx(a.col, a.row);
+      const ib = this.idx(b.col, b.row);
+      // Shooter and target both under a roof: same/adjacent structure, keep
+      // engagement (otherwise squads searching inside could never fight).
+      if (this.isBuildingCell[ia] === 1 && this.isBuildingCell[ib] === 1) return true;
+      if (a.col === b.col && a.row === b.row) return this.isBuildingCell[ia] !== 1;
+    }
+    // Interior samples only: endpoints sit in their own cells by definition.
+    const steps = Math.max(1, Math.ceil(dist / 1.2));
+    for (let s = 1; s < steps; s++) {
+      const t = s / steps;
+      const cell = this.worldToCell(x1 + (x2 - x1) * t, z1 + (z2 - z1) * t);
+      if (!cell) continue;
+      if (this.isBuildingCell[this.idx(cell.col, cell.row)] === 1) return false;
+    }
+    return true;
+  }
+
   /** True when the given world point sits in a water cell (river/lake/canal).
    *  Water is wadeable for humans (slower) and impassable for the infected.
    *  When `excludeBridges` is set, road-deck cells over water (bridges) report
